@@ -37,13 +37,25 @@ export interface CharsetSummary {
   count: number;
 }
 
-/** Represents a primary Hyperglot orthography and its required base-character repertoire. */
+/** Whether the language is spoken today, constructed, or no longer spoken. */
+export type LanguageStatus = "living" | "constructed" | "historical";
+
+/** How far Hyperglot has reviewed the orthography data; `draft` is the least reviewed. */
+export type LanguageValidity = "todo" | "draft" | "preliminary" | "verified";
+
+/** Whether the orthography is the language's main one or an additional one. */
+export type LanguageOrthography = "primary" | "secondary";
+
+/** Represents a Hyperglot orthography and its required base-character repertoire. */
 export interface Language {
   id: string;
   name: string;
   autonym: string | null;
   script: string;
   baseCodepoints: number[];
+  status: LanguageStatus;
+  validity: LanguageValidity;
+  orthography: LanguageOrthography;
 }
 
 export interface LanguageCoverage {

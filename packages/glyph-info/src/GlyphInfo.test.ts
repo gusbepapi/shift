@@ -436,6 +436,42 @@ describe("language coverage catalogs", () => {
     }
   });
 
+  it("includes historical languages with their status", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const akkadian = catalog.coverage("akk-sumero-akkadian-cuneiforms")?.language;
+
+    expect(akkadian?.name).toBe("Akkadian");
+    expect(akkadian?.status).toBe("historical");
+    expect(catalog.scripts.map(({ script }) => script)).toContain("Egyptian Hieroglyphs");
+  });
+
+  it("includes draft data and marks it as such", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const aimaq = catalog.coverage("aiq-arabic")?.language;
+
+    expect(aimaq?.validity).toBe("draft");
+    expect(aimaq?.orthography).toBe("primary");
+  });
+
+  it("lists secondary orthographies under their own identifier", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const secondary = catalog.coverage("mey-arabic-secondary")?.language;
+
+    expect(secondary?.orthography).toBe("secondary");
+    expect(catalog.coverage("mey-arabic")).toBeNull();
+  });
+
+  it("keeps identifiers unique and keeps primary identifiers free of status suffixes", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const languages = catalog.scripts.flatMap(({ languages }) => languages.map((c) => c.language));
+    const identifiers = languages.map(({ id }) => id);
+
+    expect(new Set(identifiers).size).toBe(identifiers.length);
+    for (const language of languages) {
+      expect(/-secondary(-\d+)?$/.test(language.id)).toBe(language.orthography === "secondary");
+    }
+  });
+
   it("sorts scripts and languages alphabetically", () => {
     const catalog = db.createLanguageCatalog([]);
     const scripts = catalog.scripts.map(({ script }) => script);
