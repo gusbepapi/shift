@@ -54,10 +54,16 @@ export type {
   GlyphInfoCoreResources,
   /** Decomposition and search data, loadable after construction. */
   GlyphInfoComponentResources,
-  /** Represents a primary language orthography and its required base-character repertoire. */
+  /** Represents a language orthography and its required base-character repertoire. */
   Language,
   /** Provides reusable language coverage grouped by script. */
   LanguageCatalog,
+  /** Whether a language orthography is primary or secondary. */
+  LanguageOrthography,
+  /** Whether a language is living, constructed, or historical. */
+  LanguageStatus,
+  /** How far Hyperglot has reviewed a language orthography. */
+  LanguageValidity,
   /** Reports coverage of one language orthography within a font. */
   LanguageCoverage,
   /** Groups language coverage entries sharing a script. */

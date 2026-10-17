@@ -10,8 +10,9 @@ import type {
   HyperglotOrthographyStatus,
 } from "../types/hyperglot.js";
 
-const INCLUDED_LANGUAGE_STATUSES = new Set(["living", "constructed"]);
-const INCLUDED_VALIDITIES = new Set(["preliminary", "verified"]);
+const INCLUDED_LANGUAGE_STATUSES = new Set(["living", "constructed", "historical"]);
+const INCLUDED_VALIDITIES = new Set(["draft", "preliminary", "verified"]);
+const INCLUDED_ORTHOGRAPHY_STATUSES = new Set<HyperglotOrthographyStatus>(["primary", "secondary"]);
 const ORTHOGRAPHY_STATUSES = new Set<HyperglotOrthographyStatus>([
   "primary",
   "secondary",
@@ -51,30 +52,42 @@ export function generateLanguages(hyperglotPath: string, outputPath: string): nu
     if (!INCLUDED_LANGUAGE_STATUSES.has(language.status ?? "living")) continue;
     if (!INCLUDED_VALIDITIES.has(language.validity ?? "todo")) continue;
 
-    const primaryOrthographies = (language.orthographies ?? []).filter(
-      (orthography) => (orthography.status ?? "primary") === "primary",
+    const includedOrthographies = (language.orthographies ?? []).filter((orthography) =>
+      INCLUDED_ORTHOGRAPHY_STATUSES.has(orthography.status ?? "primary"),
     );
-    const scriptCounts = countScripts(primaryOrthographies);
-    const scriptIndices = new Map<string, number>();
 
-    for (const orthography of primaryOrthographies) {
-      const base = resolveAttribute(languages, languageCode, orthography, "base", new Set());
-      const codepoints = uniqueCodepoints(base);
-      if (codepoints.length === 0) continue;
+    // Identifiers of primary orthographies stay what they were before secondary
+    // ones were included, because fonts store tracked language identifiers.
+    for (const orthographyStatus of ["primary", "secondary"] as const) {
+      const orthographies = includedOrthographies.filter(
+        (orthography) => (orthography.status ?? "primary") === orthographyStatus,
+      );
+      const scriptCounts = countScripts(orthographies);
+      const scriptIndices = new Map<string, number>();
+      const statusSuffix = orthographyStatus === "primary" ? "" : `-${orthographyStatus}`;
 
-      const scriptIndex = (scriptIndices.get(orthography.script) ?? 0) + 1;
-      scriptIndices.set(orthography.script, scriptIndex);
-      const scriptSuffix = slugify(orthography.script);
-      const duplicateSuffix =
-        (scriptCounts.get(orthography.script) ?? 0) > 1 ? `-${scriptIndex}` : "";
+      for (const orthography of orthographies) {
+        const base = resolveAttribute(languages, languageCode, orthography, "base", new Set());
+        const codepoints = uniqueCodepoints(base);
+        if (codepoints.length === 0) continue;
 
-      generated.push({
-        id: `${languageCode}-${scriptSuffix}${duplicateSuffix}`,
-        name: language.preferred_name ?? language.name,
-        autonym: orthography.autonym ?? null,
-        script: orthography.script,
-        baseCodepoints: codepoints,
-      });
+        const scriptIndex = (scriptIndices.get(orthography.script) ?? 0) + 1;
+        scriptIndices.set(orthography.script, scriptIndex);
+        const scriptSuffix = slugify(orthography.script);
+        const duplicateSuffix =
+          (scriptCounts.get(orthography.script) ?? 0) > 1 ? `-${scriptIndex}` : "";
+
+        generated.push({
+          id: `${languageCode}-${scriptSuffix}${statusSuffix}${duplicateSuffix}`,
+          name: language.preferred_name ?? language.name,
+          autonym: orthography.autonym ?? null,
+          script: orthography.script,
+          baseCodepoints: codepoints,
+          status: language.status ?? "living",
+          validity: language.validity ?? "todo",
+          orthography: orthographyStatus,
+        });
+      }
     }
   }
 

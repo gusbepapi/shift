@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { LanguageCoverage } from "@shift/glyph-info";
+import type { Language as LanguageEntry, LanguageCoverage } from "@shift/glyph-info";
 import { SidebarRowButton } from "@/components/sidebar";
 import type { LanguageGlyph } from "@/types/glyphCatalog";
 import { MissingGlyphsPopover } from "./MissingGlyphsPopover";
@@ -35,7 +35,7 @@ export const Language = ({
           event.preventDefault();
           setGlyphs(languageGlyphs(language.id));
         }}
-        title={language.autonym ?? undefined}
+        title={languageTitle(language)}
       >
         <span className="min-w-0 flex-1 truncate pl-5 text-left">{language.name}</span>
         <span className="shrink-0 text-xs">
@@ -53,3 +53,15 @@ export const Language = ({
     </>
   );
 };
+
+/** Tooltip text: the autonym followed by anything that qualifies how reliable or current the entry is. */
+export function languageTitle(language: LanguageEntry): string | undefined {
+  const qualifiers: string[] = [];
+  if (language.status === "historical") qualifiers.push("Historical");
+  if (language.status === "constructed") qualifiers.push("Constructed");
+  if (language.orthography === "secondary") qualifiers.push("Secondary orthography");
+  if (language.validity === "draft") qualifiers.push("Draft data");
+
+  const parts = language.autonym === null ? qualifiers : [language.autonym, ...qualifiers];
+  return parts.length === 0 ? undefined : parts.join(" · ");
+}
