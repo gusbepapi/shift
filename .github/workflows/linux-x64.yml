@@ -37,12 +37,12 @@ jobs:
         with:
           node-version: 24
 
-      # Installing the libraries that the build, the RPM packaging and the smoke test need
+      # Installing the libraries that the build and the smoke test need
       - name: Install system packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libsqlite3-dev rpm xvfb fluxbox \
+            build-essential cmake pkg-config libsqlite3-dev xvfb fluxbox \
             libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libxkbfile1 \
             libatspi2.0-0t64 libcups2t64
 
@@ -70,7 +70,7 @@ jobs:
         run: pnpm --filter @shift/desktop build
 
       - name: Make desktop distributables
-        run: pnpm --filter @shift/desktop exec electron-builder --config electron-builder.config.ts --linux deb rpm AppImage --x64 --publish never
+        run: pnpm --filter @shift/desktop exec electron-builder --config electron-builder.config.ts --linux tar.gz --x64 --publish never
 
       # Locating the directory that contains the unpacked executable
       - name: Resolve packaged application
@@ -92,14 +92,11 @@ jobs:
         continue-on-error: true
         run: node scripts/smoke-packaged.mjs "${{ steps.package.outputs.path }}" nightly
 
-      - name: Upload packages
+      - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
-          name: Shift-linux-x64-packages
-          path: |
-            ${{ env.OUTPUT_ROOT }}/*.deb
-            ${{ env.OUTPUT_ROOT }}/*.rpm
-            ${{ env.OUTPUT_ROOT }}/*.AppImage
+          name: Shift-linux-x64-archive
+          path: ${{ env.OUTPUT_ROOT }}/*.tar.gz
           if-no-files-found: error
           retention-days: 14
 
