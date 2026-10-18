@@ -1,6 +1,6 @@
 # Custom language groups
 
-Shift lists the scripts and groups of the Glyphs Languages sidebar in the glyph catalogue. A font tracks a few of them by default (Latin Basic and Western European, Cyrillic Basic, Greek Basic); the **+** button beside «Languages» adds any other script, and unticking a script hides it.
+Shift lists the scripts and groups of the Glyphs Languages sidebar in the glyph catalogue. A font tracks by default every group of Latin, Cyrillic and Greek, the Latin-script languages that need more than the basic alphabet (English and Xhosa, for example, do not) and the European languages of Cyrillic and Greek; the **+** button beside «Languages» adds any other script, and unticking a script hides it.
 
 Groups of your own, such as a constructed script or a private-use block, live in the `language-groups/` folder of Shift’s config folder (`~/.config/shift` on Linux and macOS, with `shift-nightly` and `shift-dev` for those builds, and the `config` folder inside the user data folder on Windows). Shift watches the folder, so a saved file applies at once to every window. Each file is JSON or a Glyphs `Groups.plist`; the extension decides which.
 
