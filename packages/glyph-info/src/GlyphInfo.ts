@@ -1,5 +1,6 @@
 import MiniSearch from "minisearch";
-import { DEFAULT_GROUP_IDS } from "./types.js";
+import { isEuropeanLanguageId } from "./europeanLanguages.js";
+import { DEFAULT_SCRIPTS } from "./types.js";
 import type {
   CharsetDefinition,
   CharsetSummary,
@@ -360,12 +361,32 @@ export class GlyphInfo {
   // --- Languages ---
 
   /**
-   * Identifiers a font tracks until it chooses its own: the few groups of
-   * {@link DEFAULT_GROUP_IDS} that exist. Every other script is added by the picker.
+   * Identifiers a font tracks until it chooses its own: every group of the
+   * {@link DEFAULT_SCRIPTS}, every Latin-script language that needs more than the basic Latin
+   * alphabet, and every European language of another script.
    */
   defaultTrackedLanguageIds(): string[] {
-    const known = new Set(this.#groups.map(({ id }) => id));
-    return DEFAULT_GROUP_IDS.filter((id) => known.has(id));
+    const scripts = new Set<string>(DEFAULT_SCRIPTS);
+    const basic = new Set(
+      this.#groups.find(({ id }) => id === "group-latin-basic")?.baseCodepoints,
+    );
+    // Hyperglot lists Æ and Œ for English loanwords, which English does not need to be set
+    const loanwordLigatures = new Set([0xc6, 0xe6, 0x152, 0x153]);
+    const needsMoreThanBasic = (language: Language): boolean =>
+      language.baseCodepoints.some(
+        (codepoint) => !basic.has(codepoint) && !loanwordLigatures.has(codepoint),
+      );
+
+    const groupIds = this.#groups.filter(({ script }) => scripts.has(script)).map(({ id }) => id);
+    const languageIds = this.#languages
+      .filter((language) => {
+        if (language.orthography !== "primary") return false;
+        if (language.script === "Latin") return basic.size === 0 || needsMoreThanBasic(language);
+        return isEuropeanLanguageId(language.id);
+      })
+      .map(({ id }) => id);
+
+    return [...groupIds, ...languageIds];
   }
 
   /**

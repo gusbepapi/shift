@@ -96,15 +96,10 @@ export interface LanguageScript {
 }
 
 /**
- * Groups tracked by a font that has not chosen its own list: the basic sets of the
- * three scripts most fonts begin with. The picker adds every other script.
+ * Scripts whose every group a font tracks until it chooses its own list. The picker adds any
+ * other script.
  */
-export const DEFAULT_GROUP_IDS = [
-  "group-latin-basic",
-  "group-latin-western-european",
-  "group-cyrillic-basic",
-  "group-greek-basic",
-] as const;
+export const DEFAULT_SCRIPTS = ["Latin", "Cyrillic", "Greek"] as const;
 
 /**
  * Languages tracked by a font that has not chosen its own list: the ten most

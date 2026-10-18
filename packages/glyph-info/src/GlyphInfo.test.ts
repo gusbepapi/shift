@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { GlyphInfo } from "./GlyphInfo.js";
 import {
-  DEFAULT_GROUP_IDS,
+  DEFAULT_SCRIPTS,
   DEFAULT_LANGUAGE_IDS,
   type GlyphCategory,
   type LanguageGroup,
 } from "./types.js";
+import { isEuropeanLanguageId } from "./europeanLanguages.js";
 import { defaultResources } from "./resources.js";
 import { coreResources } from "./coreResources.js";
 import { componentResources } from "./componentResources.js";
@@ -526,17 +527,43 @@ describe("language coverage catalogs", () => {
     expect(new Set(identifiers).size).toBe(identifiers.length);
   });
 
-  it("tracks only the basic groups until a font chooses its own", () => {
+  it("tracks every group of Latin, Cyrillic and Greek and the languages that need more than basic Latin", () => {
     const catalog = db.createLanguageCatalog([]);
     const tracked = db.defaultTrackedLanguageIds();
     const scripts = catalog.scriptsFor(tracked);
+    const latin = scripts.find(({ script }) => script === "Latin");
+    const basic = new Set(catalog.groupCoverage("group-latin-basic")?.group.baseCodepoints);
 
-    expect(tracked).toEqual([...DEFAULT_GROUP_IDS]);
+    expect(DEFAULT_SCRIPTS).toEqual(["Latin", "Cyrillic", "Greek"]);
     expect(scripts.map(({ script }) => script)).toEqual(["Cyrillic", "Greek", "Latin"]);
-    expect(
-      scripts.find(({ script }) => script === "Latin")?.groups.map(({ group }) => group.name),
-    ).toEqual(["Basic", "Western European"]);
-    expect(scripts.every(({ languages }) => languages.length === 0)).toBe(true);
+    for (const script of scripts) {
+      const all = catalog.scripts.find((entry) => entry.script === script.script);
+      expect(script.groups.map(({ group }) => group.id)).toEqual(
+        all?.groups.map(({ group }) => group.id),
+      );
+    }
+
+    const latinIds = new Set(latin?.languages.map(({ language }) => language.id));
+    for (const id of ["fra-latin", "hau-latin", "ita-latin", "por-latin", "spa-latin"]) {
+      expect(latinIds.has(id)).toBe(true);
+    }
+    expect(latinIds.has("eng-latin")).toBe(false);
+    expect(latinIds.has("xho-latin")).toBe(false);
+    for (const { language } of latin?.languages ?? []) {
+      const extra = language.baseCodepoints.filter(
+        (codepoint) => !basic.has(codepoint) && ![0xc6, 0xe6, 0x152, 0x153].includes(codepoint),
+      );
+      expect(extra.length).toBeGreaterThan(0);
+    }
+
+    const greek = scripts.find(({ script }) => script === "Greek");
+    expect(greek?.languages.some(({ language }) => language.id === "ell-greek")).toBe(true);
+  });
+
+  it("recognises European languages by their ISO code", () => {
+    expect(isEuropeanLanguageId("fra-latin")).toBe(true);
+    expect(isEuropeanLanguageId("rus-cyrillic")).toBe(true);
+    expect(isEuropeanLanguageId("hau-latin")).toBe(false);
   });
 
   it("lists custom groups after the built-in groups of their script", () => {

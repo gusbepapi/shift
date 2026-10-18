@@ -1,5 +1,9 @@
 import { Fragment } from "react";
-import type { LanguageScript as LanguageScriptGroup } from "@shift/glyph-info";
+import {
+  DEFAULT_SCRIPTS,
+  isEuropeanLanguageId,
+  type LanguageScript as LanguageScriptGroup,
+} from "@shift/glyph-info";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@shift/ui";
 import ChevronRightIcon from "@/assets/general/chevron-right.svg";
 import { SidebarRowButton } from "@/components/sidebar";
@@ -24,10 +28,17 @@ export const LanguageScript = ({
   languageGlyphs,
   onGenerate,
 }: LanguageScriptProps) => {
-  const hasBoth = group.groups.length > 0 && group.languages.length > 0;
+  const european = group.languages.filter(({ language }) => isEuropeanLanguageId(language.id));
+  const others = group.languages.filter(({ language }) => !isEuropeanLanguageId(language.id));
+  const sections = [
+    { label: "European languages", languages: european },
+    { label: "Other languages", languages: others },
+  ].filter(({ languages }) => languages.length > 0);
+  const labelled = group.groups.length > 0 || sections.length > 1;
+  const defaultOpen = (DEFAULT_SCRIPTS as readonly string[]).includes(group.script);
 
   return (
-    <Collapsible className="flex flex-col">
+    <Collapsible className="flex flex-col" defaultOpen={defaultOpen}>
       <CollapsibleTrigger render={<SidebarRowButton />}>
         <div className="flex min-w-0 items-center gap-1">
           <ChevronRightIcon className="h-3 w-3 shrink-0 transition-transform duration-175 group-data-[panel-open]:rotate-90 group-data-[panel-closed]:rotate-0" />
@@ -53,17 +64,21 @@ export const LanguageScript = ({
               />
             </Fragment>
           ))}
-          {hasBoth ? <SectionHeading label="Languages" /> : null}
-          {group.languages.map((coverage) => (
-            <Language
-              key={coverage.language.id}
-              coverage={coverage}
-              isActive={selectedLanguageId === coverage.language.id}
-              canGenerate={canGenerate}
-              onSelect={onSelectLanguage}
-              languageGlyphs={languageGlyphs}
-              onGenerate={onGenerate}
-            />
+          {sections.map(({ label, languages }) => (
+            <Fragment key={label}>
+              {labelled ? <SectionHeading label={label} /> : null}
+              {languages.map((coverage) => (
+                <Language
+                  key={coverage.language.id}
+                  coverage={coverage}
+                  isActive={selectedLanguageId === coverage.language.id}
+                  canGenerate={canGenerate}
+                  onSelect={onSelectLanguage}
+                  languageGlyphs={languageGlyphs}
+                  onGenerate={onGenerate}
+                />
+              ))}
+            </Fragment>
           ))}
         </div>
       </CollapsiblePanel>
