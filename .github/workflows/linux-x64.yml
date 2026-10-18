@@ -50,6 +50,22 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      # Installing the wasm-bindgen CLI at the version `Cargo.lock` pins, which `packages/wasm` demands
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A Windows checkout has CRLF line endings
+          version=$(tr -d '\r' < Cargo.lock | awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3 }')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
 
