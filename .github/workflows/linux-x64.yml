@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - main
-      - feat/expand-language-list
+      - feat/expand-language-list-rebased
 
 permissions:
   contents: read
