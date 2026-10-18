@@ -1,11 +1,8 @@
 name: Build Shift for Windows x64
 
+# Running only when the repository owner starts it from the Actions tab
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - feat/expand-language-list-rebased
 
 permissions:
   contents: read
