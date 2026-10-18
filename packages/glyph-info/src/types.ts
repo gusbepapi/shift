@@ -95,9 +95,6 @@ export interface LanguageScript {
   languages: LanguageCoverage[];
 }
 
-/** Name of the category that lists constructed languages and their groups, whatever their script. */
-export const CONSTRUCTED_SCRIPT = "Constructed languages";
-
 /**
  * Scripts whose every group a font tracks until it chooses its own list. The picker adds any
  * other script.

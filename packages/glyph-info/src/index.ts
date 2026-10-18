@@ -24,12 +24,7 @@ export { defaultResources } from "./resources.js";
 /** The pre-built core resources alone, for apps that load component data later. */
 export { coreResources } from "./coreResources.js";
 
-export {
-  CONSTRUCTED_SCRIPT,
-  DEFAULT_SCRIPTS,
-  DEFAULT_LANGUAGE_IDS,
-  GLYPH_CATEGORIES,
-} from "./types.js";
+export { DEFAULT_SCRIPTS, DEFAULT_LANGUAGE_IDS, GLYPH_CATEGORIES } from "./types.js";
 
 /** Readers for groups a user defines, in Shift's JSON format or as a Glyphs `Groups.plist`. */
 export { parseCustomGroups, parseGlyphsGroupsPlist } from "./customGroups.js";
@@ -86,3 +81,4 @@ export type {
   SearchResult,
 } from "./types.js";
 export { EUROPEAN_LANGUAGE_CODES, isEuropeanLanguageId } from "./europeanLanguages.js";
+export { isConstructedLanguage } from "./languageKinds.js";

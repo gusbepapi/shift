@@ -1,6 +1,7 @@
 import MiniSearch from "minisearch";
 import { isEuropeanLanguageId } from "./europeanLanguages.js";
-import { CONSTRUCTED_SCRIPT, DEFAULT_SCRIPTS } from "./types.js";
+import { isConstructedLanguage } from "./languageKinds.js";
+import { DEFAULT_SCRIPTS } from "./types.js";
 import type {
   CharsetDefinition,
   CharsetSummary,
@@ -123,16 +124,6 @@ function toSortedCategorySummaries(
 
   summaries.sort((a, b) => a.category.localeCompare(b.category));
   return summaries;
-}
-
-/** Standard Moroccan Tamazight is standardised, not invented, though Hyperglot marks it constructed. */
-const STANDARDISED_LANGUAGE_CODES = new Set(["zgh"]);
-
-function isConstructed(language: Language): boolean {
-  return (
-    language.status === "constructed" &&
-    !STANDARDISED_LANGUAGE_CODES.has(language.id.split("-", 1)[0] ?? "")
-  );
 }
 
 /**
@@ -383,7 +374,7 @@ export class GlyphInfo {
    * alphabet, every constructed language and every European language of another script.
    */
   defaultTrackedLanguageIds(): string[] {
-    const scripts = new Set<string>([...DEFAULT_SCRIPTS, CONSTRUCTED_SCRIPT]);
+    const scripts = new Set<string>(DEFAULT_SCRIPTS);
     const basic = new Set(
       this.#groups.find(({ id }) => id === "group-latin-basic")?.baseCodepoints,
     );
@@ -397,7 +388,7 @@ export class GlyphInfo {
     const groupIds = this.#groups.filter(({ script }) => scripts.has(script)).map(({ id }) => id);
     const languageIds = this.#languages
       .filter((language) => {
-        if (isConstructed(language)) return language.orthography === "primary";
+        if (isConstructedLanguage(language)) return language.orthography === "primary";
         if (language.orthography !== "primary") return false;
         if (language.script === "Cyrillic") return true;
         if (language.script === "Latin") return basic.size === 0 || needsMoreThanBasic(language);
@@ -444,7 +435,7 @@ export class GlyphInfo {
       const required = new Set(language.baseCodepoints);
       requiredById.set(language.id, required);
 
-      scriptFor(isConstructed(language) ? CONSTRUCTED_SCRIPT : language.script).languages.push({
+      scriptFor(language.script).languages.push({
         language,
         presentCount: countPresent(required),
         requiredCount: required.size,

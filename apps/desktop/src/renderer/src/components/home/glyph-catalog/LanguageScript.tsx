@@ -1,7 +1,9 @@
-import { Fragment } from "react";
+import type { ReactNode } from "react";
 import {
-  CONSTRUCTED_SCRIPT,
+  isConstructedLanguage,
   isEuropeanLanguageId,
+  type LanguageCoverage,
+  type LanguageGroupCoverage,
   type LanguageScript as LanguageScriptGroup,
 } from "@shift/glyph-info";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@shift/ui";
@@ -28,18 +30,40 @@ export const LanguageScript = ({
   languageGlyphs,
   onGenerate,
 }: LanguageScriptProps) => {
-  const splitByRegion = group.script !== CONSTRUCTED_SCRIPT;
-  const european = splitByRegion
-    ? group.languages.filter(({ language }) => isEuropeanLanguageId(language.id))
-    : [];
-  const others = splitByRegion
-    ? group.languages.filter(({ language }) => !isEuropeanLanguageId(language.id))
-    : group.languages;
-  const sections = [
+  const row = (coverage: LanguageCoverage | LanguageGroupCoverage) => {
+    const id = "group" in coverage ? coverage.group.id : coverage.language.id;
+    return (
+      <Language
+        key={id}
+        coverage={coverage}
+        isActive={selectedLanguageId === id}
+        canGenerate={canGenerate}
+        onSelect={onSelectLanguage}
+        languageGlyphs={languageGlyphs}
+        onGenerate={onGenerate}
+      />
+    );
+  };
+
+  // Groups with a section, such as «Character Sets», fold together; the rest stand alone
+  const groupBlocks: { section: string | null; rows: LanguageGroupCoverage[] }[] = [];
+  for (const coverage of group.groups) {
+    const section = coverage.group.section;
+    const last = groupBlocks[groupBlocks.length - 1];
+    if (last && section !== null && last.section === section) last.rows.push(coverage);
+    else groupBlocks.push({ section, rows: [coverage] });
+  }
+
+  const constructed = group.languages.filter(({ language }) => isConstructedLanguage(language));
+  const natural = group.languages.filter(({ language }) => !isConstructedLanguage(language));
+  const european = natural.filter(({ language }) => isEuropeanLanguageId(language.id));
+  const others = natural.filter(({ language }) => !isEuropeanLanguageId(language.id));
+  const languageSections = [
     { label: "European languages", languages: european },
-    { label: splitByRegion ? "Other languages" : "Languages", languages: others },
+    { label: "Other languages", languages: others },
+    { label: "Constructed languages", languages: constructed },
   ].filter(({ languages }) => languages.length > 0);
-  const labelled = group.groups.length > 0 || sections.length > 1;
+  const labelled = group.groups.length > 0 || languageSections.length > 1;
 
   return (
     <Collapsible className="flex flex-col">
@@ -52,44 +76,41 @@ export const LanguageScript = ({
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <div className="flex flex-col gap-1 pt-1">
-          {group.groups.map((coverage, index) => (
-            <Fragment key={coverage.group.id}>
-              {coverage.group.section !== group.groups[index - 1]?.group.section &&
-              coverage.group.section !== null ? (
-                <SectionHeading label={coverage.group.section} />
-              ) : null}
-              <Language
-                coverage={coverage}
-                isActive={selectedLanguageId === coverage.group.id}
-                canGenerate={canGenerate}
-                onSelect={onSelectLanguage}
-                languageGlyphs={languageGlyphs}
-                onGenerate={onGenerate}
-              />
-            </Fragment>
-          ))}
-          {sections.map(({ label, languages }) => (
-            <Fragment key={label}>
-              {labelled ? <SectionHeading label={label} /> : null}
-              {languages.map((coverage) => (
-                <Language
-                  key={coverage.language.id}
-                  coverage={coverage}
-                  isActive={selectedLanguageId === coverage.language.id}
-                  canGenerate={canGenerate}
-                  onSelect={onSelectLanguage}
-                  languageGlyphs={languageGlyphs}
-                  onGenerate={onGenerate}
-                />
-              ))}
-            </Fragment>
-          ))}
+          {groupBlocks.map(({ section, rows }) =>
+            section === null ? (
+              rows.map(row)
+            ) : (
+              <Subsection key={`${section}-${rows[0]?.group.id}`} label={section}>
+                {rows.map(row)}
+              </Subsection>
+            ),
+          )}
+          {languageSections.map(({ label, languages }) =>
+            labelled ? (
+              <Subsection key={label} label={label}>
+                {languages.map(row)}
+              </Subsection>
+            ) : (
+              languages.map(row)
+            ),
+          )}
         </div>
       </CollapsiblePanel>
     </Collapsible>
   );
 };
 
-const SectionHeading = ({ label }: { label: string }) => (
-  <div className="truncate pl-7 pt-1 text-xs font-medium text-muted">{label}</div>
+/** A folder inside a script, closed until opened, such as «Romanization» or «European languages». */
+const Subsection = ({ label, children }: { label: string; children: ReactNode }) => (
+  <Collapsible className="flex flex-col">
+    <CollapsibleTrigger render={<SidebarRowButton />}>
+      <div className="flex min-w-0 items-center gap-1 pl-4">
+        <ChevronRightIcon className="h-3 w-3 shrink-0 transition-transform duration-175 group-data-[panel-open]:rotate-90 group-data-[panel-closed]:rotate-0" />
+        <span className="truncate">{label}</span>
+      </div>
+    </CollapsibleTrigger>
+    <CollapsiblePanel>
+      <div className="flex flex-col gap-1 pt-1">{children}</div>
+    </CollapsiblePanel>
+  </Collapsible>
 );

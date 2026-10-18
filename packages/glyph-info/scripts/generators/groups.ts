@@ -640,6 +640,7 @@ export function generateGroups(
             (glyph.codepoint >= 0x1d00 && glyph.codepoint <= 0x1dbf)),
       ),
     },
+    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
     {
       name: "Windows 1252",
       section: "Character Sets",
@@ -658,10 +659,6 @@ export function generateGroups(
       basis: "derived" as const,
       codepoints: [...codepointsOf(BASIC_LATIN_LETTERS), ...codepointsOf(characters)],
     })),
-  ]);
-
-  addScript("Constructed languages", [
-    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
   ]);
 
   addScript("Cyrillic", [

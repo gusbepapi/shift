@@ -7,6 +7,7 @@ import {
   type LanguageGroup,
 } from "./types.js";
 import { isEuropeanLanguageId } from "./europeanLanguages.js";
+import { isConstructedLanguage } from "./languageKinds.js";
 import { defaultResources } from "./resources.js";
 import { coreResources } from "./coreResources.js";
 import { componentResources } from "./componentResources.js";
@@ -535,12 +536,7 @@ describe("language coverage catalogs", () => {
     const basic = new Set(catalog.groupCoverage("group-latin-basic")?.group.baseCodepoints);
 
     expect(DEFAULT_SCRIPTS).toEqual(["Latin", "Cyrillic", "Greek"]);
-    expect(scripts.map(({ script }) => script)).toEqual([
-      "Constructed languages",
-      "Cyrillic",
-      "Greek",
-      "Latin",
-    ]);
+    expect(scripts.map(({ script }) => script)).toEqual(["Cyrillic", "Greek", "Latin"]);
     for (const script of scripts) {
       const all = catalog.scripts.find((entry) => entry.script === script.script);
       expect(script.groups.map(({ group }) => group.id)).toEqual(
@@ -555,6 +551,7 @@ describe("language coverage catalogs", () => {
     expect(latinIds.has("eng-latin")).toBe(false);
     expect(latinIds.has("xho-latin")).toBe(false);
     for (const { language } of latin?.languages ?? []) {
+      if (isConstructedLanguage(language)) continue;
       const extra = language.baseCodepoints.filter(
         (codepoint) => !basic.has(codepoint) && ![0xc6, 0xe6, 0x152, 0x153].includes(codepoint),
       );
@@ -585,19 +582,22 @@ describe("language coverage catalogs", () => {
     }
   });
 
-  it("lists constructed languages and Esperanto under their own category", () => {
+  it("keeps constructed languages in their script and Esperanto below IPA", () => {
     const catalog = db.createLanguageCatalog([]);
-    const constructed = catalog.scripts.find(({ script }) => script === "Constructed languages");
-    const names = constructed?.languages.map(({ language }) => language.name) ?? [];
+    const latin = catalog.scripts.find(({ script }) => script === "Latin");
+    const constructed = latin?.languages
+      .filter(({ language }) => isConstructedLanguage(language))
+      .map(({ language }) => language.name);
 
-    expect(names).toContain("Esperanto");
-    expect(names).toContain("Klingon");
-    expect(names).not.toContain("Standard Moroccan Tamazight");
-    expect(constructed?.groups.map(({ group }) => group.name)).toEqual(["Esperanto"]);
+    expect(constructed).toEqual(expect.arrayContaining(["Esperanto", "Klingon", "Ido"]));
+    expect(catalog.scripts.some(({ script }) => script === "Constructed languages")).toBe(false);
+
+    const names = latin?.groups.map(({ group }) => group.name) ?? [];
+    expect(names.indexOf("Esperanto")).toBe(names.indexOf("IPA") + 1);
     expect(
       catalog.scripts
-        .find(({ script }) => script === "Latin")
-        ?.languages.some(({ language }) => language.id === "epo-latin"),
+        .find(({ script }) => script === "Tifinagh")
+        ?.languages.some(({ language }) => isConstructedLanguage(language)),
     ).toBe(false);
   });
 
