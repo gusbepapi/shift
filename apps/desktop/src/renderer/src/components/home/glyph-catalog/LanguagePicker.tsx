@@ -27,9 +27,17 @@ export interface LanguagePickerProps {
   onApply: (languageIds: readonly string[]) => void;
 }
 
+/** Identifiers of every group and language listed under a script. */
+function scriptEntryIds(script: LanguageScript): string[] {
+  return [
+    ...script.groups.map(({ group }) => group.id),
+    ...script.languages.map(({ language }) => language.id),
+  ];
+}
+
 /**
  * Chooses which scripts the sidebar tracks; ticking a script tracks all of its
- * languages. Shift-click applies the clicked row's new state to the range from
+ * groups and languages. Shift-click applies the clicked row's new state to the range from
  * the last clicked row.
  */
 export const LanguagePicker = ({
@@ -66,9 +74,9 @@ export const LanguagePicker = ({
     setCheckedIds((previous) => {
       const next = new Set(previous);
       for (const script of affected) {
-        for (const { language } of script.languages) {
-          if (checked) next.add(language.id);
-          else next.delete(language.id);
+        for (const languageId of scriptEntryIds(script)) {
+          if (checked) next.add(languageId);
+          else next.delete(languageId);
         }
       }
       return next;
@@ -139,10 +147,11 @@ export const LanguagePicker = ({
                 <div className="px-1 py-4 text-center text-ui text-muted">No scripts found</div>
               ) : (
                 visibleScripts.map((script) => {
-                  const trackedCount = script.languages.filter(({ language }) =>
-                    checkedIds.has(language.id),
+                  const trackedCount = scriptEntryIds(script).filter((languageId) =>
+                    checkedIds.has(languageId),
                   ).length;
-                  const supportedCount = script.languages.filter(
+                  const entries = [...script.groups, ...script.languages];
+                  const supportedCount = entries.filter(
                     ({ presentCount, requiredCount }) => presentCount === requiredCount,
                   ).length;
 
@@ -150,7 +159,7 @@ export const LanguagePicker = ({
                     <label
                       key={script.script}
                       className="flex cursor-pointer select-none items-center gap-2 rounded px-1 py-1.5 text-ui text-primary hover:bg-hover"
-                      title={`${supportedCount} of ${script.languages.length} languages fully supported`}
+                      title={`${supportedCount} of ${entries.length} groups and languages fully supported`}
                       onMouseDown={onMouseDown}
                     >
                       <Checkbox

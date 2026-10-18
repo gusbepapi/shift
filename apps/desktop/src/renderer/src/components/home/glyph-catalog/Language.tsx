@@ -1,11 +1,16 @@
 import { useRef, useState } from "react";
-import type { Language as LanguageEntry, LanguageCoverage } from "@shift/glyph-info";
+import type {
+  Language as LanguageEntry,
+  LanguageCoverage,
+  LanguageGroup,
+  LanguageGroupCoverage,
+} from "@shift/glyph-info";
 import { SidebarRowButton } from "@/components/sidebar";
 import type { LanguageGlyph } from "@/types/glyphCatalog";
 import { MissingGlyphsPopover } from "./MissingGlyphsPopover";
 
 export interface LanguageProps {
-  coverage: LanguageCoverage;
+  coverage: LanguageCoverage | LanguageGroupCoverage;
   isActive: boolean;
   canGenerate: boolean;
   onSelect: (languageId: string) => void;
@@ -21,7 +26,10 @@ export const Language = ({
   languageGlyphs,
   onGenerate,
 }: LanguageProps) => {
-  const { language, presentCount, requiredCount } = coverage;
+  const { presentCount, requiredCount } = coverage;
+  const entry = "group" in coverage ? coverage.group : coverage.language;
+  const title = "group" in coverage ? groupTitle(coverage.group) : languageTitle(coverage.language);
+  const complete = "group" in coverage && requiredCount > 0 && presentCount === requiredCount;
   const rowRef = useRef<HTMLButtonElement>(null);
   const [glyphs, setGlyphs] = useState<LanguageGlyph[] | null>(null);
 
@@ -30,21 +38,21 @@ export const Language = ({
       <SidebarRowButton
         ref={rowRef}
         isActive={isActive}
-        onClick={() => onSelect(language.id)}
+        onClick={() => onSelect(entry.id)}
         onContextMenu={(event) => {
           event.preventDefault();
-          setGlyphs(languageGlyphs(language.id));
+          setGlyphs(languageGlyphs(entry.id));
         }}
-        title={languageTitle(language)}
+        title={title}
       >
-        <span className="min-w-0 flex-1 truncate pl-5 text-left">{language.name}</span>
+        <span className="min-w-0 flex-1 truncate pl-5 text-left">{entry.name}</span>
         <span className="shrink-0 text-xs">
-          {presentCount}/{requiredCount}
+          {complete ? "✓" : `${presentCount}/${requiredCount}`}
         </span>
       </SidebarRowButton>
       <MissingGlyphsPopover
         anchor={rowRef}
-        languageName={language.name}
+        languageName={entry.name}
         glyphs={glyphs}
         canGenerate={canGenerate}
         onClose={() => setGlyphs(null)}
@@ -64,4 +72,11 @@ export function languageTitle(language: LanguageEntry): string | undefined {
 
   const parts = language.autonym === null ? qualifiers : [language.autonym, ...qualifiers];
   return parts.length === 0 ? undefined : parts.join(" · ");
+}
+
+/** Tooltip text of a group, saying whether its characters are published or derived. */
+export function groupTitle(group: LanguageGroup): string {
+  return group.basis === "exact"
+    ? "Published character set"
+    : "Derived from Hyperglot and GlyphData";
 }

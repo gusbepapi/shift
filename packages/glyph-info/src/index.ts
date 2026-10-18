@@ -66,6 +66,10 @@ export type {
   LanguageValidity,
   /** Reports coverage of one language orthography within a font. */
   LanguageCoverage,
+  /** A Glyphs-style named character set listed under a script. */
+  LanguageGroup,
+  /** Reports coverage of one group within a font. */
+  LanguageGroupCoverage,
   /** Groups language coverage entries sharing a script. */
   LanguageScript,
   /** A single hit from `GlyphInfo.search()`, ranked by relevance. */

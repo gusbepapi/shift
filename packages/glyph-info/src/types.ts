@@ -64,8 +64,31 @@ export interface LanguageCoverage {
   requiredCount: number;
 }
 
+/**
+ * A named set of characters listed under a script, in the manner of the Glyphs
+ * sidebar, for example «Western European» under Latin.
+ */
+export interface LanguageGroup {
+  id: string;
+  name: string;
+  script: string;
+  /** Heading the group sits under inside its script, for example «Character Sets»; `null` for none. */
+  section: string | null;
+  baseCodepoints: number[];
+  /** `exact` for a published encoding, `derived` for a set assembled from Hyperglot or GlyphData. */
+  basis: "exact" | "derived";
+}
+
+export interface LanguageGroupCoverage {
+  group: LanguageGroup;
+  presentCount: number;
+  requiredCount: number;
+}
+
 export interface LanguageScript {
   script: string;
+  /** Glyphs-style groups, in their declared order. */
+  groups: LanguageGroupCoverage[];
   languages: LanguageCoverage[];
 }
 
@@ -89,13 +112,15 @@ export const DEFAULT_LANGUAGE_IDS = [
 export interface LanguageCatalog {
   /** Every known language, grouped by script. */
   scripts: LanguageScript[];
-  /** Returns the font's codepoints that the language requires, in input order. */
+  /** Returns the font's codepoints that the language or group requires, in input order. */
   filter(languageId: string): number[];
   /** Returns coverage for one language, or `null` for an unknown id. */
   coverage(languageId: string): LanguageCoverage | null;
-  /** Returns every codepoint the language requires, ascending. */
+  /** Returns coverage for one group, or `null` for an unknown id. */
+  groupCoverage(groupId: string): LanguageGroupCoverage | null;
+  /** Returns every codepoint the language or group requires, ascending. */
   required(languageId: string): number[];
-  /** Groups the given languages by script, skipping unknown ids. */
+  /** Groups the given languages and groups by script, skipping unknown ids. */
   scriptsFor(languageIds: readonly string[]): LanguageScript[];
 }
 
@@ -158,6 +183,7 @@ export interface GlyphInfoCoreResources {
   glyphData: Glyph[];
   charsets: CharsetDefinition[];
   languages: Language[];
+  groups: LanguageGroup[];
 }
 
 /**

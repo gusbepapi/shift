@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
-  DEFAULT_LANGUAGE_IDS,
   type GlyphCategory,
   type GlyphCategoryCatalog,
   type LanguageCatalog,
@@ -75,7 +74,8 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   const storedLanguageIds = useSignalState(
     workspace ? workspace.editor.font.languageIdsCell : NO_LANGUAGE_IDS,
   );
-  const trackedLanguageIds = storedLanguageIds ?? DEFAULT_LANGUAGE_IDS;
+  const defaultLanguageIds = useMemo(() => glyphInfo.defaultTrackedLanguageIds(), [glyphInfo]);
+  const trackedLanguageIds = storedLanguageIds ?? defaultLanguageIds;
   const location = useSignalState(catalog.locationCell);
   const axes = useSignalState(catalog.axesCell);
   const metrics = useSignalState(catalog.metricsCell);

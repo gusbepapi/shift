@@ -1,4 +1,5 @@
 import MiniSearch from "minisearch";
+import { DEFAULT_LANGUAGE_IDS } from "./types.js";
 import type {
   CharsetDefinition,
   CharsetSummary,
@@ -14,6 +15,7 @@ import type {
   GlyphInfoResources,
   Language,
   LanguageCatalog,
+  LanguageGroup,
   LanguageScript,
   SearchResult,
 } from "./types.js";
@@ -137,6 +139,7 @@ export class GlyphInfo {
   #usedBy: Map<number, number[]>;
   #charsets: CharsetDefinition[];
   #languages: Language[];
+  #groups: LanguageGroup[];
   #searchData: Record<string, unknown>[] = [];
   #searchIndex: MiniSearch | null = null;
   #hasComponentResources = false;
@@ -167,6 +170,7 @@ export class GlyphInfo {
     this.#usedBy = new Map();
     this.#charsets = resources.charsets;
     this.#languages = resources.languages;
+    this.#groups = resources.groups;
     if ("searchData" in resources) this.addResources(resources);
   }
 
@@ -347,6 +351,14 @@ export class GlyphInfo {
   // --- Languages ---
 
   /**
+   * Identifiers a font tracks until it chooses its own: every group of every
+   * script, as the Glyphs sidebar lists them, followed by the default languages.
+   */
+  defaultTrackedLanguageIds(): string[] {
+    return [...this.#groups.map(({ id }) => id), ...DEFAULT_LANGUAGE_IDS];
+  }
+
+  /**
    * Builds language coverage grouped by script for a font's encoded repertoire.
    *
    * @param codepoints - Unicode values encoded by the font; duplicates do not increase coverage.
@@ -355,26 +367,42 @@ export class GlyphInfo {
   createLanguageCatalog(codepoints: number[]): LanguageCatalog {
     const available = new Set(codepoints);
     const scripts = new Map<string, LanguageScript>();
-    const languagesById = new Map<string, Set<number>>();
+    const requiredById = new Map<string, Set<number>>();
 
-    for (const language of this.#languages) {
-      const required = new Set(language.baseCodepoints);
-      languagesById.set(language.id, required);
-
-      let script = scripts.get(language.script);
+    const scriptFor = (name: string): LanguageScript => {
+      let script = scripts.get(name);
       if (!script) {
-        script = { script: language.script, languages: [] };
-        scripts.set(language.script, script);
+        script = { script: name, groups: [], languages: [] };
+        scripts.set(name, script);
       }
-
+      return script;
+    };
+    const countPresent = (required: ReadonlySet<number>): number => {
       let presentCount = 0;
       for (const codepoint of required) {
         if (available.has(codepoint)) presentCount += 1;
       }
+      return presentCount;
+    };
 
-      script.languages.push({
+    for (const language of this.#languages) {
+      const required = new Set(language.baseCodepoints);
+      requiredById.set(language.id, required);
+
+      scriptFor(language.script).languages.push({
         language,
-        presentCount,
+        presentCount: countPresent(required),
+        requiredCount: required.size,
+      });
+    }
+
+    for (const group of this.#groups) {
+      const required = new Set(group.baseCodepoints);
+      requiredById.set(group.id, required);
+
+      scriptFor(group.script).groups.push({
+        group,
+        presentCount: countPresent(required),
         requiredCount: required.size,
       });
     }
@@ -395,24 +423,33 @@ export class GlyphInfo {
         script.languages.map((coverage) => [coverage.language.id, coverage] as const),
       ),
     );
+    const groupCoverageById = new Map(
+      sortedScripts.flatMap((script) =>
+        script.groups.map((coverage) => [coverage.group.id, coverage] as const),
+      ),
+    );
 
     return {
       scripts: sortedScripts,
       filter: (languageId) => {
-        const required = languagesById.get(languageId);
+        const required = requiredById.get(languageId);
         if (!required) return [];
 
         return codepoints.filter((codepoint) => required.has(codepoint));
       },
       coverage: (languageId) => coverageById.get(languageId) ?? null,
+      groupCoverage: (groupId) => groupCoverageById.get(groupId) ?? null,
       required: (languageId) =>
-        [...(languagesById.get(languageId) ?? [])].sort((left, right) => left - right),
+        [...(requiredById.get(languageId) ?? [])].sort((left, right) => left - right),
       scriptsFor: (languageIds) => {
         const tracked = new Set(languageIds);
 
         return sortedScripts.flatMap((script) => {
+          const groups = script.groups.filter(({ group }) => tracked.has(group.id));
           const languages = script.languages.filter(({ language }) => tracked.has(language.id));
-          return languages.length === 0 ? [] : [{ script: script.script, languages }];
+          if (groups.length === 0 && languages.length === 0) return [];
+
+          return [{ script: script.script, groups, languages }];
         });
       },
     };

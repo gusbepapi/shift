@@ -472,6 +472,65 @@ describe("language coverage catalogs", () => {
     }
   });
 
+  it("lists Glyphs-style groups under their scripts in declared order", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const latin = catalog.scripts.find((script) => script.script === "Latin");
+    const names = latin?.groups.map(({ group }) => group.name);
+
+    expect(names?.slice(0, 3)).toEqual(["Basic", "Western European", "Central European"]);
+    expect(names).toContain("Pan African");
+    expect(names).toContain("Windows 1252");
+  });
+
+  it("builds the Windows 1252 character set exactly", () => {
+    const catalog = db.createLanguageCatalog([0x20ac, 0x41]);
+    const windows = catalog.groupCoverage("group-latin-windows-1252");
+
+    expect(windows?.group.section).toBe("Character Sets");
+    expect(windows?.group.basis).toBe("exact");
+    expect(windows?.requiredCount).toBe(218);
+    expect(windows?.presentCount).toBe(2);
+    expect(catalog.required("group-latin-windows-1252")).toContain(0x20ac);
+    expect(catalog.required("group-latin-windows-1252")).not.toContain(0x81);
+  });
+
+  it("covers the scripts of the Glyphs sidebar that Hyperglot lacks", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const scripts = catalog.scripts.map(({ script }) => script);
+
+    for (const script of ["Adlam", "Brahmi", "Braille", "Kawi", "Ogham", "Runes", "Yezidi"]) {
+      expect(scripts).toContain(script);
+    }
+  });
+
+  it("filters the font repertoire by a group", () => {
+    const catalog = db.createLanguageCatalog([0x42, 0x24, 0x41]);
+
+    expect(catalog.filter("group-latin-basic")).toEqual([0x42, 0x41]);
+    expect(catalog.groupCoverage("unknown-group")).toBeNull();
+  });
+
+  it("keeps group identifiers unique and apart from language identifiers", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const identifiers = catalog.scripts.flatMap((script) => [
+      ...script.groups.map(({ group }) => group.id),
+      ...script.languages.map(({ language }) => language.id),
+    ]);
+
+    expect(new Set(identifiers).size).toBe(identifiers.length);
+  });
+
+  it("tracks every group and the default languages until a font chooses its own", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const tracked = db.defaultTrackedLanguageIds();
+    const scripts = catalog.scriptsFor(tracked);
+
+    expect(tracked).toContain("fra-latin");
+    expect(tracked).toContain("group-cyrillic-ukrainian");
+    expect(scripts.find(({ script }) => script === "Latin")?.groups.length).toBeGreaterThan(10);
+    expect(scripts.find(({ script }) => script === "Runes")?.languages).toEqual([]);
+  });
+
   it("sorts scripts and languages alphabetically", () => {
     const catalog = db.createLanguageCatalog([]);
     const scripts = catalog.scripts.map(({ script }) => script);

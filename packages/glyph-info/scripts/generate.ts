@@ -5,6 +5,7 @@ import { generateGlyph } from "./generators/glyphData.js";
 import { generateDecomposition } from "./generators/decomposition.js";
 import { generateCharsets } from "./generators/charsets.js";
 import { generateLanguages } from "./generators/languages.js";
+import { generateGroups } from "./generators/groups.js";
 import { generateSearchIndex } from "./generators/search.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +55,12 @@ function generate() {
   const languageCount = generateLanguages(HYPERGLOT_DIR, languagesPath);
   console.log(`  languages.json: ${languageCount} languages (${formatSize(languagesPath)})`);
 
-  // Step 5: search-data.json (depends on glyph-data.json)
+  // Step 5: groups.json (depends on languages.json and glyph-data.json)
+  const groupsPath = join(RESOURCES_DIR, "groups.json");
+  const groupCount = generateGroups(languagesPath, glyphDataPath, groupsPath);
+  console.log(`  groups.json: ${groupCount} groups (${formatSize(groupsPath)})`);
+
+  // Step 6: search-data.json (depends on glyph-data.json)
   const searchDataPath = join(RESOURCES_DIR, "search-data.json");
   const searchCount = generateSearchIndex(glyphDataPath, searchDataPath);
   console.log(`  search-data.json: ${searchCount} entries (${formatSize(searchDataPath)})`);
