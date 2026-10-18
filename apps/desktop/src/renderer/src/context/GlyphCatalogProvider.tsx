@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   type GlyphCategory,
@@ -6,10 +14,13 @@ import {
   type LanguageCatalog,
 } from "@shift/glyph-info";
 import type { GlyphName } from "@shift/types";
+import type { LanguageGroupFile } from "@shared/config/config";
 import { effect, signal, useSignalState } from "@shift/editor/signals";
 import { editorPath, glyphIdFromPath } from "@/lib/editorRoute";
 import { useFontSession } from "@/workspace/WorkspaceContext";
+import { readCustomLanguageGroups } from "@/lib/catalog/customLanguageGroups";
 import { getGlyphInfo } from "@/workspace/glyphInfo";
+import { ThemeContext } from "./ThemeContext";
 import { useListSelection } from "@/hooks/useListSelection";
 import { LatestRequest } from "@shift/editor";
 import { GlyphCatalogContext, OpenedGlyphContext, useGlyphCatalog } from "./GlyphCatalogContext";
@@ -19,6 +30,7 @@ import type {
   GlyphCategoryFilter,
 } from "@/types/glyphCatalog";
 
+const NO_LANGUAGE_GROUP_FILES: readonly LanguageGroupFile[] = [];
 const NO_LANGUAGE_IDS = signal<readonly string[] | null>(null, {
   name: "glyphCatalog.previewLanguageIds",
 });
@@ -74,6 +86,13 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   const storedLanguageIds = useSignalState(
     workspace ? workspace.editor.font.languageIdsCell : NO_LANGUAGE_IDS,
   );
+  const languageGroupFiles =
+    useContext(ThemeContext)?.config?.languageGroups ?? NO_LANGUAGE_GROUP_FILES;
+  const customLanguageGroups = useMemo(() => {
+    const { groups, problems } = readCustomLanguageGroups(glyphInfo, languageGroupFiles);
+    for (const problem of problems) console.warn(`language-groups/${problem}`);
+    return groups;
+  }, [glyphInfo, languageGroupFiles]);
   const defaultLanguageIds = useMemo(() => glyphInfo.defaultTrackedLanguageIds(), [glyphInfo]);
   const trackedLanguageIds = storedLanguageIds ?? defaultLanguageIds;
   const location = useSignalState(catalog.locationCell);
@@ -117,8 +136,8 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
     [availableUnicodes, glyphInfo],
   );
   const languageCatalog = useMemo<LanguageCatalog>(
-    () => glyphInfo.createLanguageCatalog(availableUnicodes),
-    [availableUnicodes, glyphInfo],
+    () => glyphInfo.createLanguageCatalog(availableUnicodes, customLanguageGroups),
+    [availableUnicodes, customLanguageGroups, glyphInfo],
   );
   const languageScripts = useMemo(
     () => languageCatalog.scriptsFor(trackedLanguageIds),

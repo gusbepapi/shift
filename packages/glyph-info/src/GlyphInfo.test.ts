@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { GlyphInfo } from "./GlyphInfo.js";
-import { DEFAULT_GROUP_IDS, DEFAULT_LANGUAGE_IDS, type GlyphCategory } from "./types.js";
+import {
+  DEFAULT_GROUP_IDS,
+  DEFAULT_LANGUAGE_IDS,
+  type GlyphCategory,
+  type LanguageGroup,
+} from "./types.js";
 import { defaultResources } from "./resources.js";
 import { coreResources } from "./coreResources.js";
 import { componentResources } from "./componentResources.js";
@@ -534,28 +539,39 @@ describe("language coverage catalogs", () => {
     expect(scripts.every(({ languages }) => languages.length === 0)).toBe(true);
   });
 
-  it("adds custom groups after the built-in groups of their script", () => {
-    const custom = new GlyphInfo({
-      ...defaultResources,
-      groups: [],
-    });
-    custom.addGroups([
-      {
-        id: "custom-klingon-letters",
-        name: "Letters",
-        script: "Klingon",
-        section: null,
-        baseCodepoints: [0xf8d0, 0xf8d1],
-        basis: "custom",
-      },
-    ]);
-
-    const catalog = custom.createLanguageCatalog([0xf8d0]);
+  it("lists custom groups after the built-in groups of their script", () => {
+    const custom: LanguageGroup = {
+      id: "custom-klingon-letters",
+      name: "Letters",
+      script: "Klingon",
+      section: null,
+      baseCodepoints: [0xf8d0, 0xf8d1],
+      basis: "custom",
+    };
+    const catalog = db.createLanguageCatalog([0xf8d0], [custom]);
     const klingon = catalog.scripts.find(({ script }) => script === "Klingon");
 
     expect(klingon?.groups[0]?.presentCount).toBe(1);
     expect(klingon?.groups[0]?.requiredCount).toBe(2);
     expect(catalog.filter("custom-klingon-letters")).toEqual([0xf8d0]);
+    expect(catalog.scriptsFor(["custom-klingon-letters"]).map(({ script }) => script)).toEqual([
+      "Klingon",
+    ]);
+  });
+
+  it("lets a custom group replace a built-in group with the same identifier", () => {
+    const replacement: LanguageGroup = {
+      id: "group-latin-basic",
+      name: "Basic",
+      script: "Latin",
+      section: null,
+      baseCodepoints: [0x41],
+      basis: "custom",
+    };
+    const catalog = db.createLanguageCatalog([0x41], [replacement]);
+
+    expect(catalog.required("group-latin-basic")).toEqual([0x41]);
+    expect(catalog.groupCoverage("group-latin-basic")?.group.basis).toBe("custom");
   });
 
   it("finds the codepoint of a glyph name, production name, or alias", () => {

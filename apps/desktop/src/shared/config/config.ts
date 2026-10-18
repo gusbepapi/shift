@@ -33,6 +33,22 @@ export interface ThemeFileState {
   problems: ConfigProblem[];
 }
 
+/**
+ * One file of custom language groups in the config folder's `language-groups/`: Shift's JSON
+ * format, or a Glyphs `Groups.plist`.
+ *
+ * @remarks
+ * Main reads the text and the renderer parses it, because only the renderer holds the glyph
+ * database that resolves names such as `aacute`.
+ */
+export interface LanguageGroupFile {
+  /** The file name, such as `klingon.json`. */
+  name: string;
+  path: string;
+  format: "json" | "plist";
+  text: string;
+}
+
 /** What main read from `config.toml` itself. */
 export interface ConfigFileState {
   /** This build's config folder, such as `~/.config/shift`. */
@@ -58,4 +74,6 @@ export interface AppConfigState extends ConfigFileState {
   themes: ThemeFileState[];
   /** Read-only themes shipped with Shift, ordered by id; read once at startup. */
   bundledThemes: ThemeFileState[];
+  /** Custom language group files in `language-groups/`, ordered by name. */
+  languageGroups: LanguageGroupFile[];
 }

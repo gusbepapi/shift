@@ -57,8 +57,43 @@ describe("AppConfig", () => {
       problems: [],
       themes: [],
       bundledThemes: [],
+      languageGroups: [],
     });
     expect(fs.existsSync(path.join(directory, "config.toml"))).toBe(false);
+  });
+
+  it("reads custom language group files and ignores other files", () => {
+    const folder = path.join(directory, "language-groups");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "b-glyphs.PLIST"), "{ languages = (); }");
+    fs.writeFileSync(path.join(folder, "a-klingon.json"), '{"scripts":[]}');
+    fs.writeFileSync(path.join(folder, "notes.txt"), "not a groups file");
+
+    expect(open().state.languageGroups).toEqual([
+      {
+        name: "a-klingon.json",
+        path: path.join(folder, "a-klingon.json"),
+        format: "json",
+        text: '{"scripts":[]}',
+      },
+      {
+        name: "b-glyphs.PLIST",
+        path: path.join(folder, "b-glyphs.PLIST"),
+        format: "plist",
+        text: "{ languages = (); }",
+      },
+    ]);
+  });
+
+  it("publishes a language group file that another program adds", async () => {
+    const appConfig = open();
+    const published = new Promise<AppConfigState>((resolve) => appConfig.onChanged(resolve));
+    await appConfig.watch();
+
+    fs.writeFileSync(path.join(directory, "language-groups", "extra.json"), '{"scripts":[]}');
+
+    const state = await published;
+    expect(state.languageGroups.map(({ name }) => name)).toEqual(["extra.json"]);
   });
 
   it("reads the theme from config.toml", () => {

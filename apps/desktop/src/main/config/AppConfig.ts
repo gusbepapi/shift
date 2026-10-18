@@ -10,6 +10,7 @@ import type {
 } from "../../shared/config/config";
 import type { ShiftLogger } from "../logging";
 import { readConfig, setConfigTheme, type ConfigValues } from "./configToml";
+import { LANGUAGE_GROUPS_FOLDER_NAME, readLanguageGroupFiles } from "./languageGroupFiles";
 import { readThemeFiles, THEMES_FOLDER_NAME } from "./themeFiles";
 
 export const CONFIG_FILE_NAME = "config.toml";
@@ -43,6 +44,7 @@ export class AppConfig {
   readonly #directory: string;
   readonly #filePath: string;
   readonly #themesDirectory: string;
+  readonly #languageGroupsDirectory: string;
   readonly #bundledThemes: ThemeFileState[];
   readonly #log: ShiftLogger;
   readonly #listeners = new Set<(state: AppConfigState) => void>();
@@ -56,6 +58,7 @@ export class AppConfig {
     this.#directory = options.directory;
     this.#filePath = path.join(options.directory, CONFIG_FILE_NAME);
     this.#themesDirectory = path.join(options.directory, THEMES_FOLDER_NAME);
+    this.#languageGroupsDirectory = path.join(options.directory, LANGUAGE_GROUPS_FOLDER_NAME);
     this.#log = options.log;
     this.#bundledThemes = options.bundledThemesDirectory
       ? this.#readThemeFolder(options.bundledThemesDirectory, new Map())
@@ -67,6 +70,7 @@ export class AppConfig {
       problems: [],
       themes: [],
       bundledThemes: this.#bundledThemes,
+      languageGroups: [],
     };
     this.#state = this.#read(EMPTY_VALUES);
   }
@@ -82,8 +86,8 @@ export class AppConfig {
   }
 
   /**
-   * Starts watching the config folder and its `themes/`, creating both so
-   * they can be watched.
+   * Starts watching the config folder, its `themes/`, and its `language-groups/`,
+   * creating them so they can be watched.
    *
    * @remarks
    * Watching folders rather than files sees an editor's save-by-rename and edits
@@ -99,19 +103,21 @@ export class AppConfig {
     if (this.#watcher) return Promise.resolve();
     try {
       fs.mkdirSync(this.#themesDirectory, { recursive: true });
+      fs.mkdirSync(this.#languageGroupsDirectory, { recursive: true });
     } catch (error) {
       this.#log.warn("cannot create config folder", { directory: this.#directory, error });
       return Promise.resolve();
     }
     this.#symlinkTarget = this.#readSymlinkTarget();
-    const folders = [this.#directory, this.#themesDirectory];
+    const folders = [this.#directory, this.#themesDirectory, this.#languageGroupsDirectory];
     if (this.#symlinkTarget) folders.push(path.dirname(this.#symlinkTarget));
     const watcher = watch(folders, { ignoreInitial: true, depth: 0, followSymlinks: false })
       .on("all", (_event, changedPath) => {
         if (
           changedPath === this.#filePath ||
           changedPath === this.#symlinkTarget ||
-          path.dirname(changedPath) === this.#themesDirectory
+          path.dirname(changedPath) === this.#themesDirectory ||
+          path.dirname(changedPath) === this.#languageGroupsDirectory
         ) {
           this.reload();
         }
@@ -172,7 +178,21 @@ export class AppConfig {
       ...this.#readConfigFile(lastValid),
       themes: this.#readThemes(),
       bundledThemes: this.#bundledThemes,
+      languageGroups: this.#readLanguageGroups(),
     };
+  }
+
+  /** Reads the custom language group files, keeping the last read when the folder cannot be read. */
+  #readLanguageGroups(): AppConfigState["languageGroups"] {
+    try {
+      return readLanguageGroupFiles(this.#languageGroupsDirectory);
+    } catch (error) {
+      this.#log.warn("cannot read language groups folder", {
+        folder: this.#languageGroupsDirectory,
+        error,
+      });
+      return this.#state.languageGroups;
+    }
   }
 
   #readThemes(): ThemeFileState[] {

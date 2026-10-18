@@ -369,22 +369,17 @@ export class GlyphInfo {
   }
 
   /**
-   * Adds groups the user defined, replacing earlier groups with the same identifier.
-   *
-   * @param groups - Groups in their declared order; they list after the built-in groups of their script.
-   */
-  addGroups(groups: readonly LanguageGroup[]): void {
-    const replaced = new Set(groups.map(({ id }) => id));
-    this.#groups = [...this.#groups.filter(({ id }) => !replaced.has(id)), ...groups];
-  }
-
-  /**
    * Builds language coverage grouped by script for a font's encoded repertoire.
    *
    * @param codepoints - Unicode values encoded by the font; duplicates do not increase coverage.
+   * @param customGroups - Groups the user defined; they list after the built-in groups of their
+   * script and replace a built-in group with the same identifier.
    * @returns A reusable catalog whose filter preserves the input codepoint order.
    */
-  createLanguageCatalog(codepoints: number[]): LanguageCatalog {
+  createLanguageCatalog(
+    codepoints: number[],
+    customGroups: readonly LanguageGroup[] = [],
+  ): LanguageCatalog {
     const available = new Set(codepoints);
     const scripts = new Map<string, LanguageScript>();
     const requiredById = new Map<string, Set<number>>();
@@ -416,7 +411,9 @@ export class GlyphInfo {
       });
     }
 
-    for (const group of this.#groups) {
+    const replaced = new Set(customGroups.map(({ id }) => id));
+    const allGroups = [...this.#groups.filter(({ id }) => !replaced.has(id)), ...customGroups];
+    for (const group of allGroups) {
       const required = new Set(group.baseCodepoints);
       requiredById.set(group.id, required);
 
