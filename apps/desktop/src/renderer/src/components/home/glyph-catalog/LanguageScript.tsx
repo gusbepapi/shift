@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import {
-  DEFAULT_SCRIPTS,
+  CONSTRUCTED_SCRIPT,
   isEuropeanLanguageId,
   type LanguageScript as LanguageScriptGroup,
 } from "@shift/glyph-info";
@@ -28,17 +28,21 @@ export const LanguageScript = ({
   languageGlyphs,
   onGenerate,
 }: LanguageScriptProps) => {
-  const european = group.languages.filter(({ language }) => isEuropeanLanguageId(language.id));
-  const others = group.languages.filter(({ language }) => !isEuropeanLanguageId(language.id));
+  const splitByRegion = group.script !== CONSTRUCTED_SCRIPT;
+  const european = splitByRegion
+    ? group.languages.filter(({ language }) => isEuropeanLanguageId(language.id))
+    : [];
+  const others = splitByRegion
+    ? group.languages.filter(({ language }) => !isEuropeanLanguageId(language.id))
+    : group.languages;
   const sections = [
     { label: "European languages", languages: european },
-    { label: "Other languages", languages: others },
+    { label: splitByRegion ? "Other languages" : "Languages", languages: others },
   ].filter(({ languages }) => languages.length > 0);
   const labelled = group.groups.length > 0 || sections.length > 1;
-  const defaultOpen = (DEFAULT_SCRIPTS as readonly string[]).includes(group.script);
 
   return (
-    <Collapsible className="flex flex-col" defaultOpen={defaultOpen}>
+    <Collapsible className="flex flex-col">
       <CollapsibleTrigger render={<SidebarRowButton />}>
         <div className="flex min-w-0 items-center gap-1">
           <ChevronRightIcon className="h-3 w-3 shrink-0 transition-transform duration-175 group-data-[panel-open]:rotate-90 group-data-[panel-closed]:rotate-0" />

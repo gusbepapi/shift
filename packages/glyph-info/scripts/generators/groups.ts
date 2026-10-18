@@ -99,7 +99,6 @@ const CATEGORY_SCRIPTS: readonly CategoryScript[] = [
   { script: "Khmer", glyphDataScripts: ["khmer"] },
   { script: "Lao", glyphDataScripts: ["lao"] },
   { script: "Malayalam", glyphDataScripts: ["malayalam"] },
-  { script: "Math", glyphDataScripts: ["math"] },
   { script: "New Tai Lue", glyphDataScripts: ["lue"] },
   { script: "N'Ko", glyphDataScripts: ["nko"] },
   { script: "Ogham", glyphDataScripts: ["ogham"] },
@@ -526,6 +525,45 @@ const LATIN_REGIONS: Readonly<Record<string, readonly string[]>> = {
   ],
 };
 
+const BASIC_LATIN_LETTERS =
+  "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z";
+
+/** Splits a space-separated list of characters into codepoints. */
+function codepointsOf(characters: string): number[] {
+  return characters
+    .split(" ")
+    .filter((character) => character !== "")
+    .map((character) => character.codePointAt(0) as number);
+}
+
+/**
+ * The characters each romanisation scheme adds to the basic Latin letters, as the schemes publish
+ * them; Glyphs' own membership may differ until its sidebar is dumped.
+ */
+const ROMANIZATIONS: readonly { name: string; characters: string }[] = [
+  {
+    name: "Pinyin",
+    characters:
+      "ā á ǎ à ē é ě è ī í ǐ ì ō ó ǒ ò ū ú ǔ ù ǖ ǘ ǚ ǜ ü Ā Á Ǎ À Ē É Ě È Ī Í Ǐ Ì Ō Ó Ǒ Ò Ū Ú Ǔ Ù Ǖ Ǘ Ǚ Ǜ Ü ê Ê ế Ế ề Ề ń ň ǹ Ń Ň Ǹ ḿ Ḿ ɑ ɡ ĉ ŝ ẑ Ĉ Ŝ Ẑ \u0300 \u0301 \u0302 \u0304 \u0308 \u030c",
+  },
+  {
+    name: "Arabic ALA-LC",
+    characters: "ā ī ū Ā Ī Ū ḍ ḥ ṣ ṭ ẓ Ḍ Ḥ Ṣ Ṭ Ẓ ʻ ʼ ʾ ʿ \u0304 \u0361",
+  },
+  {
+    name: "Arabic DMG",
+    characters: "ā ī ū Ā Ī Ū ḏ ṯ ḥ ḫ š ṣ ḍ ṭ ẓ ġ ǧ Ḏ Ṯ Ḥ Ḫ Š Ṣ Ḍ Ṭ Ẓ Ġ Ǧ ʾ ʿ",
+  },
+  {
+    name: "Arabic ISO 233",
+    characters: "ā ī ū ã Ā Ī Ū ḏ ṯ ḥ ḫ š ṣ ḍ ṭ ẓ ġ ǧ Ḏ Ṯ Ḥ Ḫ Š Ṣ Ḍ Ṭ Ẓ Ġ Ǧ ẗ ỳ ʾ ʿ",
+  },
+  {
+    name: "Sanskrit",
+    characters: "ā ī ū ṛ ṝ ḷ ḹ ṃ ṁ ḥ ṅ ñ ṭ ḍ ṇ ś ṣ ē ō ṟ ḻ ṉ Ā Ī Ū Ṛ Ṝ Ḷ Ḹ Ṃ Ṁ Ḥ Ṅ Ñ Ṭ Ḍ Ṇ Ś Ṣ",
+  },
+];
+
 const SAMI_CODES = ["sma", "sme", "smj", "smn", "sms", "sju", "sje"] as const;
 
 export function generateGroups(
@@ -592,7 +630,6 @@ export function generateGroups(
     ),
     { name: "Vietnamese", basis: "derived", codepoints: languageCodepoints("Latin", ["vie"]) },
     { name: "Sámi", basis: "derived", codepoints: languageCodepoints("Latin", SAMI_CODES) },
-    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
     {
       name: "IPA",
       basis: "derived",
@@ -615,6 +652,16 @@ export function generateGroups(
       basis: "exact",
       codepoints: decodeEncoding("macintosh"),
     },
+    ...ROMANIZATIONS.map(({ name, characters }) => ({
+      name,
+      section: "Romanization",
+      basis: "derived" as const,
+      codepoints: [...codepointsOf(BASIC_LATIN_LETTERS), ...codepointsOf(characters)],
+    })),
+  ]);
+
+  addScript("Constructed languages", [
+    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
   ]);
 
   addScript("Cyrillic", [
@@ -717,6 +764,31 @@ export function generateGroups(
       name: "Currency",
       basis: "derived",
       codepoints: glyphCodepoints((glyph) => glyph.subCategory === "Currency"),
+    },
+  ]);
+
+  const mathGlyphs = glyphs.filter((glyph) => glyph.script === "math");
+  addScript("Math", [
+    {
+      name: "Letters",
+      basis: "derived",
+      codepoints: mathGlyphs
+        .filter((glyph) => glyph.category === "Letter")
+        .map((glyph) => glyph.codepoint),
+    },
+    {
+      name: "Figures",
+      basis: "derived",
+      codepoints: mathGlyphs
+        .filter((glyph) => glyph.category === "Number")
+        .map((glyph) => glyph.codepoint),
+    },
+    {
+      name: "Punctuation and Symbols",
+      basis: "derived",
+      codepoints: mathGlyphs
+        .filter((glyph) => ["Punctuation", "Symbol", "Separator"].includes(glyph.category))
+        .map((glyph) => glyph.codepoint),
     },
   ]);
 

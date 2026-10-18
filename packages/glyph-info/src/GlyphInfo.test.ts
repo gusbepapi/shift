@@ -535,7 +535,12 @@ describe("language coverage catalogs", () => {
     const basic = new Set(catalog.groupCoverage("group-latin-basic")?.group.baseCodepoints);
 
     expect(DEFAULT_SCRIPTS).toEqual(["Latin", "Cyrillic", "Greek"]);
-    expect(scripts.map(({ script }) => script)).toEqual(["Cyrillic", "Greek", "Latin"]);
+    expect(scripts.map(({ script }) => script)).toEqual([
+      "Constructed languages",
+      "Cyrillic",
+      "Greek",
+      "Latin",
+    ]);
     for (const script of scripts) {
       const all = catalog.scripts.find((entry) => entry.script === script.script);
       expect(script.groups.map(({ group }) => group.id)).toEqual(
@@ -558,6 +563,80 @@ describe("language coverage catalogs", () => {
 
     const greek = scripts.find(({ script }) => script === "Greek");
     expect(greek?.languages.some(({ language }) => language.id === "ell-greek")).toBe(true);
+  });
+
+  it("tracks every Cyrillic language, including the non-Slavic ones", () => {
+    const tracked = new Set(db.defaultTrackedLanguageIds());
+    const catalog = db.createLanguageCatalog([]);
+    const cyrillic = catalog.scripts.find(({ script }) => script === "Cyrillic");
+
+    expect(cyrillic?.languages.length).toBeGreaterThan(80);
+    for (const { language } of cyrillic?.languages ?? []) {
+      if (language.orthography === "primary") expect(tracked.has(language.id)).toBe(true);
+    }
+    for (const id of [
+      "abk-cyrillic",
+      "che-cyrillic",
+      "kaz-cyrillic",
+      "oss-cyrillic",
+      "tgk-cyrillic",
+    ]) {
+      expect(tracked.has(id)).toBe(true);
+    }
+  });
+
+  it("lists constructed languages and Esperanto under their own category", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const constructed = catalog.scripts.find(({ script }) => script === "Constructed languages");
+    const names = constructed?.languages.map(({ language }) => language.name) ?? [];
+
+    expect(names).toContain("Esperanto");
+    expect(names).toContain("Klingon");
+    expect(names).not.toContain("Standard Moroccan Tamazight");
+    expect(constructed?.groups.map(({ group }) => group.name)).toEqual(["Esperanto"]);
+    expect(
+      catalog.scripts
+        .find(({ script }) => script === "Latin")
+        ?.languages.some(({ language }) => language.id === "epo-latin"),
+    ).toBe(false);
+  });
+
+  it("names the orthographies of one language apart", () => {
+    const catalog = db.createLanguageCatalog([]);
+    for (const script of catalog.scripts) {
+      const names = script.languages.map(({ language }) => language.name);
+      expect(new Set(names).size).toBe(names.length);
+    }
+    const georgian = catalog.scripts.find(({ script }) => script === "Georgian");
+    expect(georgian?.languages.map(({ language }) => language.name)).toEqual(
+      expect.arrayContaining([
+        "Georgian (Asomtavruli)",
+        "Georgian (Mkhedruli and Mtavruli)",
+        "Georgian (Nuskhuri)",
+      ]),
+    );
+  });
+
+  it("lists the romanisation groups under Latin and the merged Math group", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const latin = catalog.scripts.find(({ script }) => script === "Latin");
+    const romanization = latin?.groups
+      .filter(({ group }) => group.section === "Romanization")
+      .map(({ group }) => group.name);
+    expect(romanization).toEqual([
+      "Pinyin",
+      "Arabic ALA-LC",
+      "Arabic DMG",
+      "Arabic ISO 233",
+      "Sanskrit",
+    ]);
+
+    const math = catalog.scripts.find(({ script }) => script === "Math");
+    expect(math?.groups.map(({ group }) => group.name)).toEqual([
+      "Letters",
+      "Figures",
+      "Punctuation and Symbols",
+    ]);
   });
 
   it("recognises European languages by their ISO code", () => {

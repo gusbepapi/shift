@@ -91,6 +91,8 @@ export function generateLanguages(hyperglotPath: string, outputPath: string): nu
     }
   }
 
+  disambiguateNames(generated);
+
   generated.sort(
     (left, right) =>
       left.script.localeCompare(right.script) ||
@@ -223,4 +225,46 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+}
+
+const GEORGIAN_VARIANTS: readonly { name: string; test: (codepoint: number) => boolean }[] = [
+  { name: "Asomtavruli", test: (codepoint) => codepoint >= 0x10a0 && codepoint <= 0x10cd },
+  { name: "Nuskhuri", test: (codepoint) => codepoint >= 0x2d00 && codepoint <= 0x2d2d },
+];
+
+/**
+ * Gives each orthography of a script its own name when several share one.
+ *
+ * @remarks
+ * Hyperglot lists a language once per orthography, so Georgian would otherwise appear three times
+ * and Bassari twice. The autonym tells orthographies apart when they differ; Georgian is told
+ * apart by its historical alphabets; any other repeat is numbered.
+ */
+function disambiguateNames(languages: Language[]): void {
+  const sharing = new Map<string, Language[]>();
+  for (const language of languages) {
+    const key = `${language.script}\u0000${language.name}`;
+    sharing.set(key, [...(sharing.get(key) ?? []), language]);
+  }
+
+  for (const entries of sharing.values()) {
+    if (entries.length < 2) continue;
+
+    const autonyms = entries.map(({ autonym }) => autonym);
+    const autonymsTell =
+      autonyms.every((autonym) => autonym !== null) && new Set(autonyms).size === entries.length;
+
+    entries.forEach((language, index) => {
+      const variant = GEORGIAN_VARIANTS.find(({ test }) =>
+        language.baseCodepoints.every((codepoint) => test(codepoint)),
+      );
+      if (language.script === "Georgian") {
+        language.name = `${language.name} (${variant?.name ?? "Mkhedruli and Mtavruli"})`;
+      } else if (autonymsTell) {
+        language.name = `${language.name} (${language.autonym})`;
+      } else {
+        language.name = `${language.name} (${index + 1})`;
+      }
+    });
+  }
 }
