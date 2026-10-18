@@ -4,6 +4,7 @@ import { CONSTRUCTED_SCRIPT, DEFAULT_SCRIPTS } from "./types.js";
 import type {
   CharsetDefinition,
   CharsetSummary,
+  CustomCategory,
   GlyphCategory,
   GlyphCategoryCatalog,
   GlyphCategorySummary,
@@ -58,8 +59,10 @@ function resolveGlyphCategoryOptions(
 
 type GlyphCategoryEntry = {
   codepoint: number;
-  category: GlyphCategory;
+  category: string;
   subCategoryKey: string;
+  /** Set for a membership of a custom category, which a glyph holds besides its own category. */
+  overlay?: true;
 };
 
 type GlyphCategoryCountBucket = {
@@ -73,7 +76,7 @@ type GlyphCategoryCatalogIndex = {
 };
 
 function incrementCategoryCounts(
-  categoryCounts: Map<GlyphCategory, GlyphCategoryCountBucket>,
+  categoryCounts: Map<string, GlyphCategoryCountBucket>,
   categoryInfo: GlyphCodepointCategory,
 ): void {
   let categoryBucket = categoryCounts.get(categoryInfo.category);
@@ -96,7 +99,7 @@ function incrementCategoryCounts(
 }
 
 function toSortedCategorySummaries(
-  categoryCounts: Map<GlyphCategory, GlyphCategoryCountBucket>,
+  categoryCounts: Map<string, GlyphCategoryCountBucket>,
 ): GlyphCategorySummary[] {
   const summaries: GlyphCategorySummary[] = [];
 
@@ -295,13 +298,17 @@ export class GlyphInfo {
   /**
    * Build a reusable category catalog for a codepoint set.
    * The returned `filter()` uses MiniSearch for query matching and preserves input order.
+   *
+   * @param customCategories - Categories the user defined; a glyph in one also stays in its own
+   * category, and a custom category counts only the codepoints of the set.
    */
   createCategoryCatalog(
     codepoints: number[],
     options?: GlyphCategoryOptions,
+    customCategories: readonly CustomCategory[] = [],
   ): GlyphCategoryCatalog {
     const resolvedOptions = resolveGlyphCategoryOptions(options);
-    const data = this.#buildCategoryCatalogData(codepoints, resolvedOptions);
+    const data = this.#buildCategoryCatalogData(codepoints, resolvedOptions, customCategories);
 
     return {
       categories: data.categories,
@@ -564,8 +571,9 @@ export class GlyphInfo {
   #buildCategoryCatalogData(
     codepoints: number[],
     options: Required<GlyphCategoryOptions>,
+    customCategories: readonly CustomCategory[],
   ): GlyphCategoryCatalogIndex {
-    const categoryCounts = new Map<GlyphCategory, GlyphCategoryCountBucket>();
+    const categoryCounts = new Map<string, GlyphCategoryCountBucket>();
     const entries: GlyphCategoryEntry[] = [];
 
     for (const codepoint of codepoints) {
@@ -577,6 +585,28 @@ export class GlyphInfo {
       const { category, subCategoryKey } = categoryInfo;
       entries.push({ codepoint, category, subCategoryKey });
       incrementCategoryCounts(categoryCounts, categoryInfo);
+    }
+
+    const present = new Set(codepoints);
+    for (const custom of customCategories) {
+      for (const subCategory of custom.subCategories) {
+        for (const codepoint of subCategory.codepoints) {
+          if (!present.has(codepoint)) continue;
+
+          entries.push({
+            codepoint,
+            category: custom.name,
+            subCategoryKey: subCategory.name,
+            overlay: true,
+          });
+          incrementCategoryCounts(categoryCounts, {
+            category: custom.name,
+            subCategoryKey: subCategory.name,
+            subCategoryLabel: subCategory.name,
+            isKnown: true,
+          });
+        }
+      }
     }
 
     return {
@@ -604,6 +634,9 @@ export class GlyphInfo {
 
     const filtered: number[] = [];
     for (const entry of data.entries) {
+      if (entry.overlay && selectedCategory === null) {
+        continue;
+      }
       if (selectedCategory !== null && entry.category !== selectedCategory) {
         continue;
       }

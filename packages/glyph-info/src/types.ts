@@ -153,7 +153,7 @@ export interface GlyphCategoryOptions {
 }
 
 export interface GlyphCodepointCategory {
-  category: GlyphCategory;
+  category: string;
   subCategoryKey: string;
   subCategoryLabel: string;
   isKnown: boolean;
@@ -165,14 +165,21 @@ export interface GlyphSubCategorySummary {
   count: number;
 }
 
+/** A sidebar category the user defined, such as «Ancient writing systems», listing glyphs of any script. */
+export interface CustomCategory {
+  name: string;
+  subCategories: { name: string; codepoints: number[] }[];
+}
+
 export interface GlyphCategorySummary {
-  category: GlyphCategory;
+  /** A Unicode category, or the name of a custom category. */
+  category: string;
   count: number;
   subCategories: GlyphSubCategorySummary[];
 }
 
 export interface GlyphCodepointFilter {
-  category?: GlyphCategory | null;
+  category?: string | null;
   subCategoryKey?: string | null;
   query?: string;
   searchLimit?: number;

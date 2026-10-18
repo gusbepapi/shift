@@ -63,9 +63,33 @@ describe("parseCustomGroups", () => {
     );
   });
 
+  it("reads categories next to scripts", () => {
+    const { categories, groups, problems } = parseCustomGroups(
+      JSON.stringify({
+        categories: [
+          {
+            name: "Private-use scripts",
+            groups: [{ name: "pIqaD", ranges: [["U+F8D0", "U+F8D2"]] }],
+          },
+        ],
+      }),
+    );
+
+    expect(problems).toEqual([]);
+    expect(groups).toEqual([]);
+    expect(categories).toEqual([
+      {
+        name: "Private-use scripts",
+        subCategories: [{ name: "pIqaD", codepoints: [0xf8d0, 0xf8d1, 0xf8d2] }],
+      },
+    ]);
+  });
+
   it("reports text that is not JSON or has no scripts", () => {
     expect(parseCustomGroups("{").problems[0]).toContain("not valid JSON");
-    expect(parseCustomGroups("{}").problems).toEqual(['expected an object with a "scripts" array']);
+    expect(parseCustomGroups("{}").problems).toEqual([
+      'expected an object with a "scripts" or "categories" array',
+    ]);
   });
 
   it("gives groups with the same names distinct identifiers", () => {
@@ -123,7 +147,7 @@ describe("codepointFromGlyphName", () => {
 describe("parseGlyphsGroupsPlist", () => {
   const plist = `{
     categories = (
-      { name = "Ancient writing systems"; subGroup = ({ name = Cuneiform; predicate = "unicodeChar >= 0x12000"; }); }
+      { name = "Ancient writing systems"; subGroup = ({ name = Cuneiform; predicate = "unicodeChar >= 0x12000 AND unicodeChar <= 0x12543"; }); }
     );
     // Comment
     languages = (
@@ -146,7 +170,7 @@ describe("parseGlyphsGroupsPlist", () => {
   }`;
 
   it("reads lists, predicates, nested groups, and single-row entries", () => {
-    const { groups, problems } = parseGlyphsGroupsPlist(plist, (name) =>
+    const { groups, categories, problems } = parseGlyphsGroupsPlist(plist, (name) =>
       name === "aacute" ? 0xe1 : null,
     );
 
@@ -161,10 +185,11 @@ describe("parseGlyphsGroupsPlist", () => {
     expect(groups[2]?.baseCodepoints).toEqual([0x12000, 0x12001, 0x12002]);
     expect(groups[3]).toMatchObject({ section: "Nested", name: "Deep" });
     expect(groups[4]).toMatchObject({ script: "Single", name: "Single" });
-    expect(problems).toEqual([
-      "categories are Glyphs filters, not languages, and were skipped",
-      "Single Single: no codepoint for missingGlyph",
-    ]);
+    expect(categories).toHaveLength(1);
+    expect(categories[0]?.name).toBe("Ancient writing systems");
+    expect(categories[0]?.subCategories[0]?.name).toBe("Cuneiform");
+    expect(categories[0]?.subCategories[0]?.codepoints).toHaveLength(0x12543 - 0x12000 + 1);
+    expect(problems).toEqual(["Single Single: no codepoint for missingGlyph"]);
   });
 
   it("reports a file that is not a property list", () => {

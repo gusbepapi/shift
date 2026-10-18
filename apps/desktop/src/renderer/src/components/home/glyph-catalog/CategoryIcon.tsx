@@ -1,4 +1,3 @@
-import type { GlyphCategory } from "@shift/glyph-info";
 import type { SVG } from "@/types/common";
 
 import LetterIcon from "@/assets/sidebar-left/letters.svg";
@@ -9,7 +8,7 @@ import SeparatorIcon from "@/assets/sidebar-left/separator.svg";
 import SymbolIcon from "@/assets/sidebar-left/symbol.svg";
 import OtherIcon from "@/assets/sidebar-left/other.svg";
 
-export const CATEGORY_ICON_MAP: Record<GlyphCategory, SVG | null> = {
+export const CATEGORY_ICON_MAP: Record<string, SVG | null> = {
   Letter: LetterIcon,
   Mark: MarkIcon,
   Number: NumberIcon,
@@ -20,9 +19,9 @@ export const CATEGORY_ICON_MAP: Record<GlyphCategory, SVG | null> = {
 };
 
 export interface CategoryIconProps {
-  category: GlyphCategory;
+  category: string;
 }
 export const CategoryIcon = ({ category }: CategoryIconProps) => {
-  const Icon = CATEGORY_ICON_MAP[category];
+  const Icon = CATEGORY_ICON_MAP[category] ?? null;
   return Icon ? <Icon className="h-4 w-4 shrink-0 text-primary" /> : null;
 };

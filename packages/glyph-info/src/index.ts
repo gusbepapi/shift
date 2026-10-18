@@ -42,6 +42,7 @@ export type {
   /** Bidirectional codepoint decomposition maps. */
   Decomposition,
   /** Known Unicode general category for glyph classification. */
+  CustomCategory,
   GlyphCategory,
   /** Category fallback and inclusion options for codepoint categorization APIs. */
   GlyphCategoryOptions,

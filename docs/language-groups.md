@@ -25,6 +25,21 @@ A codepoint is a number or a string such as `U+F8D0`, `0xF8D0`, `uniF8D0`, or `u
 
 ## Glyphs `Groups.plist`
 
-Copy the file from Glyphs’ `Info` folder into `language-groups/`. Shift reads the `languages` entries: a group may list glyph names (`list`) or give a `predicate` of `unicodeChar` comparisons joined by `AND` and `OR`. Other predicates and the file’s `categories` are skipped.
+Copy the file from Glyphs’ `Info` folder into `language-groups/`. Shift reads the `languages` entries: a group may list glyph names (`list`) or give a `predicate` of `unicodeChar` comparisons joined by `AND` and `OR`. Other predicates are skipped. The file’s `categories`, such as «Ancient writing systems» or «Private-use scripts», appear in the glyph catalogue’s _Categories_ list, each beside the category its glyphs already have.
 
 A problem in a file skips only the entry that caused it; Shift reports it in the developer console as `language-groups/<file>: <message>`.
+
+## Categories in JSON
+
+A JSON file may hold `categories` beside, or instead of, `scripts`:
+
+```json
+{
+  "categories": [
+    {
+      "name": "Private-use scripts",
+      "groups": [{ "name": "Klingon pIqaD (CSUR)", "ranges": [["U+F8D0", "U+F8E9"]] }]
+    }
+  ]
+}
+```

@@ -639,6 +639,22 @@ describe("language coverage catalogs", () => {
     ]);
   });
 
+  it("lists a custom category besides the category of each glyph", () => {
+    const custom = [
+      {
+        name: "Private-use scripts",
+        subCategories: [{ name: "pIqaD", codepoints: [0xf8d0, 0xf8d1] }],
+      },
+    ];
+    const catalog = db.createCategoryCatalog([0x41, 0x61, 0xf8d0], undefined, custom);
+
+    const summary = catalog.categories.find(({ category }) => category === "Private-use scripts");
+    expect(summary).toMatchObject({ count: 1, subCategories: [{ label: "pIqaD", count: 1 }] });
+    expect(catalog.categories.find(({ category }) => category === "Letter")?.count).toBe(2);
+    expect(catalog.filter({ category: "Private-use scripts" })).toEqual([0xf8d0]);
+    expect(catalog.filter()).toEqual([0x41, 0x61, 0xf8d0]);
+  });
+
   it("recognises European languages by their ISO code", () => {
     expect(isEuropeanLanguageId("fra-latin")).toBe(true);
     expect(isEuropeanLanguageId("rus-cyrillic")).toBe(true);

@@ -1,4 +1,4 @@
-import type { LanguageGroup } from "./types.js";
+import type { CustomCategory, LanguageGroup } from "./types.js";
 
 /** Largest Unicode scalar value. */
 const MAX_CODEPOINT = 0x10ffff;
@@ -9,6 +9,8 @@ export type GlyphNameResolver = (name: string) => number | null;
 /** Groups read from a user's file, with a message for each entry that could not be used. */
 export interface CustomGroupsResult {
   groups: LanguageGroup[];
+  /** Sidebar categories, such as «Ancient writing systems», that list glyphs across scripts. */
+  categories: CustomCategory[];
   problems: string[];
 }
 
@@ -26,7 +28,7 @@ type CodepointRange = readonly [number, number];
  * @param text - The file's contents.
  */
 export function parseCustomGroups(text: string): CustomGroupsResult {
-  const result: CustomGroupsResult = { groups: [], problems: [] };
+  const result: CustomGroupsResult = { groups: [], categories: [], problems: [] };
 
   let parsed: unknown;
   try {
@@ -37,8 +39,12 @@ export function parseCustomGroups(text: string): CustomGroupsResult {
   }
 
   const scripts = isRecord(parsed) ? parsed["scripts"] : undefined;
+  const categories = isRecord(parsed) ? parsed["categories"] : undefined;
+  if (Array.isArray(categories)) readJsonCategories(result, categories);
   if (!Array.isArray(scripts)) {
-    result.problems.push('expected an object with a "scripts" array');
+    if (!Array.isArray(categories)) {
+      result.problems.push('expected an object with a "scripts" or "categories" array');
+    }
     return result;
   }
 
@@ -89,13 +95,70 @@ export function parseCustomGroups(text: string): CustomGroupsResult {
   return result;
 }
 
+function readJsonCategories(result: CustomGroupsResult, categories: unknown[]): void {
+  for (const category of categories) {
+    if (!isRecord(category) || typeof category["name"] !== "string" || !category["name"].trim()) {
+      result.problems.push("a category has no name");
+      continue;
+    }
+
+    const categoryName = category["name"].trim();
+    const entries = Array.isArray(category["groups"]) ? category["groups"] : [];
+    for (const entry of entries) {
+      if (!isRecord(entry) || typeof entry["name"] !== "string" || !entry["name"].trim()) {
+        result.problems.push(`${categoryName}: a group has no name`);
+        continue;
+      }
+
+      const name = entry["name"].trim();
+      const codepoints = new Set<number>();
+      for (const value of asArray(entry["codepoints"])) {
+        const codepoint = parseCodepoint(value);
+        if (codepoint === null)
+          result.problems.push(`${categoryName} ${name}: bad codepoint ${show(value)}`);
+        else codepoints.add(codepoint);
+      }
+      for (const pair of asArray(entry["ranges"])) {
+        const from = Array.isArray(pair) ? parseCodepoint(pair[0]) : null;
+        const to = Array.isArray(pair) ? parseCodepoint(pair[1]) : null;
+        if (from === null || to === null || from > to) {
+          result.problems.push(`${categoryName} ${name}: bad range ${show(pair)}`);
+          continue;
+        }
+        addRange(codepoints, [from, to]);
+      }
+      pushCategory(result, categoryName, name, codepoints);
+    }
+  }
+}
+
+function pushCategory(
+  result: CustomGroupsResult,
+  category: string,
+  name: string,
+  codepoints: ReadonlySet<number>,
+): void {
+  if (codepoints.size === 0) {
+    result.problems.push(`${category} ${name}: no codepoints`);
+    return;
+  }
+
+  let target = result.categories.find((candidate) => candidate.name === category);
+  if (!target) {
+    target = { name: category, subCategories: [] };
+    result.categories.push(target);
+  }
+  target.subCategories.push({ name, codepoints: [...codepoints].sort((a, b) => a - b) });
+}
+
 /**
- * Reads the `languages` entries of a Glyphs `Groups.plist`.
+ * Reads the `languages` and `categories` entries of a Glyphs `Groups.plist`.
  *
  * @remarks
  * Glyphs writes the old-style property list that `.glyphs` files use. A group may list glyph names
  * (`list`, or `coverage` in older files) or give a `predicate` made of `unicodeChar` comparisons
- * joined by `AND` and `OR`. Other predicates, and the file's `categories`, are reported and skipped.
+ * joined by `AND` and `OR`. Other predicates are reported and skipped. A `categories` entry, such as
+ * «Ancient writing systems», becomes a category of the glyph catalogue rather than a language.
  *
  * @param text - The file's contents.
  * @param resolveGlyphName - Resolves names that do not spell their codepoint, such as `aacute`.
@@ -104,7 +167,7 @@ export function parseGlyphsGroupsPlist(
   text: string,
   resolveGlyphName: GlyphNameResolver,
 ): CustomGroupsResult {
-  const result: CustomGroupsResult = { groups: [], problems: [] };
+  const result: CustomGroupsResult = { groups: [], categories: [], problems: [] };
 
   let root: PlistValue;
   try {
@@ -119,13 +182,12 @@ export function parseGlyphsGroupsPlist(
     return result;
   }
 
-  if (root.categories !== undefined) {
-    result.problems.push("categories are Glyphs filters, not languages, and were skipped");
-  }
+  if (Array.isArray(root.categories))
+    readPlistCategories(result, root.categories, resolveGlyphName);
 
   const languages = root.languages;
   if (!Array.isArray(languages)) {
-    result.problems.push('no "languages" array');
+    if (!Array.isArray(root.categories)) result.problems.push('no "languages" array');
     return result;
   }
 
@@ -139,6 +201,76 @@ export function parseGlyphsGroupsPlist(
   }
 
   return result;
+}
+
+function readPlistCategories(
+  result: CustomGroupsResult,
+  categories: PlistValue[],
+  resolveGlyphName: GlyphNameResolver,
+): void {
+  for (const category of categories) {
+    if (!isPlistDict(category) || typeof category.name !== "string") {
+      result.problems.push("a category has no name");
+      continue;
+    }
+
+    const children = Array.isArray(category.subGroup) ? category.subGroup : [category];
+    for (const child of children) {
+      if (!isPlistDict(child) || typeof child.name !== "string") {
+        result.problems.push(`${category.name}: a subgroup has no name`);
+        continue;
+      }
+
+      const scratch: CustomGroupsResult = { groups: [], categories: [], problems: [] };
+      const codepoints = plistCodepoints(
+        scratch,
+        category.name,
+        child.name,
+        child,
+        resolveGlyphName,
+      );
+      result.problems.push(...scratch.problems);
+      pushCategory(result, category.name, child.name, codepoints);
+    }
+  }
+}
+
+/** Collects the codepoints a Glyphs entry lists by name or accepts by predicate. */
+function plistCodepoints(
+  result: CustomGroupsResult,
+  script: string,
+  name: string,
+  entry: Record<string, PlistValue>,
+  resolveGlyphName: GlyphNameResolver,
+): Set<number> {
+  const codepoints = new Set<number>();
+  const names = entry.list ?? entry.coverage;
+
+  if (Array.isArray(names)) {
+    const unresolved: string[] = [];
+    for (const glyphName of names) {
+      if (typeof glyphName !== "string") continue;
+
+      const codepoint = codepointFromGlyphName(glyphName) ?? resolveGlyphName(glyphName);
+      if (codepoint === null) unresolved.push(glyphName);
+      else codepoints.add(codepoint);
+    }
+    if (unresolved.length > 0) {
+      const shown = unresolved.slice(0, 5).join(", ");
+      const rest = unresolved.length > 5 ? ` and ${unresolved.length - 5} more` : "";
+      result.problems.push(`${script} ${name}: no codepoint for ${shown}${rest}`);
+    }
+  }
+
+  if (typeof entry.predicate === "string") {
+    try {
+      for (const range of parseCodepointPredicate(entry.predicate)) addRange(codepoints, range);
+    } catch (error) {
+      result.problems.push(`${script} ${name}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  return codepoints;
 }
 
 function readPlistEntry(
@@ -170,32 +302,7 @@ function readPlistEntry(
     return;
   }
 
-  const codepoints = new Set<number>();
-  const names = entry.list ?? entry.coverage;
-
-  if (Array.isArray(names)) {
-    const unresolved: string[] = [];
-    for (const glyphName of names) {
-      if (typeof glyphName !== "string") continue;
-
-      const codepoint = codepointFromGlyphName(glyphName) ?? resolveGlyphName(glyphName);
-      if (codepoint === null) unresolved.push(glyphName);
-      else codepoints.add(codepoint);
-    }
-    if (unresolved.length > 0) {
-      const shown = unresolved.slice(0, 5).join(", ");
-      const rest = unresolved.length > 5 ? ` and ${unresolved.length - 5} more` : "";
-      result.problems.push(`${script} ${name}: no codepoint for ${shown}${rest}`);
-    }
-  }
-
-  if (typeof entry.predicate === "string") {
-    try {
-      for (const range of parseCodepointPredicate(entry.predicate)) addRange(codepoints, range);
-    } catch (error) {
-      result.problems.push(`${script} ${name}: ${error instanceof Error ? error.message : error}`);
-    }
-  }
+  const codepoints = plistCodepoints(result, script, name, entry, resolveGlyphName);
 
   pushGroup(result, script, section, name, codepoints);
 }

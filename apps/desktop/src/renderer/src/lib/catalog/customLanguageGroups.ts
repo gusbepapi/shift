@@ -1,10 +1,17 @@
 import { parseCustomGroups, parseGlyphsGroupsPlist } from "@shift/glyph-info";
-import type { CustomGroupsResult, GlyphInfo, LanguageGroup } from "@shift/glyph-info";
+import type {
+  CustomCategory,
+  CustomGroupsResult,
+  GlyphInfo,
+  LanguageGroup,
+} from "@shift/glyph-info";
 import type { LanguageGroupFile } from "@shared/config/config";
 
 /** What reading the custom language group files produced: the groups and a line for each problem. */
 export interface CustomLanguageGroups {
   groups: LanguageGroup[];
+  /** Catalogue categories, such as «Ancient writing systems», read from the same files. */
+  categories: CustomCategory[];
   problems: string[];
 }
 
@@ -23,6 +30,7 @@ export function readCustomLanguageGroups(
   files: readonly LanguageGroupFile[],
 ): CustomLanguageGroups {
   const byId = new Map<string, LanguageGroup>();
+  const categories = new Map<string, Map<string, CustomCategory["subCategories"][number]>>();
   const problems: string[] = [];
 
   for (const file of files) {
@@ -32,8 +40,22 @@ export function readCustomLanguageGroups(
         : parseGlyphsGroupsPlist(file.text, (name) => glyphInfo.codepointForGlyphName(name));
 
     for (const group of result.groups) byId.set(group.id, group);
+    for (const category of result.categories) {
+      const subCategories = categories.get(category.name) ?? new Map();
+      for (const subCategory of category.subCategories) {
+        subCategories.set(subCategory.name, subCategory);
+      }
+      categories.set(category.name, subCategories);
+    }
     for (const problem of result.problems) problems.push(`${file.name}: ${problem}`);
   }
 
-  return { groups: [...byId.values()], problems };
+  return {
+    groups: [...byId.values()],
+    categories: [...categories].map(([name, subCategories]) => ({
+      name,
+      subCategories: [...subCategories.values()],
+    })),
+    problems,
+  };
 }

@@ -1,9 +1,8 @@
-import type { GlyphCategory } from "@shift/glyph-info";
 import { CategoryIcon } from "./CategoryIcon";
 import ChevronRightIcon from "@/assets/general/chevron-right.svg";
 
 export interface CategoryProps {
-  category: GlyphCategory;
+  category: string;
 }
 
 export const Category = ({ category }: CategoryProps) => (

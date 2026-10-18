@@ -1,4 +1,4 @@
-import type { GlyphCategory, GlyphCategorySummary, LanguageScript } from "@shift/glyph-info";
+import type { GlyphCategorySummary, LanguageScript } from "@shift/glyph-info";
 import type { Rect2D } from "@shift/geo";
 import type {
   CatalogAxis,
@@ -31,7 +31,7 @@ export interface LanguageGlyph {
 export type PendingGlyphNames = ReadonlyMap<GlyphId, GlyphName>;
 
 export interface GlyphCategoryFilter {
-  readonly category: GlyphCategory;
+  readonly category: string;
   readonly subCategoryKey: string | null;
 }
 
@@ -56,18 +56,14 @@ export interface GlyphCatalogSource {
   categoryFilters: readonly GlyphCategoryFilter[];
   selectedLanguageId: string | null;
   visibleCategoryFilters: readonly GlyphCategoryFilter[];
-  expandedCategories: ReadonlySet<GlyphCategory>;
-  setExpandedCategories: Dispatch<SetStateAction<ReadonlySet<GlyphCategory>>>;
+  expandedCategories: ReadonlySet<string>;
+  setExpandedCategories: Dispatch<SetStateAction<ReadonlySet<string>>>;
   query: string;
   setQuery: (nextQuery: string) => void;
   createQuickGlyph: () => GlyphName;
   selectAll: () => void;
-  selectCategory: (category: GlyphCategory, mode: ListSelectionMode) => void;
-  selectSubCategory: (
-    category: GlyphCategory,
-    subCategoryKey: string,
-    mode: ListSelectionMode,
-  ) => void;
+  selectCategory: (category: string, mode: ListSelectionMode) => void;
+  selectSubCategory: (category: string, subCategoryKey: string, mode: ListSelectionMode) => void;
   selectLanguage: (languageId: string) => void;
   atlasSource: GlyphAtlasSource;
   observeAtlasInvalidation: (

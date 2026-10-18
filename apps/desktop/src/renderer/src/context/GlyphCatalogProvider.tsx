@@ -8,11 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useLocation, useNavigate } from "react-router";
-import {
-  type GlyphCategory,
-  type GlyphCategoryCatalog,
-  type LanguageCatalog,
-} from "@shift/glyph-info";
+import { type GlyphCategoryCatalog, type LanguageCatalog } from "@shift/glyph-info";
 import type { GlyphName } from "@shift/types";
 import type { LanguageGroupFile } from "@shared/config/config";
 import { effect, signal, useSignalState } from "@shift/editor/signals";
@@ -88,11 +84,13 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   );
   const languageGroupFiles =
     useContext(ThemeContext)?.config?.languageGroups ?? NO_LANGUAGE_GROUP_FILES;
-  const customLanguageGroups = useMemo(() => {
-    const { groups, problems } = readCustomLanguageGroups(glyphInfo, languageGroupFiles);
-    for (const problem of problems) console.warn(`language-groups/${problem}`);
-    return groups;
+  const customGroupFiles = useMemo(() => {
+    const result = readCustomLanguageGroups(glyphInfo, languageGroupFiles);
+    for (const problem of result.problems) console.warn(`language-groups/${problem}`);
+    return result;
   }, [glyphInfo, languageGroupFiles]);
+  const customLanguageGroups = customGroupFiles.groups;
+  const customCategories = customGroupFiles.categories;
   const defaultLanguageIds = useMemo(() => glyphInfo.defaultTrackedLanguageIds(), [glyphInfo]);
   const [previewLanguageIds, setPreviewLanguageIds] = useState<readonly string[] | null>(null);
   const trackedLanguageIds = workspace
@@ -125,7 +123,7 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   const [query, setQuery] = useState("");
   const [categoryFilters, setCategoryFilters] = useState<readonly GlyphCategoryFilter[]>([]);
   const [selectedLanguageId, setSelectedLanguageId] = useState<string | null>(null);
-  const [expandedCategories, setExpandedCategories] = useState<ReadonlySet<GlyphCategory>>(
+  const [expandedCategories, setExpandedCategories] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
 
@@ -135,8 +133,8 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   );
 
   const categoryCatalog = useMemo<GlyphCategoryCatalog>(
-    () => glyphInfo.createCategoryCatalog(availableUnicodes),
-    [availableUnicodes, glyphInfo],
+    () => glyphInfo.createCategoryCatalog(availableUnicodes, undefined, customCategories),
+    [availableUnicodes, customCategories, glyphInfo],
   );
   const languageCatalog = useMemo<LanguageCatalog>(
     () => glyphInfo.createLanguageCatalog(availableUnicodes, customLanguageGroups),
