@@ -94,7 +94,10 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
     return groups;
   }, [glyphInfo, languageGroupFiles]);
   const defaultLanguageIds = useMemo(() => glyphInfo.defaultTrackedLanguageIds(), [glyphInfo]);
-  const trackedLanguageIds = storedLanguageIds ?? defaultLanguageIds;
+  const [previewLanguageIds, setPreviewLanguageIds] = useState<readonly string[] | null>(null);
+  const trackedLanguageIds = workspace
+    ? (storedLanguageIds ?? defaultLanguageIds)
+    : (previewLanguageIds ?? defaultLanguageIds);
   const location = useSignalState(catalog.locationCell);
   const axes = useSignalState(catalog.axesCell);
   const metrics = useSignalState(catalog.metricsCell);
@@ -263,9 +266,9 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
 
   const setTrackedLanguageIds = useCallback<GlyphCatalogSource["setTrackedLanguageIds"]>(
     (languageIds) => {
-      if (!workspace) throw new Error("preview catalog cannot change tracked languages");
-
-      workspace.editor.setLanguageIds(languageIds);
+      // A preview session has no font to store the list in, so the choice lasts for the session only
+      if (workspace) workspace.editor.setLanguageIds(languageIds);
+      else setPreviewLanguageIds(languageIds);
       if (selectedLanguageId !== null && !languageIds.includes(selectedLanguageId)) {
         setSelectedLanguageId(null);
       }

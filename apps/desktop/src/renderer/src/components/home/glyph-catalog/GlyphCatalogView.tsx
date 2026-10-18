@@ -191,7 +191,7 @@ export const GlyphCatalogView = () => {
               <LanguagePicker
                 scripts={allLanguageScripts}
                 trackedLanguageIds={trackedLanguageIds}
-                disabled={!canAuthor}
+                disabled={false}
                 onApply={setTrackedLanguageIds}
               />
             }
