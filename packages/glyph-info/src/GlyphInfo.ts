@@ -1,5 +1,5 @@
 import MiniSearch from "minisearch";
-import { DEFAULT_LANGUAGE_IDS } from "./types.js";
+import { DEFAULT_GROUP_IDS } from "./types.js";
 import type {
   CharsetDefinition,
   CharsetSummary,
@@ -242,6 +242,15 @@ export class GlyphInfo {
     return glyph ? `${glyph.name}${suffix}` : name;
   }
 
+  /**
+   * Returns the codepoint of a glyph name, including its production name and alternative names.
+   *
+   * @returns `null` for an unknown name and for a name without a codepoint.
+   */
+  codepointForGlyphName(name: string): number | null {
+    return this.#glyphDataByAlias.get(name)?.codepoint ?? null;
+  }
+
   getAllGlyph(): Glyph[] {
     return Array.from(this.#glyphData.values());
   }
@@ -351,11 +360,22 @@ export class GlyphInfo {
   // --- Languages ---
 
   /**
-   * Identifiers a font tracks until it chooses its own: every group of every
-   * script, as the Glyphs sidebar lists them, followed by the default languages.
+   * Identifiers a font tracks until it chooses its own: the few groups of
+   * {@link DEFAULT_GROUP_IDS} that exist. Every other script is added by the picker.
    */
   defaultTrackedLanguageIds(): string[] {
-    return [...this.#groups.map(({ id }) => id), ...DEFAULT_LANGUAGE_IDS];
+    const known = new Set(this.#groups.map(({ id }) => id));
+    return DEFAULT_GROUP_IDS.filter((id) => known.has(id));
+  }
+
+  /**
+   * Adds groups the user defined, replacing earlier groups with the same identifier.
+   *
+   * @param groups - Groups in their declared order; they list after the built-in groups of their script.
+   */
+  addGroups(groups: readonly LanguageGroup[]): void {
+    const replaced = new Set(groups.map(({ id }) => id));
+    this.#groups = [...this.#groups.filter(({ id }) => !replaced.has(id)), ...groups];
   }
 
   /**

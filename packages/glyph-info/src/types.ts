@@ -75,8 +75,11 @@ export interface LanguageGroup {
   /** Heading the group sits under inside its script, for example «Character Sets»; `null` for none. */
   section: string | null;
   baseCodepoints: number[];
-  /** `exact` for a published encoding, `derived` for a set assembled from Hyperglot or GlyphData. */
-  basis: "exact" | "derived";
+  /**
+   * `exact` for a published encoding or a list read from Glyphs itself, `derived` for a set
+   * assembled from Hyperglot or GlyphData, and `custom` for a group the user defined.
+   */
+  basis: "exact" | "derived" | "custom";
 }
 
 export interface LanguageGroupCoverage {
@@ -91,6 +94,17 @@ export interface LanguageScript {
   groups: LanguageGroupCoverage[];
   languages: LanguageCoverage[];
 }
+
+/**
+ * Groups tracked by a font that has not chosen its own list: the basic sets of the
+ * three scripts most fonts begin with. The picker adds every other script.
+ */
+export const DEFAULT_GROUP_IDS = [
+  "group-latin-basic",
+  "group-latin-western-european",
+  "group-cyrillic-basic",
+  "group-greek-basic",
+] as const;
 
 /**
  * Languages tracked by a font that has not chosen its own list: the ten most

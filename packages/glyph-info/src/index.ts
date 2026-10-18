@@ -24,7 +24,11 @@ export { defaultResources } from "./resources.js";
 /** The pre-built core resources alone, for apps that load component data later. */
 export { coreResources } from "./coreResources.js";
 
-export { DEFAULT_LANGUAGE_IDS, GLYPH_CATEGORIES } from "./types.js";
+export { DEFAULT_GROUP_IDS, DEFAULT_LANGUAGE_IDS, GLYPH_CATEGORIES } from "./types.js";
+
+/** Readers for groups a user defines, in Shift's JSON format or as a Glyphs `Groups.plist`. */
+export { parseCustomGroups, parseGlyphsGroupsPlist } from "./customGroups.js";
+export type { CustomGroupsResult, GlyphNameResolver } from "./customGroups.js";
 export type {
   /** Full metadata record for a single Unicode codepoint. */
   CharsetDefinition,

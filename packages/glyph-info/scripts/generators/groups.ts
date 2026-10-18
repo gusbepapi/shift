@@ -1,4 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { groupsFromGlyphsDump, type GlyphsSidebarDump } from "../../src/glyphsSidebar.js";
 import type { Glyph, GlyphCategory, Language, LanguageGroup } from "../../src/types.js";
 
 /**
@@ -11,6 +14,45 @@ import type { Glyph, GlyphCategory, Language, LanguageGroup } from "../../src/ty
  */
 
 type Basis = LanguageGroup["basis"];
+
+const DATA_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
+const GLYPHS_UNION_PATH = join(DATA_DIRECTORY, "glyphs-union.json");
+
+/**
+ * The Languages sidebar as `DumpLanguagesSidebar.py` writes it. When the file exists, it replaces the
+ * derived groups with Glyphs' own, which are exact.
+ */
+const GLYPHS_SIDEBAR_PATH = join(DATA_DIRECTORY, "glyphs-sidebar.json");
+
+/** Sidebar rows that came from a user's own `Groups.plist` rather than from Glyphs. */
+const USER_DEFINED_ROWS: ReadonlySet<string> = new Set([
+  "Akkadian (Sumero-Akkadian cuneiform)",
+  "Klingon (pIqaD)",
+]);
+
+/**
+ * Scripts that Glyphs lists as one row with no subgroups; every category of the
+ * script belongs to that row.
+ */
+const FLAT_SCRIPTS: ReadonlySet<string> = new Set(["Armenian", "Elymaic", "Syriac"]);
+
+/**
+ * Reads the codepoints that Glyphs generated into a font holding every group.
+ *
+ * @remarks
+ * No group of Glyphs can hold a codepoint outside this set, so it bounds the
+ * derived groups from above.
+ */
+function readGlyphsUnion(): ReadonlySet<number> {
+  const { ranges } = JSON.parse(readFileSync(GLYPHS_UNION_PATH, "utf-8")) as {
+    ranges: [number, number][];
+  };
+  const union = new Set<number>();
+  for (const [from, to] of ranges) {
+    for (let codepoint = from; codepoint <= to; codepoint += 1) union.add(codepoint);
+  }
+  return union;
+}
 
 interface GroupDraft {
   name: string;
@@ -495,10 +537,19 @@ export function generateGroups(
     .languages;
   const glyphs = JSON.parse(readFileSync(glyphDataPath, "utf-8")) as Glyph[];
 
+  if (existsSync(GLYPHS_SIDEBAR_PATH)) {
+    return writeSidebarGroups(glyphs, outputPath);
+  }
+
+  const glyphsUnion = readGlyphsUnion();
   const groups: LanguageGroup[] = [];
   const addScript = (script: string, drafts: readonly GroupDraft[]) => {
     for (const draft of drafts) {
-      const baseCodepoints = [...new Set(draft.codepoints)].sort((left, right) => left - right);
+      const bounded =
+        draft.basis === "derived"
+          ? [...draft.codepoints].filter((codepoint) => glyphsUnion.has(codepoint))
+          : [...draft.codepoints];
+      const baseCodepoints = [...new Set(bounded)].sort((left, right) => left - right);
       if (baseCodepoints.length === 0) continue;
 
       groups.push({
@@ -670,7 +721,19 @@ export function generateGroups(
   ]);
 
   for (const { script, glyphDataScripts } of CATEGORY_SCRIPTS) {
-    addScript(script, categoryDrafts(glyphs, glyphDataScripts));
+    const drafts = categoryDrafts(glyphs, glyphDataScripts);
+    addScript(
+      script,
+      FLAT_SCRIPTS.has(script)
+        ? [
+            {
+              name: script,
+              basis: "derived",
+              codepoints: drafts.flatMap((draft) => [...draft.codepoints]),
+            },
+          ]
+        : drafts,
+    );
   }
 
   writeFileSync(
@@ -679,10 +742,42 @@ export function generateGroups(
       {
         source: {
           name: "Hyperglot and GlyphsInfo",
-          note: "Groups imitate the Glyphs sidebar; membership is derived, except the legacy encodings",
+          note: "Groups imitate the Glyphs sidebar; membership is derived and bounded by the codepoints Glyphs generates, except the legacy encodings",
         },
         groups,
       },
+      null,
+      2,
+    ),
+  );
+
+  return groups.length;
+}
+
+/** Writes the groups read from a dump of Glyphs' own sidebar. */
+function writeSidebarGroups(glyphs: readonly Glyph[], outputPath: string): number {
+  const dump = JSON.parse(readFileSync(GLYPHS_SIDEBAR_PATH, "utf-8")) as GlyphsSidebarDump;
+
+  const codepointByName = new Map<string, number>();
+  for (const glyph of glyphs) {
+    codepointByName.set(glyph.name, glyph.codepoint);
+    for (const alias of glyph.altNames?.split(",") ?? []) {
+      const name = alias.trim();
+      if (name && !codepointByName.has(name)) codepointByName.set(name, glyph.codepoint);
+    }
+  }
+
+  const { groups, problems } = groupsFromGlyphsDump(
+    dump,
+    (name) => codepointByName.get(name) ?? null,
+    USER_DEFINED_ROWS,
+  );
+  for (const problem of problems) console.warn(`  groups: ${problem}`);
+
+  writeFileSync(
+    outputPath,
+    JSON.stringify(
+      { source: { name: "Glyphs", note: "Read from the Languages sidebar of Glyphs" }, groups },
       null,
       2,
     ),

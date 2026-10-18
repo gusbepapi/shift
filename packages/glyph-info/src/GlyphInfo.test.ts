@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { GlyphInfo } from "./GlyphInfo.js";
-import { DEFAULT_LANGUAGE_IDS, type GlyphCategory } from "./types.js";
+import { DEFAULT_GROUP_IDS, DEFAULT_LANGUAGE_IDS, type GlyphCategory } from "./types.js";
 import { defaultResources } from "./resources.js";
 import { coreResources } from "./coreResources.js";
 import { componentResources } from "./componentResources.js";
@@ -498,9 +498,10 @@ describe("language coverage catalogs", () => {
     const catalog = db.createLanguageCatalog([]);
     const scripts = catalog.scripts.map(({ script }) => script);
 
-    for (const script of ["Adlam", "Brahmi", "Braille", "Kawi", "Ogham", "Runes", "Yezidi"]) {
+    for (const script of ["Adlam", "Brahmi", "Braille", "Kawi", "Ogham", "Runes"]) {
       expect(scripts).toContain(script);
     }
+    expect(scripts).not.toContain("Yezidi");
   });
 
   it("filters the font repertoire by a group", () => {
@@ -520,15 +521,54 @@ describe("language coverage catalogs", () => {
     expect(new Set(identifiers).size).toBe(identifiers.length);
   });
 
-  it("tracks every group and the default languages until a font chooses its own", () => {
+  it("tracks only the basic groups until a font chooses its own", () => {
     const catalog = db.createLanguageCatalog([]);
     const tracked = db.defaultTrackedLanguageIds();
     const scripts = catalog.scriptsFor(tracked);
 
-    expect(tracked).toContain("fra-latin");
-    expect(tracked).toContain("group-cyrillic-ukrainian");
-    expect(scripts.find(({ script }) => script === "Latin")?.groups.length).toBeGreaterThan(10);
-    expect(scripts.find(({ script }) => script === "Runes")?.languages).toEqual([]);
+    expect(tracked).toEqual([...DEFAULT_GROUP_IDS]);
+    expect(scripts.map(({ script }) => script)).toEqual(["Cyrillic", "Greek", "Latin"]);
+    expect(
+      scripts.find(({ script }) => script === "Latin")?.groups.map(({ group }) => group.name),
+    ).toEqual(["Basic", "Western European"]);
+    expect(scripts.every(({ languages }) => languages.length === 0)).toBe(true);
+  });
+
+  it("adds custom groups after the built-in groups of their script", () => {
+    const custom = new GlyphInfo({
+      ...defaultResources,
+      groups: [],
+    });
+    custom.addGroups([
+      {
+        id: "custom-klingon-letters",
+        name: "Letters",
+        script: "Klingon",
+        section: null,
+        baseCodepoints: [0xf8d0, 0xf8d1],
+        basis: "custom",
+      },
+    ]);
+
+    const catalog = custom.createLanguageCatalog([0xf8d0]);
+    const klingon = catalog.scripts.find(({ script }) => script === "Klingon");
+
+    expect(klingon?.groups[0]?.presentCount).toBe(1);
+    expect(klingon?.groups[0]?.requiredCount).toBe(2);
+    expect(catalog.filter("custom-klingon-letters")).toEqual([0xf8d0]);
+  });
+
+  it("finds the codepoint of a glyph name, production name, or alias", () => {
+    expect(db.codepointForGlyphName("aacute")).toBe(0xe1);
+    expect(db.codepointForGlyphName("nonexistentGlyph")).toBeNull();
+  });
+
+  it("keeps derived groups inside the codepoints Glyphs generates", () => {
+    const catalog = db.createLanguageCatalog([]);
+    const yezidi = catalog.scripts.find(({ script }) => script === "Yezidi");
+
+    expect(yezidi?.groups ?? []).toEqual([]);
+    expect(catalog.required("group-latin-ipa").length).toBeLessThan(150);
   });
 
   it("sorts scripts and languages alphabetically", () => {
