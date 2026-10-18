@@ -1,0 +1,112 @@
+name: Build Shift for Windows x64
+
+# Running only when the repository owner starts it from the Actions tab
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      SHIFT_DISTRIBUTION: nightly
+      SHIFT_BUILD_ARCH: x64
+      OUTPUT_ROOT: apps/desktop/out/win32-x64
+    steps:
+      # Checking out the sources including the submodules declared in `.gitmodules`
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      # Installing pnpm at the version declared by `packageManager` in `package.json`
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Installing the toolchain pinned by `rust-toolchain.toml`
+      - name: Install Rust toolchain
+        run: rustup show
+
+      # Installing the wasm-bindgen CLI at the version `Cargo.lock` pins, which `packages/wasm` demands
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A Windows checkout has CRLF line endings
+          version=$(tr -d '\r' < Cargo.lock | awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3 }')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # Setting a version in the format `major.minor.patch` for the desktop application
+      - name: Set build version
+        run: node scripts/product-version.mjs set "0.${{ github.run_number }}.${{ github.run_attempt }}"
+
+      - name: Build native bridge
+        run: pnpm build:native
+
+      - name: Build command-line tool
+        run: pnpm build:cli
+
+      - name: Build desktop application
+        run: pnpm --filter @shift/desktop build
+
+      - name: Make desktop distributables
+        run: pnpm --filter @shift/desktop exec electron-builder --config electron-builder.config.ts --win nsis --x64 --publish never
+
+      # Locating the directory that contains the unpacked executable
+      - name: Resolve packaged application
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXECUTABLE_PATH="$(find "$OUTPUT_ROOT" -type f -name 'shift-nightly.exe' -print -quit)"
+          test -n "$EXECUTABLE_PATH"
+          PACKAGE_PATH="$(dirname "$EXECUTABLE_PATH")"
+          test -d "$PACKAGE_PATH"
+          echo "path=$PACKAGE_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test packaged application
+        run: node scripts/smoke-packaged.mjs "${{ steps.package.outputs.path }}" nightly
+
+      # Uploading the installer for a conventional installation
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shift-windows-x64-installer
+          path: |
+            ${{ env.OUTPUT_ROOT }}/*.exe
+            ${{ env.OUTPUT_ROOT }}/*.blockmap
+          if-no-files-found: error
+          retention-days: 14
+
+      # Uploading the unpacked application for running without installation
+      - name: Upload unpacked application
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shift-windows-x64-unpacked
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
