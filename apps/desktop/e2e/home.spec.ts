@@ -23,17 +23,18 @@ test.describe("Home view", () => {
 
   test("language coverage filters the glyph grid", { tag: "@golden" }, async ({ page }) => {
     await page.getByRole("button", { name: "Latin", exact: true }).click();
-    const english = page
+    // Latin lists its groups before its languages, and Basic is the group every font starts with
+    const basicLatin = page
       .getByRole("button")
-      .filter({ has: page.getByText("English", { exact: true }) });
-    await expect(english).toContainText(/\d+\/\d+/);
+      .filter({ has: page.getByText("Basic", { exact: true }) });
+    await expect(basicLatin).toContainText(/\d+\/\d+/);
     await expectPanelSnapshot(fontNavigation(page), "home-language-coverage.png");
 
-    const presentCount = (await english.textContent())?.match(/(\d+)\/\d+/)?.[1];
-    if (!presentCount) throw new Error("Expected English coverage count");
+    const presentCount = (await basicLatin.textContent())?.match(/(\d+)\/\d+/)?.[1];
+    if (!presentCount) throw new Error("Expected Basic Latin coverage count");
 
-    await english.click();
-    await expect(english).toHaveAttribute("data-active", "true");
+    await basicLatin.click();
+    await expect(basicLatin).toHaveAttribute("data-active", "true");
     await expect(glyphCatalogSurface(page)).toHaveAttribute(
       "data-filtered-glyph-count",
       presentCount,
