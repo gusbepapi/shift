@@ -630,6 +630,7 @@ export function generateGroups(
     ),
     { name: "Vietnamese", basis: "derived", codepoints: languageCodepoints("Latin", ["vie"]) },
     { name: "Sámi", basis: "derived", codepoints: languageCodepoints("Latin", SAMI_CODES) },
+    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
     {
       name: "IPA",
       basis: "derived",
@@ -640,7 +641,6 @@ export function generateGroups(
             (glyph.codepoint >= 0x1d00 && glyph.codepoint <= 0x1dbf)),
       ),
     },
-    { name: "Esperanto", basis: "derived", codepoints: languageCodepoints("Latin", ["epo"]) },
     {
       name: "Windows 1252",
       section: "Character Sets",

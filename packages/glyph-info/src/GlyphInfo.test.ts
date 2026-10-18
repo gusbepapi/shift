@@ -582,7 +582,7 @@ describe("language coverage catalogs", () => {
     }
   });
 
-  it("keeps constructed languages in their script and Esperanto below IPA", () => {
+  it("keeps constructed languages in their script and Esperanto above IPA", () => {
     const catalog = db.createLanguageCatalog([]);
     const latin = catalog.scripts.find(({ script }) => script === "Latin");
     const constructed = latin?.languages
@@ -593,7 +593,7 @@ describe("language coverage catalogs", () => {
     expect(catalog.scripts.some(({ script }) => script === "Constructed languages")).toBe(false);
 
     const names = latin?.groups.map(({ group }) => group.name) ?? [];
-    expect(names.indexOf("Esperanto")).toBe(names.indexOf("IPA") + 1);
+    expect(names.indexOf("Esperanto")).toBe(names.indexOf("IPA") - 1);
     expect(
       catalog.scripts
         .find(({ script }) => script === "Tifinagh")

@@ -29,7 +29,7 @@ export const Language = ({
   const { presentCount, requiredCount } = coverage;
   const entry = "group" in coverage ? coverage.group : coverage.language;
   const title = "group" in coverage ? groupTitle(coverage.group) : languageTitle(coverage.language);
-  const complete = "group" in coverage && requiredCount > 0 && presentCount === requiredCount;
+  const complete = requiredCount > 0 && presentCount === requiredCount;
   const rowRef = useRef<HTMLButtonElement>(null);
   const [glyphs, setGlyphs] = useState<LanguageGlyph[] | null>(null);
 
