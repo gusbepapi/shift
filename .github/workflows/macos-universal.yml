@@ -1,0 +1,131 @@
+name: Build Shift for macOS universal
+
+# Running only when the repository owner starts it from the Actions tab
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-universal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build macOS universal
+    # An Apple Silicon runner, which cross-compiles the Intel code
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SHIFT_DISTRIBUTION: nightly
+      SHIFT_BUILD_ARCH: universal
+      OUTPUT_ROOT: apps/desktop/out/darwin-universal
+    steps:
+      # Checking out the sources including the submodules declared in `.gitmodules`
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      # Installing pnpm at the version declared by `packageManager` in `package.json`
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Installing the toolchain pinned by `rust-toolchain.toml` with both macOS targets
+      - name: Install Rust toolchain
+        run: |
+          rustup show
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      # Installing the wasm-bindgen CLI at the version `Cargo.lock` pins, which `packages/wasm` demands
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r' < Cargo.lock | awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3 }')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # Setting a version in the format `major.minor.patch`, kept above the upstream nightly feed so that no update prompt appears
+      - name: Set build version
+        run: node scripts/product-version.mjs set "0.151.${{ github.run_number }}"
+
+      # Building the Apple Silicon bridge and the WASM package
+      - name: Build native bridge for Apple Silicon
+        run: pnpm build:native
+
+      - name: Build native bridge for Intel
+        run: pnpm --filter shift-bridge exec napi build --platform --release --target x86_64-apple-darwin
+
+      # Joining both bridges, which the loader in `crates/shift-bridge/index.js` tries first
+      - name: Join the native bridges
+        run: |
+          set -euo pipefail
+          cd crates/shift-bridge
+          lipo -create shift-bridge.darwin-arm64.node shift-bridge.darwin-x64.node -output shift-bridge.darwin-universal.node
+          lipo -archs shift-bridge.darwin-universal.node
+
+      # Joining both command-line tools at the path that `electron-builder.config.ts` reads
+      - name: Build command-line tool
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p shift-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p shift-cli --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create target/aarch64-apple-darwin/release/shift-cli target/x86_64-apple-darwin/release/shift-cli -output target/release/shift-cli
+          lipo -archs target/release/shift-cli
+
+      - name: Build desktop application
+        run: pnpm --filter @shift/desktop build
+
+      # Packing both architectures and merging them into one `.app`, without signing
+      - name: Make universal application
+        run: pnpm --filter @shift/desktop exec electron-builder --config electron-builder.config.ts --mac dir --universal --publish never
+
+      # Apple Silicon refuses code that carries no signature, so an ad-hoc signature is added
+      - name: Resolve and sign packaged application
+        id: package
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find "$OUTPUT_ROOT" -maxdepth 3 -type d -name 'Shift Nightly.app' -print -quit)"
+          test -n "$APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          lipo -archs "$APP_PATH/Contents/MacOS/Shift Nightly"
+          echo "app=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "path=$(dirname "$APP_PATH")" >> "$GITHUB_OUTPUT"
+
+      # A failing smoke test does not withhold the archive, so that it can be inspected
+      - name: Smoke-test packaged application
+        continue-on-error: true
+        run: node scripts/smoke-packaged.mjs "${{ steps.package.outputs.path }}" nightly
+
+      - name: Create archive
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "${{ steps.package.outputs.app }}" "dist/Shift-Nightly-macOS-universal.zip"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shift-macOS-universal
+          path: dist/Shift-Nightly-macOS-universal.zip
+          if-no-files-found: error
+          retention-days: 14
