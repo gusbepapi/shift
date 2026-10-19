@@ -14,13 +14,16 @@ if (distribution !== "release" && distribution !== "nightly") {
 }
 
 const buildArchitecture = process.env.SHIFT_BUILD_ARCH ?? process.arch;
-if (buildArchitecture !== "arm64" && buildArchitecture !== "x64") {
+// A universal build exists only on macOS, where one application holds both architectures
+const universalBuild = buildArchitecture === "universal" && process.platform === "darwin";
+if (buildArchitecture !== "arm64" && buildArchitecture !== "x64" && !universalBuild) {
   throw new Error(`Unsupported desktop build architecture: ${buildArchitecture}`);
 }
 
 const nativeBridgeFiles: Record<string, string> = {
   "darwin-arm64": "shift-bridge.darwin-arm64.node",
   "darwin-x64": "shift-bridge.darwin-x64.node",
+  "darwin-universal": "shift-bridge.darwin-universal.node",
   "linux-arm64": "shift-bridge.linux-arm64-gnu.node",
   "linux-x64": "shift-bridge.linux-x64-gnu.node",
   "win32-arm64": "shift-bridge.win32-arm64-msvc.node",
