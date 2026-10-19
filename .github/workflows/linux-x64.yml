@@ -69,9 +69,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
-      # Setting a version in the format `major.minor.patch` for the desktop application
+      # Setting a version in the format `major.minor.patch`, kept above the upstream nightly feed so that no update prompt appears
       - name: Set build version
-        run: node scripts/product-version.mjs set "0.${{ github.run_number }}.${{ github.run_attempt }}"
+        run: node scripts/product-version.mjs set "0.151.${{ github.run_number }}"
 
       - name: Build native bridge
         run: pnpm build:native
