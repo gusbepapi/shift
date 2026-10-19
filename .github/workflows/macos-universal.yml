@@ -15,7 +15,7 @@ jobs:
   build:
     name: Build macOS universal
     # An Apple Silicon runner, which cross-compiles the Intel code
-    runs-on: macos-26
+    runs-on: macos-latest
     timeout-minutes: 90
     env:
       SHIFT_DISTRIBUTION: nightly
