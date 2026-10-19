@@ -14,8 +14,8 @@ concurrency:
 jobs:
   build:
     name: Build macOS universal
-    # An Apple Silicon runner, which cross-compiles the Intel code
-    runs-on: macos-26
+    # An Intel runner, which cross-compiles the Apple Silicon code, because the Apple Silicon runners are congested
+    runs-on: macos-26-intel
     timeout-minutes: 90
     env:
       SHIFT_DISTRIBUTION: nightly
@@ -66,12 +66,12 @@ jobs:
       - name: Set build version
         run: node scripts/product-version.mjs set "0.151.${{ github.run_number }}"
 
-      # Building the Apple Silicon bridge and the WASM package
-      - name: Build native bridge for Apple Silicon
+      # Building the Intel bridge, which is the host one, and the WASM package
+      - name: Build native bridge for Intel
         run: pnpm build:native
 
-      - name: Build native bridge for Intel
-        run: pnpm --filter shift-bridge exec napi build --platform --release --target x86_64-apple-darwin
+      - name: Build native bridge for Apple Silicon
+        run: pnpm --filter shift-bridge exec napi build --platform --release --target aarch64-apple-darwin
 
       # Joining both bridges, which the loader in `crates/shift-bridge/index.js` tries first
       - name: Join the native bridges
