@@ -20,6 +20,7 @@ pub mod shaper_font;
 mod shift2fontir;
 mod source_glyph_ids;
 mod traits;
+mod webfont;
 
 pub use errors::{BackendError, BackendResult, FormatBackendError, FormatBackendResult};
 pub use export::{ExportError, ExportFormat, FontExportRequest, FontExportResult, FontExporter};

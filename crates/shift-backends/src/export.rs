@@ -15,11 +15,14 @@ use write_fonts::types::NameId;
 use crate::atomic::write_file_atomic;
 use crate::shift2fontir::{PropagatedGlyphAnchors, ShiftIrSource, ShiftIrSourceError};
 use crate::traits::FontView;
+use crate::webfont::{WebFontError, to_woff, to_woff2};
 
 /// Identifies a binary font format supported by [`FontExporter`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExportFormat {
     Ttf,
+    Woff,
+    Woff2,
 }
 
 impl ExportFormat {
@@ -27,6 +30,8 @@ impl ExportFormat {
     pub fn as_str(self) -> &'static str {
         match self {
             ExportFormat::Ttf => "ttf",
+            ExportFormat::Woff => "woff",
+            ExportFormat::Woff2 => "woff2",
         }
     }
 }
@@ -37,6 +42,8 @@ impl TryFrom<&str> for ExportFormat {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_ascii_lowercase().as_str() {
             "ttf" => Ok(Self::Ttf),
+            "woff" => Ok(Self::Woff),
+            "woff2" => Ok(Self::Woff2),
             format => Err(ExportError::UnsupportedFormat {
                 format: format.to_string(),
             }),
@@ -65,8 +72,11 @@ pub enum ExportError {
     #[error("unsupported export format: {format}")]
     UnsupportedFormat { format: String },
 
-    #[error("export path must end in .ttf for TrueType export: {path}")]
-    OutputExtensionMismatch { path: PathBuf },
+    #[error("export path must end in .{extension} for {extension} export: {path}")]
+    OutputExtensionMismatch {
+        extension: &'static str,
+        path: PathBuf,
+    },
 
     #[error("cross-axis mappings are not supported by TTF export yet ({mapping_count} mappings)")]
     UnsupportedCrossAxisMappings { mapping_count: usize },
@@ -77,7 +87,10 @@ pub enum ExportError {
     #[error("failed to compile TrueType font: {message}")]
     CompileTtf { message: String },
 
-    #[error("failed to write TrueType font to {path}")]
+    #[error("failed to pack the web font: {0}")]
+    PackWebFont(#[from] WebFontError),
+
+    #[error("failed to write the font to {path}")]
     WriteOutput {
         path: PathBuf,
         #[source]
@@ -110,9 +123,12 @@ impl FontExporter {
         font: &impl FontView,
         request: FontExportRequest,
     ) -> Result<FontExportResult, ExportError> {
-        match request.format {
-            ExportFormat::Ttf => self.export_ttf(font, &request.path)?,
-        }
+        ensure_output_extension(&request.path, request.format)?;
+        let bytes = self.compile(font, request.format)?;
+        write_file_atomic(&request.path, &bytes).map_err(|source| ExportError::WriteOutput {
+            path: request.path.clone(),
+            source,
+        })?;
 
         Ok(FontExportResult {
             path: request.path,
@@ -132,14 +148,24 @@ impl FontExporter {
         compile_ttf(source)
     }
 
-    fn export_ttf(&self, font: &impl FontView, output_path: &Path) -> Result<(), ExportError> {
-        ensure_ttf_output_path(output_path)?;
-
-        let bytes = self.compile_ttf(font)?;
-        write_file_atomic(output_path, &bytes).map_err(|source| ExportError::WriteOutput {
-            path: output_path.to_path_buf(),
-            source,
-        })
+    /// Compiles the font into the bytes of the requested format without
+    /// writing them anywhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError`] when the source cannot be represented in the
+    /// supported compiler model, compilation fails, or packing fails.
+    pub fn compile(
+        &self,
+        font: &impl FontView,
+        format: ExportFormat,
+    ) -> Result<Vec<u8>, ExportError> {
+        let ttf = self.compile_ttf(font)?;
+        match format {
+            ExportFormat::Ttf => Ok(ttf),
+            ExportFormat::Woff => Ok(to_woff(&ttf)?),
+            ExportFormat::Woff2 => Ok(to_woff2(&ttf)?),
+        }
     }
 
     /// Returns every glyph's anchors as export compiles them, with component
@@ -232,10 +258,12 @@ fn map_source_error(error: ShiftIrSourceError) -> ExportError {
     }
 }
 
-fn ensure_ttf_output_path(path: &Path) -> Result<(), ExportError> {
+fn ensure_output_extension(path: &Path, format: ExportFormat) -> Result<(), ExportError> {
+    let expected = format.as_str();
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) if ext.eq_ignore_ascii_case("ttf") => Ok(()),
+        Some(ext) if ext.eq_ignore_ascii_case(expected) => Ok(()),
         _ => Err(ExportError::OutputExtensionMismatch {
+            extension: expected,
             path: path.to_path_buf(),
         }),
     }
@@ -540,7 +568,57 @@ mod tests {
 
         assert!(matches!(
             error,
-            ExportError::OutputExtensionMismatch { path } if path == output_path
+            ExportError::OutputExtensionMismatch { path, .. } if path == output_path
+        ));
+    }
+
+    #[test]
+    fn exports_web_fonts_that_hold_the_compiled_tables() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let font = sample_variable_font();
+        let ttf = FontExporter::new().compile_ttf(&font).unwrap();
+
+        for (format, file, signature) in [
+            (ExportFormat::Woff, "Dogfood.woff", b"wOFF"),
+            (ExportFormat::Woff2, "Dogfood.woff2", b"wOF2"),
+        ] {
+            let path = temp_dir.path().join(file);
+            let result = FontExporter::new()
+                .export(
+                    &font,
+                    FontExportRequest {
+                        path: path.clone(),
+                        format,
+                    },
+                )
+                .unwrap();
+            assert_eq!(result.format, format);
+
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(&bytes[0..4], signature);
+            // The flavor field names the SFNT the container wraps
+            assert_eq!(bytes[4..8], ttf[0..4]);
+        }
+    }
+
+    #[test]
+    fn rejects_web_font_export_with_the_wrong_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_path = temp_dir.path().join("Dogfood.ttf");
+
+        let error = FontExporter::new()
+            .export(
+                &Font::new(),
+                FontExportRequest {
+                    path: output_path.clone(),
+                    format: ExportFormat::Woff2,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ExportError::OutputExtensionMismatch { extension: "woff2", path } if path == output_path
         ));
     }
 
