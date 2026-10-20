@@ -125,7 +125,16 @@ jobs:
       - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
-          name: Shift-macOS-universal
+          name: shift-macOS-universal
           path: dist/Shift-Nightly-macOS-universal.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # Shipping the command-line tool on its own, next to the application
+      - name: Upload command-line tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: shift-macOS-universal-cli
+          path: target/release/shift-cli
           if-no-files-found: error
           retention-days: 14
