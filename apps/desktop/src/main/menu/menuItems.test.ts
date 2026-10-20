@@ -67,6 +67,7 @@ describe("application command menu items", () => {
       "file.exportOtf",
       "file.exportWoff",
       "file.exportWoff2",
+      "file.exportGlyphs",
     ]);
   });
 

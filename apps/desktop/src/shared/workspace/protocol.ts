@@ -115,7 +115,7 @@ export type WorkspaceDocumentIdentity = {
 };
 
 /** Names a binary font format that a workspace export can write. */
-export type FontExportFormat = "ttf" | "otf" | "woff" | "woff2";
+export type FontExportFormat = "ttf" | "otf" | "woff" | "woff2" | "glyphs";
 
 /** Identifies the compiled font written by a workspace export. */
 export type WorkspaceExportResult = {

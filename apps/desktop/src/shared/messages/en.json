@@ -34,6 +34,9 @@
   "file.export.woff2.title": "Export WOFF2 Web Font",
   "file.export.woff2.filter": "WOFF2 Web Font",
   "file.export.woff2.untitledFilename": "Untitled.woff2",
+  "file.export.glyphs.title": "Export Glyphs Source",
+  "file.export.glyphs.filter": "Glyphs Source",
+  "file.export.glyphs.untitledFilename": "Untitled.glyphs",
 
   "document.untitledName": "Untitled",
   "document.createFailed.message": "We couldn’t create a new document.",

@@ -25,6 +25,7 @@ export type CommandId =
   | "file.exportOtf"
   | "file.exportWoff"
   | "file.exportWoff2"
+  | "file.exportGlyphs"
   | "edit.undo"
   | "edit.redo"
   | "edit.cut"

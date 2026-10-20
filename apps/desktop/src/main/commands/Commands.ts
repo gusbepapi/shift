@@ -192,6 +192,12 @@ const fileCommands: Command[] = [
     enabled: (ctx) => ctx.document.hasWorkspace(),
     run: (ctx) => ctx.document.exportFont("woff2"),
   },
+  {
+    id: "file.exportGlyphs",
+    label: "Glyphs (.glyphs)…",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.document.exportFont("glyphs"),
+  },
 ];
 const editCommands: Command[] = [
   {

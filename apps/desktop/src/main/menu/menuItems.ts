@@ -59,6 +59,7 @@ export function fileMenuItems(
         commandMenuItem("file.exportOtf", runCommand, isCommandEnabled),
         commandMenuItem("file.exportWoff", runCommand, isCommandEnabled),
         commandMenuItem("file.exportWoff2", runCommand, isCommandEnabled),
+        commandMenuItem("file.exportGlyphs", runCommand, isCommandEnabled),
       ],
     },
   ];
