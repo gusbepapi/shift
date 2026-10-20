@@ -54,7 +54,12 @@ export function fileMenuItems(
     { type: "separator" },
     {
       label: "Export",
-      submenu: [commandMenuItem("file.exportTtf", runCommand, isCommandEnabled)],
+      submenu: [
+        commandMenuItem("file.exportTtf", runCommand, isCommandEnabled),
+        commandMenuItem("file.exportOtf", runCommand, isCommandEnabled),
+        commandMenuItem("file.exportWoff", runCommand, isCommandEnabled),
+        commandMenuItem("file.exportWoff2", runCommand, isCommandEnabled),
+      ],
     },
   ];
 }

@@ -1,4 +1,4 @@
-import type { WorkspaceDocumentState } from "../../shared/workspace/protocol";
+import type { FontExportFormat, WorkspaceDocumentState } from "../../shared/workspace/protocol";
 import type { CloseReason, DirtyDocumentChoice, DocumentCrashChoice } from "../document/types";
 import type { Window } from "../windows/Window";
 
@@ -64,13 +64,18 @@ export interface NativeDialogs {
   saveShiftDocument(window: Window | null, suggestedPath: string | null): Promise<string | null>;
 
   /**
-   * Selects a TrueType export destination.
+   * Selects an export destination for one binary font format.
    *
    * @param window - native window that should own the choice.
    * @param state - settled document state used to suggest an output path.
+   * @param format - format whose extension the destination must carry.
    * @returns the selected path, or null when the user cancels.
    */
-  exportTrueTypeFont(window: Window | null, state: WorkspaceDocumentState): Promise<string | null>;
+  exportFont(
+    window: Window | null,
+    state: WorkspaceDocumentState,
+    format: FontExportFormat,
+  ): Promise<string | null>;
 
   /**
    * Returns the explicit action chosen for a dirty close transition.
@@ -111,7 +116,7 @@ export interface NativeDialogs {
   showSaveFailure(window: Window | null, applicationName: string): Promise<void>;
 
   /**
-   * Shows a blocking, nontechnical failure after TrueType export fails.
+   * Shows a blocking, nontechnical failure after a font export fails.
    *
    * @param window - native window that should own the message.
    * @param applicationName - product name shown by the native shell.

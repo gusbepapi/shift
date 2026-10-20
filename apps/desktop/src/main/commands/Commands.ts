@@ -172,7 +172,25 @@ const fileCommands: Command[] = [
     id: "file.exportTtf",
     label: "TrueType (.ttf)…",
     enabled: (ctx) => ctx.document.hasWorkspace(),
-    run: (ctx) => ctx.document.exportTtf(),
+    run: (ctx) => ctx.document.exportFont("ttf"),
+  },
+  {
+    id: "file.exportOtf",
+    label: "OpenType (.otf)…",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.document.exportFont("otf"),
+  },
+  {
+    id: "file.exportWoff",
+    label: "Web Open Font Format (.woff)…",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.document.exportFont("woff"),
+  },
+  {
+    id: "file.exportWoff2",
+    label: "Web Open Font Format 2 (.woff2)…",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.document.exportFont("woff2"),
   },
 ];
 const editCommands: Command[] = [

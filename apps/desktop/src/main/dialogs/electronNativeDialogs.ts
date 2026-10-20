@@ -88,14 +88,14 @@ export const electronNativeDialogs: NativeDialogs = {
     return result.canceled ? null : (result.filePath ?? null);
   },
 
-  async exportTrueTypeFont(window, state) {
+  async exportFont(window, state, format) {
     const defaultPath = state.saveTarget
-      ? path.join(path.dirname(state.saveTarget), `${path.parse(state.saveTarget).name}.ttf`)
-      : message("file.exportTrueType.untitledFilename");
+      ? path.join(path.dirname(state.saveTarget), `${path.parse(state.saveTarget).name}.${format}`)
+      : message(`file.export.${format}.untitledFilename`);
     const options: SaveDialogOptions = {
-      title: message("file.exportTrueType.title"),
+      title: message(`file.export.${format}.title`),
       defaultPath,
-      filters: [{ name: message("file.exportTrueType.filter"), extensions: ["ttf"] }],
+      filters: [{ name: message(`file.export.${format}.filter`), extensions: [format] }],
       properties: ["createDirectory", "showOverwriteConfirmation"],
     };
     const result = window

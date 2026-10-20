@@ -114,10 +114,13 @@ export type WorkspaceDocumentIdentity = {
   canonicalPath: string;
 };
 
+/** Names a binary font format that a workspace export can write. */
+export type FontExportFormat = "ttf" | "otf" | "woff" | "woff2";
+
 /** Identifies the compiled font written by a workspace export. */
 export type WorkspaceExportResult = {
   path: string;
-  format: "ttf";
+  format: FontExportFormat;
 };
 
 /**
@@ -246,7 +249,7 @@ export type SyncCallMap = {
   };
   /** Captures the committed workspace and compiles it without changing document state. */
   "workspace.export": {
-    request: { path: string };
+    request: { path: string; format: FontExportFormat };
     response: WorkspaceExportResult;
   };
   "workspace.glyphSnapshots": {

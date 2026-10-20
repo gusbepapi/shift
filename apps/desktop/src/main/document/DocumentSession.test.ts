@@ -37,7 +37,7 @@ function nativeDialogs(confirmDirtyDocument: NativeDialogs["confirmDirtyDocument
     async saveShiftDocument() {
       return null;
     },
-    async exportTrueTypeFont() {
+    async exportFont() {
       return null;
     },
     confirmDirtyDocument,

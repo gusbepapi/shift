@@ -64,6 +64,9 @@ describe("application command menu items", () => {
       "file.save",
       "file.saveAs",
       "file.exportTtf",
+      "file.exportOtf",
+      "file.exportWoff",
+      "file.exportWoff2",
     ]);
   });
 

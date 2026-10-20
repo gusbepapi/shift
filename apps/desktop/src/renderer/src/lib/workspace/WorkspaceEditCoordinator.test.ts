@@ -107,7 +107,7 @@ describe("WorkspaceEditCoordinator issues save on the committed-op lane", () => 
     const outputPath = join(outputRoot, "Queued.ttf");
     queueOutlinedGlyph(stack, "A", 65);
 
-    const exporting = stack.editCoordinator.export(outputPath);
+    const exporting = stack.editCoordinator.export(outputPath, "ttf");
     queueOutlinedGlyph(stack, "B", 66);
     await exporting;
     await stack.editCoordinator.settled();

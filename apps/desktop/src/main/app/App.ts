@@ -815,8 +815,8 @@ export class App {
             await this.#savePreviewAsDocument(window, session);
           }
         },
-        exportTtf: async () => {
-          await document?.exportTtf();
+        exportFont: async (format) => {
+          await document?.exportFont(format);
         },
       },
       windows: {

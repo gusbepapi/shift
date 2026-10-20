@@ -2,6 +2,7 @@ import type { CommandId, RendererCommandId } from "../commands";
 import type {
   FontSessionMode,
   WorkspaceDocumentState,
+  FontExportFormat,
   WorkspaceExportResult,
 } from "../workspace/protocol";
 import type { UpdateProgress } from "../update/types";
@@ -17,7 +18,7 @@ export type DocumentCallMap = {
     response: WorkspaceDocumentState;
   };
   "document.export": {
-    request: { path: string };
+    request: { path: string; format: FontExportFormat };
     response: WorkspaceExportResult;
   };
 };

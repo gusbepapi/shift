@@ -1,4 +1,5 @@
 import type { CommandId, RendererCommandId } from "../../shared/commands";
+import type { FontExportFormat } from "../../shared/workspace/protocol";
 import type { Window } from "../windows/Window";
 
 /**
@@ -111,8 +112,8 @@ export type CommandContext = {
     save: () => Promise<void>;
     /** Runs main's native Save As workflow. */
     saveAs: () => Promise<void>;
-    /** Runs main's native TrueType export workflow. */
-    exportTtf: () => Promise<void>;
+    /** Runs main's native export workflow for one binary font format. */
+    exportFont: (format: FontExportFormat) => Promise<void>;
   };
   windows: {
     /**

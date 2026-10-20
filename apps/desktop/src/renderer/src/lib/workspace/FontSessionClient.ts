@@ -8,6 +8,7 @@ import type {
   SyncCallMap,
   SyncEventMap,
   WorkspaceDocumentState,
+  FontExportFormat,
   WorkspaceExportResult,
   WorkspaceGlyphSnapshotRequest,
   WorkspaceSlugAtlas,
@@ -236,11 +237,14 @@ export class FontSessionClient {
    * @returns a completion handle so the edit lane can resume after export starts.
    * @throws {Error} when the workspace is disconnected or compilation fails.
    */
-  async startExport(path: string): Promise<{ completion: Promise<WorkspaceExportResult> }> {
+  async startExport(
+    path: string,
+    format: FontExportFormat,
+  ): Promise<{ completion: Promise<WorkspaceExportResult> }> {
     await this.connect();
 
     return {
-      completion: this.#require().call("workspace.export", { path }),
+      completion: this.#require().call("workspace.export", { path, format }),
     };
   }
 

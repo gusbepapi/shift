@@ -1,6 +1,7 @@
 import type { MessagePortMain } from "electron";
 import type {
   WorkspaceDocumentState,
+  FontExportFormat,
   WorkspaceExportResult,
 } from "../../shared/workspace/protocol";
 import type { DocumentCallMap, DocumentEventMap } from "../../shared/ipc/contract";
@@ -11,7 +12,7 @@ export interface Document {
   readonly connected: boolean;
   state(): Promise<WorkspaceDocumentState | null>;
   save(path: string | null): Promise<WorkspaceDocumentState>;
-  export(path: string): Promise<WorkspaceExportResult>;
+  export(path: string, format: FontExportFormat): Promise<WorkspaceExportResult>;
 }
 
 /**
@@ -58,11 +59,12 @@ export class DocumentClient implements Document {
    * Exports the committed document snapshot selected by the renderer lane.
    *
    * @param path - destination selected by the native export dialog.
+   * @param format - binary font format to compile.
    * @returns the compiled output identity after its atomic write completes.
    * @throws {Error} when the renderer is disconnected or compilation fails.
    */
-  export(path: string): Promise<WorkspaceExportResult> {
-    return this.#call("document.export", { path });
+  export(path: string, format: FontExportFormat): Promise<WorkspaceExportResult> {
+    return this.#call("document.export", { path, format });
   }
 
   /** Disconnects the active renderer document lane. */

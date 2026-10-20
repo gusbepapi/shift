@@ -14,6 +14,7 @@ import type {
   WorkspaceDocumentIdentity,
   WorkspaceDocumentSourceKind,
   WorkspaceDocumentState,
+  FontExportFormat,
   WorkspaceExportResult,
   WorkspaceSlugAtlas,
   WorkspaceSlugAtlasPageRequest,
@@ -185,7 +186,7 @@ export class WorkspaceHost {
       // every committed apply/undo/redo, so it never writes stale state.
       "workspace.save": () => this.#serialize(() => this.#save()),
       "workspace.saveAs": ({ path }) => this.#serialize(() => this.#saveAs(path)),
-      "workspace.export": ({ path }) => this.#export(path),
+      "workspace.export": ({ path, format }) => this.#export(path, format),
       "workspace.glyphSnapshots": ({ requests }) =>
         this.#serialize(() => this.#bridge.getGlyphSnapshots(requests) as GlyphSnapshot[]),
       "workspace.layers.read": ({ layerIds }) =>
@@ -763,17 +764,17 @@ export class WorkspaceHost {
     return this.#emitDocumentChanged();
   }
 
-  async #export(outputPath: string): Promise<WorkspaceExportResult> {
+  async #export(outputPath: string, format: FontExportFormat): Promise<WorkspaceExportResult> {
     const { completion } = await this.#serialize(() => ({
       // exportWorkspace captures its immutable native snapshot synchronously.
       // Wrapping the completion releases the workspace queue while fontc runs.
       completion: this.#bridge.exportWorkspace({
         path: outputPath,
-        format: "ttf",
+        format,
       }),
     }));
     const result = await completion;
-    return { path: result.path, format: "ttf" };
+    return { path: result.path, format };
   }
 
   async #specimen(path: string): Promise<Specimen | null> {
