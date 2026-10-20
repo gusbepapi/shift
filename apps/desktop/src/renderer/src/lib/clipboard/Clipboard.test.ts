@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Clipboard } from "@shift/editor/clipboard";
+import { payloadJsonFromSvg } from "@shift/editor/clipboard";
 import type { ShiftContent, SystemClipboard } from "@shift/editor/clipboard";
 
 class MemoryClipboard implements SystemClipboard {
@@ -35,12 +36,14 @@ describe("Clipboard", () => {
     clipboard = new Clipboard(system);
   });
 
-  it("writes Shift content as a versioned clipboard payload", async () => {
+  it("writes Shift content as SVG that carries a versioned payload", async () => {
     const written = await clipboard.write(content());
 
     expect(written).toBe(true);
+    expect(system.text).toContain("<svg");
+    expect(system.text).toContain("<path");
 
-    const payload = JSON.parse(system.text);
+    const payload = JSON.parse(payloadJsonFromSvg(system.text) ?? "null");
     expect(payload.format).toBe("shift/glyph-data");
     expect(payload.version).toBe(1);
     expect(payload.content.contours).toHaveLength(1);

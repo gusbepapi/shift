@@ -5,6 +5,7 @@ export {
   type ClipboardSelectionSource,
 } from "./ClipboardSelection";
 export { SvgImporter } from "./importers/SvgImporter";
+export { contentToSvg, payloadJsonFromSvg } from "./exporters/SvgExporter";
 export type {
   SystemClipboard,
   ClipboardImporter,

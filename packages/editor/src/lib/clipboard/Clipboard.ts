@@ -11,6 +11,7 @@ import type {
   ShiftContent,
 } from "./types";
 import { SvgImporter } from "./importers/SvgImporter";
+import { contentToSvg, payloadJsonFromSvg } from "./exporters/SvgExporter";
 
 const DEFAULT_PASTE_OFFSET = 20;
 
@@ -71,7 +72,9 @@ export class Clipboard {
         },
       };
 
-      await this.#system.writeText(JSON.stringify(payload));
+      // Other vector editors paste SVG text as vectors, and the payload rides inside it as metadata
+      const svg = contentToSvg(content, payload);
+      await this.#system.writeText(svg ?? JSON.stringify(payload));
 
       return true;
     } catch {
@@ -128,7 +131,7 @@ export class Clipboard {
 
 function tryDeserialize(text: string): ShiftContent | null {
   try {
-    const payload = JSON.parse(text);
+    const payload = JSON.parse(payloadJsonFromSvg(text) ?? text);
     if (payload.format !== "shift/glyph-data" || payload.version > 1) return null;
     if (!ValidateClipboard.isShiftContent(payload.content)) return null;
     return payload.content;
