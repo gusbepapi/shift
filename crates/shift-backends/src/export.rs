@@ -13,6 +13,7 @@ use write_fonts::tables::name::Name;
 use write_fonts::types::NameId;
 
 use crate::atomic::write_file_atomic;
+use crate::cff::{CffError, ttf_to_otf};
 use crate::shift2fontir::{PropagatedGlyphAnchors, ShiftIrSource, ShiftIrSourceError};
 use crate::traits::FontView;
 use crate::webfont::{WebFontError, to_woff, to_woff2};
@@ -21,6 +22,7 @@ use crate::webfont::{WebFontError, to_woff, to_woff2};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExportFormat {
     Ttf,
+    Otf,
     Woff,
     Woff2,
 }
@@ -30,6 +32,7 @@ impl ExportFormat {
     pub fn as_str(self) -> &'static str {
         match self {
             ExportFormat::Ttf => "ttf",
+            ExportFormat::Otf => "otf",
             ExportFormat::Woff => "woff",
             ExportFormat::Woff2 => "woff2",
         }
@@ -42,6 +45,7 @@ impl TryFrom<&str> for ExportFormat {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_ascii_lowercase().as_str() {
             "ttf" => Ok(Self::Ttf),
+            "otf" => Ok(Self::Otf),
             "woff" => Ok(Self::Woff),
             "woff2" => Ok(Self::Woff2),
             format => Err(ExportError::UnsupportedFormat {
@@ -86,6 +90,9 @@ pub enum ExportError {
 
     #[error("failed to compile TrueType font: {message}")]
     CompileTtf { message: String },
+
+    #[error("failed to build the OpenType font: {0}")]
+    BuildOtf(#[from] CffError),
 
     #[error("failed to pack the web font: {0}")]
     PackWebFont(#[from] WebFontError),
@@ -163,6 +170,7 @@ impl FontExporter {
         let ttf = self.compile_ttf(font)?;
         match format {
             ExportFormat::Ttf => Ok(ttf),
+            ExportFormat::Otf => Ok(ttf_to_otf(&ttf)?),
             ExportFormat::Woff => Ok(to_woff(&ttf)?),
             ExportFormat::Woff2 => Ok(to_woff2(&ttf)?),
         }
@@ -570,6 +578,28 @@ mod tests {
             error,
             ExportError::OutputExtensionMismatch { path, .. } if path == output_path
         ));
+    }
+
+    #[test]
+    fn refuses_to_export_a_variable_font_as_otf() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("Dogfood.otf");
+
+        let error = FontExporter::new()
+            .export(
+                &sample_variable_font(),
+                FontExportRequest {
+                    path: path.clone(),
+                    format: ExportFormat::Otf,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ExportError::BuildOtf(CffError::VariableFont)
+        ));
+        assert!(!path.exists());
     }
 
     #[test]

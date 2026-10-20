@@ -3,6 +3,7 @@
 #![warn(clippy::unwrap_used, clippy::print_stdout)]
 
 mod atomic;
+mod cff;
 pub mod errors;
 pub mod export;
 mod feature_includes;
