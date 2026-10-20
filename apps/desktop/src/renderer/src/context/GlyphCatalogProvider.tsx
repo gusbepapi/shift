@@ -123,6 +123,7 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
   const [query, setQuery] = useState("");
   const [categoryFilters, setCategoryFilters] = useState<readonly GlyphCategoryFilter[]>([]);
   const [selectedLanguageId, setSelectedLanguageId] = useState<string | null>(null);
+  const [revealedGlyph, setRevealedGlyph] = useState<GlyphCatalogSource["revealedGlyph"]>(null);
   const [expandedCategories, setExpandedCategories] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -256,6 +257,8 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
     if (!workspace) throw new Error("preview catalog cannot create glyphs");
 
     const record = workspace.editor.createGlyph("newGlyph" as GlyphName);
+    // A new glyph joins the end of a list that may be long, so the grid is asked to show it
+    setRevealedGlyph({ id: record.id });
     setQuery("");
     setCategoryFilters([]);
     setSelectedLanguageId(null);
@@ -323,6 +326,7 @@ const useGlyphCatalogSource = (): GlyphCatalogSource => {
     openedGlyph,
     openGlyph,
     createQuickGlyph,
+    revealedGlyph,
     selectAll: () => {
       setCategoryFilters([]);
       setSelectedLanguageId(null);

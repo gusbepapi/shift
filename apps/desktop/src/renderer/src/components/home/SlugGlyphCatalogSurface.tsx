@@ -172,6 +172,7 @@ export function SlugGlyphCatalogSurface({
     <>
       <div
         ref={containerRef}
+        data-glyph-catalog-scroll
         className="absolute inset-0 overflow-x-hidden overflow-y-auto"
         aria-label="Glyph catalog"
       >

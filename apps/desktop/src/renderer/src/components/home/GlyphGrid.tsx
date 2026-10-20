@@ -3,6 +3,7 @@ import { useLocation } from "react-router";
 import { GlyphCatalogBackendGate } from "./GlyphCatalogBackendGate";
 import { useGlyphCatalog } from "@/context/GlyphCatalogContext";
 import { getShiftHost } from "@/host/shiftHost";
+import { GlyphCatalogLayout } from "./glyphCatalogLayout";
 
 /** Coordinates shared catalog data and session-fixed backend selection. */
 export const GlyphGrid = memo(function GlyphGrid() {
@@ -17,9 +18,35 @@ export const GlyphGrid = memo(function GlyphGrid() {
     glyphPreviews,
     canAuthor,
     openGlyph,
+    revealedGlyph,
   } = useGlyphCatalog();
   const [catalogReady, setCatalogReady] = useState(false);
   const workspaceReadyRef = useRef(false);
+  const sectionRef = useRef<HTMLElement>(null);
+  const handledRevealRef = useRef(revealedGlyph);
+
+  // Scrolling to a glyph just created, once the catalog lists it
+  useEffect(() => {
+    if (revealedGlyph === null || handledRevealRef.current === revealedGlyph) return;
+    const section = sectionRef.current;
+    const scroller = section?.querySelector<HTMLElement>("[data-glyph-catalog-scroll]");
+    const index = filteredGlyphs.findIndex((glyph) => glyph.id === revealedGlyph.id);
+    if (!section || !scroller || index < 0) return;
+
+    handledRevealRef.current = revealedGlyph;
+    const layout = new GlyphCatalogLayout(
+      scroller.clientWidth,
+      scroller.clientHeight,
+      filteredGlyphs.length,
+    );
+    if (layout.columns === 0) return;
+    const rowTop = layout.viewportPadding + Math.floor(index / layout.columns) * layout.rowPitch;
+    const rowBottom = rowTop + layout.rowPitch;
+    const visibleBottom = scroller.scrollTop + scroller.clientHeight;
+    if (rowTop < scroller.scrollTop || rowBottom > visibleBottom) {
+      scroller.scrollTop = Math.max(0, rowBottom - scroller.clientHeight + layout.viewportPadding);
+    }
+  }, [filteredGlyphs, revealedGlyph]);
 
   const showMeasuredWorkspace = useCallback(async (): Promise<void> => {
     if (workspaceReadyRef.current) return;
@@ -48,6 +75,7 @@ export const GlyphGrid = memo(function GlyphGrid() {
 
   return (
     <section
+      ref={sectionRef}
       aria-label="Glyph catalog surface"
       data-filtered-glyph-count={filteredGlyphs.length}
       data-first-glyph-id={filteredGlyphs[0]?.id}

@@ -61,6 +61,8 @@ export interface GlyphCatalogSource {
   query: string;
   setQuery: (nextQuery: string) => void;
   createQuickGlyph: () => GlyphName;
+  /** The glyph the catalogue should scroll to, set anew by every creation. */
+  revealedGlyph: { readonly id: GlyphId } | null;
   selectAll: () => void;
   selectCategory: (category: string, mode: ListSelectionMode) => void;
   selectSubCategory: (category: string, subCategoryKey: string, mode: ListSelectionMode) => void;
