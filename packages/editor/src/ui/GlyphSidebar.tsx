@@ -1,9 +1,9 @@
 import { Button, Separator, cn } from "@shift/ui";
 import type { ReactNode } from "react";
 import { useSignalState } from "../lib/signals";
-import { formatCodepointAsUPlus } from "../lib/utils/unicode";
 import { EditableSidebarInput } from "./EditableSidebarInput";
 import { ShiftIcon } from "./ShiftIcon";
+import { UnicodeField } from "./UnicodeField";
 import type { EditorUISession } from "./types";
 import type { GlyphId } from "@shift/types";
 import { useGlyphMetrics } from "./useGlyphMetrics";
@@ -47,7 +47,8 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
   const leftSidebearing = sidebearings.lsb === null ? null : Math.round(sidebearings.lsb);
   const rightSidebearing = sidebearings.rsb === null ? null : Math.round(sidebearings.rsb);
   const sidebearingsEditable = editable && leftSidebearing !== null && rightSidebearing !== null;
-  const unicode = glyph?.unicode ?? null;
+  // Unicode edits are font-level identity edits; read-only previews and memory sessions cannot make them
+  const unicodeEditable = session.mode === "workspace" && glyph !== null;
   const glyphLabel = glyph === null ? null : (host.glyphLabel?.(glyph.id) ?? glyph.name);
 
   return (
@@ -82,9 +83,19 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
             <h3 className="text-ui font-medium text-primary">Glyph</h3>
             <main className="flex flex-col items-center">
               <div className="mb-2 flex flex-col items-center gap-0.5">
-                <div className={cn("font-mono text-sm", unicode === null && "text-secondary")}>
-                  {unicode === null ? "—" : formatCodepointAsUPlus(unicode)}
-                </div>
+                {glyph === null ? (
+                  <div className="font-mono text-sm text-secondary">—</div>
+                ) : (
+                  <UnicodeField
+                    glyphId={glyph.id}
+                    unicodes={glyph.entry.unicodes}
+                    editable={unicodeEditable}
+                    isTaken={(codepoint) => font.entryForUnicode(codepoint) !== null}
+                    onCommit={(unicodes) =>
+                      font.updateGlyphIdentity(glyph.id, glyph.name, unicodes)
+                    }
+                  />
+                )}
               </div>
               <div className="flex items-center justify-center gap-2">
                 <EditableSidebarInput
