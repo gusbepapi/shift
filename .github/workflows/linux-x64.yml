@@ -108,7 +108,7 @@ jobs:
       - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
-          name: Shift-linux-x64-archive
+          name: shift-linux-x64-archive
           path: ${{ env.OUTPUT_ROOT }}/*.tar.gz
           if-no-files-found: error
           retention-days: 14
@@ -116,7 +116,16 @@ jobs:
       - name: Upload unpacked application
         uses: actions/upload-artifact@v7
         with:
-          name: Shift-linux-x64-unpacked
+          name: shift-linux-x64-unpacked
           path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # Shipping the command-line tool on its own, next to the application
+      - name: Upload command-line tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: shift-linux-x64-cli
+          path: target/release/shift-cli
           if-no-files-found: error
           retention-days: 14
