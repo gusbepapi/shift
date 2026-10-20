@@ -54,6 +54,7 @@ describe("SvgImporter", () => {
         y: 20,
         pointType: "onCurve",
       });
+      expect(requireValue(contour.points[1])).toMatchObject({ x: 30, y: 0 });
     });
 
     it("parses cubic bezier (C command)", () => {
@@ -87,16 +88,17 @@ describe("SvgImporter", () => {
       const secondPoint = requireValue(points[1]);
 
       expect(secondPoint.x).toBe(0);
-      expect(secondPoint.y).toBe(100);
+      expect(secondPoint.y).toBe(0);
+      expect(requireValue(points[0]).y).toBe(100);
     });
 
     it("parses relative commands (lowercase)", () => {
       const result = requireImport("M10,10 l20,0 l0,20");
       const points = requireValue(result.contours[0]).points;
 
-      expect(requireValue(points[0])).toMatchObject({ x: 10, y: 10 });
-      expect(requireValue(points[1])).toMatchObject({ x: 30, y: 10 });
-      expect(requireValue(points[2])).toMatchObject({ x: 30, y: 30 });
+      expect(requireValue(points[0])).toMatchObject({ x: 10, y: 20 });
+      expect(requireValue(points[1])).toMatchObject({ x: 30, y: 20 });
+      expect(requireValue(points[2])).toMatchObject({ x: 30, y: 0 });
     });
 
     it("parses path from SVG element", () => {
@@ -131,6 +133,89 @@ describe("SvgImporter", () => {
       const result = requireImport("M0,0 Q25,50 50,0 T100,0");
       const points = requireValue(result.contours[0]).points;
       expect(points.length).toBeGreaterThan(2);
+    });
+  });
+
+  describe("orientation", () => {
+    it("mirrors y so that artwork stands upright above the viewBox bottom", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 200"><path d="M0,0 L100,0 L100,50 Z"/></svg>',
+      );
+      const ys = requireValue(result.contours[0]).points.map((point) => point.y);
+
+      // The top of the artboard is y = 0 in SVG, which is the highest point in glyph space
+      expect(ys).toEqual([200, 200, 150]);
+    });
+
+    it("mirrors about the lowest point when there is no viewBox", () => {
+      const result = requireImport("M0,0 L100,0 L100,50 Z");
+      const ys = requireValue(result.contours[0]).points.map((point) => point.y);
+
+      expect(ys).toEqual([50, 50, 0]);
+    });
+  });
+
+  describe("Adobe Illustrator markup", () => {
+    const illustrator = `<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 29.0.0, SVG Export Plug-In . SVG Version: 9.03 Build 0)  -->
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="0 0 100 100" style="enable-background:new 0 0 100 100;" xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#231F20;}
+</style>
+<polygon class="st0" points="10,10 90,10 90,40"/>
+<rect x="20" y="60" class="st0" width="30" height="20"/>
+<circle class="st0" cx="75" cy="75" r="10"/>
+</svg>`;
+
+    it("reads the shapes although an id attribute precedes any d attribute", () => {
+      const result = requireImport(illustrator);
+
+      expect(result.contours).toHaveLength(3);
+    });
+
+    it("converts polygons, rectangles and circles to contours", () => {
+      const [triangle, rectangle, circle] = requireImport(illustrator).contours;
+
+      expect(requireValue(triangle).closed).toBe(true);
+      expect(requireValue(triangle).points).toHaveLength(3);
+      expect(requireValue(rectangle).points).toHaveLength(4);
+      expect(
+        requireValue(circle).points.filter((point) => point.pointType === "offCurve"),
+      ).toHaveLength(8);
+    });
+
+    it("ignores definitions, styles and comments", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 10 10"><defs><path d="M0,0 L9,9"/></defs><path d="M1,1 L2,2 L3,1 Z"/></svg>',
+      );
+
+      expect(result.contours).toHaveLength(1);
+    });
+
+    it("applies the transform on an element", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path transform="translate(10 20)" d="M0,0 L10,0 L10,10 Z"/></svg>',
+      );
+      const points = requireValue(result.contours[0]).points;
+
+      expect(requireValue(points[0])).toMatchObject({ x: 10, y: 80 });
+    });
+  });
+
+  describe("closing point", () => {
+    it("drops the point that repeats the start of a closed path", () => {
+      const result = requireImport("M0,0 L100,0 L100,100 L0,0 Z");
+
+      expect(requireValue(result.contours[0]).points).toHaveLength(3);
+    });
+
+    it("keeps off-curve points that curve back to the start", () => {
+      const result = requireImport("M0,0 L100,0 C100,50 50,100 0,0 Z");
+      const points = requireValue(result.contours[0]).points;
+
+      expect(points).toHaveLength(4);
+      expect(points.filter((point) => point.pointType === "offCurve")).toHaveLength(2);
     });
   });
 });

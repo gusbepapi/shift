@@ -1,3 +1,5 @@
+import { Validate } from "@shift/validation";
+import { applyMatrix, extractShapes, IDENTITY, viewBoxBottom, type SvgShape } from "./svgShapes";
 import type {
   ClipboardImporter,
   ClipboardOffer,
@@ -29,19 +31,29 @@ export class SvgImporter implements ClipboardImporter {
     return this.#canImportText(text);
   }
 
+  /**
+   * Imports SVG markup, a `<path>` element, or raw path data as glyph contours.
+   *
+   * SVG is y-down and glyph space is y-up, so every y coordinate is mirrored about the
+   * bottom edge of the artwork: the root `viewBox` when there is one, otherwise the
+   * lowest imported point. The artwork then stands upright on the baseline.
+   */
   importText(text: string): ShiftContent | null {
     const trimmed = text.trim();
 
-    const pathData = this.#extractPathData(trimmed);
-    if (!pathData) return null;
-
-    const commands = this.#parsePathCommands(pathData);
-    if (commands.length === 0) return null;
-
-    const contours = this.#commandsToContours(commands);
+    const shapes = this.#shapesOf(trimmed);
+    const contours = shapes.flatMap((shape) => this.#contoursOf(shape));
     if (contours.length === 0) return null;
 
-    return { contours };
+    const lowest = Math.max(...contours.flatMap((contour) => contour.points.map(({ y }) => y)));
+    const bottom = viewBoxBottom(trimmed) ?? lowest;
+
+    return {
+      contours: contours.map((contour) => ({
+        ...contour,
+        points: contour.points.map((point) => ({ ...point, y: bottom - point.y })),
+      })),
+    };
   }
 
   #canImportText(text: string): boolean {
@@ -55,17 +67,23 @@ export class SvgImporter implements ClipboardImporter {
     return /^[MmZzLlHhVvCcSsQqTtAa0-9\s,.\-+eE]+$/.test(text) && /[MmLlCcQqSsAa]/.test(text);
   }
 
-  #extractPathData(text: string): string | null {
-    if (this.#looksLikePathData(text)) {
-      return text;
-    }
+  #shapesOf(text: string): SvgShape[] {
+    if (this.#looksLikePathData(text)) return [{ pathData: text, transform: IDENTITY }];
 
-    const pathMatch = text.match(/d\s*=\s*["']([^"']+)["']/);
-    if (pathMatch) {
-      return pathMatch.at(1) ?? null;
-    }
+    return extractShapes(text);
+  }
 
-    return null;
+  #contoursOf(shape: SvgShape): ContourContent[] {
+    const commands = this.#parsePathCommands(shape.pathData);
+    if (commands.length === 0) return [];
+
+    return this.#commandsToContours(commands).map((contour) => ({
+      ...contour,
+      points: contour.points.map((point) => ({
+        ...point,
+        ...applyMatrix(shape.transform, point.x, point.y),
+      })),
+    }));
   }
 
   #parsePathCommands(pathData: string): PathCommand[] {
@@ -171,6 +189,21 @@ export class SvgImporter implements ClipboardImporter {
 
     const finishContour = (closed: boolean) => {
       if (currentContour.length > 0) {
+        // A path that draws back to its start repeats that point before closing
+        const head = currentContour[0];
+        const tail = currentContour[currentContour.length - 1];
+        if (
+          closed &&
+          currentContour.length > 2 &&
+          head &&
+          tail &&
+          Validate.isOnCurve(tail) &&
+          head.x === tail.x &&
+          head.y === tail.y
+        ) {
+          currentContour.pop();
+          currentContour[0] = { ...head, smooth: tail.smooth };
+        }
         contours.push({ points: currentContour, closed });
         currentContour = [];
       }
