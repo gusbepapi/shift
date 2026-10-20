@@ -14,6 +14,8 @@ use write_fonts::types::NameId;
 
 use crate::atomic::write_file_atomic;
 use crate::cff::{CffError, ttf_to_otf};
+use crate::errors::FormatBackendError;
+use crate::formats::glyphs::GlyphsWriter;
 use crate::shift2fontir::{PropagatedGlyphAnchors, ShiftIrSource, ShiftIrSourceError};
 use crate::traits::FontView;
 use crate::webfont::{WebFontError, to_woff, to_woff2};
@@ -23,6 +25,7 @@ use crate::webfont::{WebFontError, to_woff, to_woff2};
 pub enum ExportFormat {
     Ttf,
     Otf,
+    Glyphs,
     Woff,
     Woff2,
 }
@@ -33,6 +36,7 @@ impl ExportFormat {
         match self {
             ExportFormat::Ttf => "ttf",
             ExportFormat::Otf => "otf",
+            ExportFormat::Glyphs => "glyphs",
             ExportFormat::Woff => "woff",
             ExportFormat::Woff2 => "woff2",
         }
@@ -46,6 +50,7 @@ impl TryFrom<&str> for ExportFormat {
         match value.to_ascii_lowercase().as_str() {
             "ttf" => Ok(Self::Ttf),
             "otf" => Ok(Self::Otf),
+            "glyphs" => Ok(Self::Glyphs),
             "woff" => Ok(Self::Woff),
             "woff2" => Ok(Self::Woff2),
             format => Err(ExportError::UnsupportedFormat {
@@ -90,6 +95,9 @@ pub enum ExportError {
 
     #[error("failed to compile TrueType font: {message}")]
     CompileTtf { message: String },
+
+    #[error("failed to write the Glyphs source: {0}")]
+    WriteGlyphs(#[from] FormatBackendError),
 
     #[error("failed to build the OpenType font: {0}")]
     BuildOtf(#[from] CffError),
@@ -167,12 +175,12 @@ impl FontExporter {
         font: &impl FontView,
         format: ExportFormat,
     ) -> Result<Vec<u8>, ExportError> {
-        let ttf = self.compile_ttf(font)?;
         match format {
-            ExportFormat::Ttf => Ok(ttf),
-            ExportFormat::Otf => Ok(ttf_to_otf(&ttf)?),
-            ExportFormat::Woff => Ok(to_woff(&ttf)?),
-            ExportFormat::Woff2 => Ok(to_woff2(&ttf)?),
+            ExportFormat::Glyphs => Ok(GlyphsWriter::new().render(font)?.into_bytes()),
+            ExportFormat::Ttf => self.compile_ttf(font),
+            ExportFormat::Otf => Ok(ttf_to_otf(&self.compile_ttf(font)?)?),
+            ExportFormat::Woff => Ok(to_woff(&self.compile_ttf(font)?)?),
+            ExportFormat::Woff2 => Ok(to_woff2(&self.compile_ttf(font)?)?),
         }
     }
 
@@ -577,6 +585,44 @@ mod tests {
         assert!(matches!(
             error,
             ExportError::OutputExtensionMismatch { path, .. } if path == output_path
+        ));
+    }
+
+    #[test]
+    fn exports_the_glyphs_source_of_a_variable_font() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("Dogfood.glyphs");
+
+        FontExporter::new()
+            .export(
+                &sample_variable_font(),
+                FontExportRequest {
+                    path: path.clone(),
+                    format: ExportFormat::Glyphs,
+                },
+            )
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("{\n.appVersion = "));
+        assert!(text.contains(".formatVersion = 3;"));
+        assert!(text.contains("glyphname = "));
+
+        let error = FontExporter::new()
+            .export(
+                &sample_variable_font(),
+                FontExportRequest {
+                    path: temp_dir.path().join("Dogfood.ttf"),
+                    format: ExportFormat::Glyphs,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ExportError::OutputExtensionMismatch {
+                extension: "glyphs",
+                ..
+            }
         ));
     }
 

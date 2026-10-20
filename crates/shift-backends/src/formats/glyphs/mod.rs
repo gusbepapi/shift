@@ -4,6 +4,7 @@ mod import;
 mod reader;
 mod report;
 mod source;
+mod writer;
 
 pub(crate) use conversion::{
     anchor_parts, component_transform, default_design_value, font_header, master_design_values,
@@ -13,6 +14,7 @@ pub(crate) use families::InstanceFamilies;
 pub(crate) use import::{stream_font, stream_retained};
 pub use reader::GlyphsReader;
 pub use source::GlyphsFont;
+pub use writer::GlyphsWriter;
 
 #[cfg(test)]
 mod tests {
