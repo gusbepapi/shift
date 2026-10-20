@@ -218,4 +218,38 @@ describe("SvgImporter", () => {
       expect(points.filter((point) => point.pointType === "offCurve")).toHaveLength(2);
     });
   });
+
+  describe("compact numbers", () => {
+    it("splits numbers that are joined by a sign", () => {
+      const result = requireImport("M10-20c-1.5-2-3-4.5-4-6.25z");
+      const points = requireValue(result.contours[0]).points;
+
+      expect(points).toHaveLength(4);
+      expect(requireValue(points[1])).toMatchObject({ x: 8.5, pointType: "offCurve" });
+    });
+
+    it("splits numbers that are joined by a second decimal point", () => {
+      const result = requireImport("M.5.5L1.5.5L1.5 2z");
+      const points = requireValue(result.contours[0]).points;
+
+      expect(points).toHaveLength(3);
+      expect(requireValue(points[1])).toMatchObject({ x: 1.5 });
+    });
+
+    it("reads arc flags written without separators", () => {
+      const result = requireImport("M0,0a5 5 0 011 2l3 0z");
+      const points = requireValue(result.contours[0]).points;
+
+      expect(points).toHaveLength(3);
+      expect(requireValue(points[1])).toMatchObject({ x: 1 });
+    });
+
+    it("reflects the control point of a smooth curve only after a curve", () => {
+      const result = requireImport("M0,0 L10,0 S20,10 30,0");
+      const points = requireValue(result.contours[0]).points;
+
+      // The first control point of the S segment is the current point, since L precedes it
+      expect(requireValue(points[2])).toMatchObject({ x: 10, y: 0, pointType: "offCurve" });
+    });
+  });
 });

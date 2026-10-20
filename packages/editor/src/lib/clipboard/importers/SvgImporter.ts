@@ -13,6 +13,45 @@ type PathCommand = {
   args: number[];
 };
 
+// A number as SVG writes it: `-1.2-0.5` is two numbers and `.5.5` is two, so spaces are optional
+const NUMBER = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/y;
+
+/**
+ * Reads the numbers after one path command letter.
+ *
+ * Arc commands hold two flags that may be written without any separator, as `a1 1 0 011 2`,
+ * so the fourth and fifth number of every group of seven are single digits.
+ */
+function tokeniseArguments(type: string, text: string): number[] {
+  const values: number[] = [];
+  const isArc = type.toUpperCase() === "A";
+  let position = 0;
+
+  while (position < text.length) {
+    const separator = /^[\s,]*/.exec(text.slice(position));
+    position += separator?.[0].length ?? 0;
+    if (position >= text.length) break;
+
+    const slot = values.length % 7;
+    if (isArc && (slot === 3 || slot === 4)) {
+      const flag = text[position];
+      if (flag !== "0" && flag !== "1") break;
+      values.push(Number(flag));
+      position += 1;
+      continue;
+    }
+
+    NUMBER.lastIndex = position;
+    const match = NUMBER.exec(text);
+    if (!match) break;
+
+    values.push(Number(match[0]));
+    position = NUMBER.lastIndex;
+  }
+
+  return values;
+}
+
 export class SvgImporter implements ClipboardImporter {
   readonly id = "svg";
 
@@ -95,15 +134,7 @@ export class SvgImporter implements ClipboardImporter {
       const type = match.at(1);
       if (!type) continue;
 
-      const argsStr = (match.at(2) ?? "").trim();
-      const args = argsStr
-        ? argsStr
-            .replace(/,/g, " ")
-            .split(/\s+/)
-            .filter((s) => s.length > 0)
-            .map(Number)
-            .filter((n) => Number.isFinite(n))
-        : [];
+      const args = tokeniseArguments(type, match.at(2) ?? "");
       commands.push({ type, args });
     }
 
@@ -404,6 +435,12 @@ export class SvgImporter implements ClipboardImporter {
           }
           break;
         }
+      }
+
+      // A smooth command reflects the previous control point only when a curve preceded it
+      if (!"CSQT".includes(type.toUpperCase())) {
+        lastControlX = currentX;
+        lastControlY = currentY;
       }
     }
 
