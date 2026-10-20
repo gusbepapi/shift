@@ -1,4 +1,5 @@
 import { Validate } from "@shift/validation";
+import { arcToCubics } from "./svgArc";
 import { applyMatrix, extractShapes, IDENTITY, viewBoxBottom, type SvgShape } from "./svgShapes";
 import type {
   ClipboardImporter,
@@ -425,10 +426,29 @@ export class SvgImporter implements ClipboardImporter {
             const segment = septetAt(args, idx);
             if (!segment) break;
 
-            const [, , , , , dx, dy] = segment;
+            const [rx, ry, rotation, largeArc, sweep, dx, dy] = segment;
             const x = isRelative ? currentX + dx : dx;
             const y = isRelative ? currentY + dy : dy;
-            addOnCurve(x, y);
+            const cubics = arcToCubics(
+              currentX,
+              currentY,
+              rx,
+              ry,
+              rotation,
+              largeArc !== 0,
+              sweep !== 0,
+              x,
+              y,
+            );
+            if (cubics.length === 0) {
+              // A zero radius or a repeated point is a straight line by the specification
+              addOnCurve(x, y);
+            }
+            for (const [c1x, c1y, c2x, c2y, endX, endY] of cubics) {
+              addOffCurve(c1x, c1y);
+              addOffCurve(c2x, c2y);
+              addOnCurve(endX, endY, true);
+            }
             currentX = x;
             currentY = y;
             idx += 7;

@@ -240,8 +240,9 @@ describe("SvgImporter", () => {
       const result = requireImport("M0,0a5 5 0 011 2l3 0z");
       const points = requireValue(result.contours[0]).points;
 
-      expect(points).toHaveLength(3);
-      expect(requireValue(points[1])).toMatchObject({ x: 1 });
+      // The arc becomes one cubic of two handles and an end point, then the line adds a point
+      expect(points).toHaveLength(5);
+      expect(requireValue(points[3])).toMatchObject({ x: 1, pointType: "onCurve" });
     });
 
     it("reflects the control point of a smooth curve only after a curve", () => {
@@ -250,6 +251,71 @@ describe("SvgImporter", () => {
 
       // The first control point of the S segment is the current point, since L precedes it
       expect(requireValue(points[2])).toMatchObject({ x: 10, y: 10, pointType: "offCurve" });
+    });
+  });
+  describe("arcs", () => {
+    const extent = (points: { x: number; y: number }[]) => ({
+      minX: Math.min(...points.map((point) => point.x)),
+      maxX: Math.max(...points.map((point) => point.x)),
+      minY: Math.min(...points.map((point) => point.y)),
+      maxY: Math.max(...points.map((point) => point.y)),
+    });
+
+    it("draws a circle written as two arcs the way Inkscape does", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path d="m 90,50 a 40,40 0 0 1 -40,40 40,40 0 0 1 -40,-40 40,40 0 0 1 40,-40 40,40 0 0 1 40,40 z"/></svg>',
+      );
+      const contour = requireValue(result.contours[0]);
+      const onCurve = contour.points.filter((point) => point.pointType === "onCurve");
+      const bounds = extent(contour.points);
+
+      expect(onCurve).toHaveLength(4);
+      expect(contour.points).toHaveLength(12);
+      expect(bounds.minX).toBeCloseTo(10, 3);
+      expect(bounds.maxX).toBeCloseTo(90, 3);
+      expect(bounds.minY).toBeCloseTo(10, 3);
+      expect(bounds.maxY).toBeCloseTo(90, 3);
+    });
+
+    it("keeps every curve point at the radius from the centre", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path d="M 90,50 A 40,40 0 1 1 10,50 A 40,40 0 1 1 90,50 Z"/></svg>',
+      );
+      const contour = requireValue(result.contours[0]);
+
+      for (const point of contour.points.filter((candidate) => candidate.pointType === "onCurve")) {
+        expect(Math.hypot(point.x - 50, point.y - 50)).toBeCloseTo(40, 3);
+      }
+    });
+
+    it("splits a half turn into two quarter turns", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path d="M 10,50 A 40,40 0 0 1 90,50"/></svg>',
+      );
+      const contour = requireValue(result.contours[0]);
+
+      expect(contour.closed).toBe(false);
+      expect(contour.points).toHaveLength(7);
+    });
+
+    it("grows radii that are too small for the end points", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path d="M 10,50 A 1,1 0 0 1 90,50"/></svg>',
+      );
+      const contour = requireValue(result.contours[0]);
+      const end = requireValue(contour.points[contour.points.length - 1]);
+
+      expect(end.x).toBeCloseTo(90, 6);
+      expect(extent(contour.points).maxY - extent(contour.points).minY).toBeGreaterThan(30);
+    });
+
+    it("reads a zero radius as a straight line", () => {
+      const result = requireImport(
+        '<svg viewBox="0 0 100 100"><path d="M 10,50 A 0,0 0 0 1 90,50"/></svg>',
+      );
+      const contour = requireValue(result.contours[0]);
+
+      expect(contour.points).toHaveLength(2);
     });
   });
 });
