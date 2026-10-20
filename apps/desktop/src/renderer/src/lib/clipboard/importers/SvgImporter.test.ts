@@ -249,7 +249,7 @@ describe("SvgImporter", () => {
       const points = requireValue(result.contours[0]).points;
 
       // The first control point of the S segment is the current point, since L precedes it
-      expect(requireValue(points[2])).toMatchObject({ x: 10, y: 0, pointType: "offCurve" });
+      expect(requireValue(points[2])).toMatchObject({ x: 10, y: 10, pointType: "offCurve" });
     });
   });
 });
