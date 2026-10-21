@@ -331,9 +331,9 @@ fn atlas_region(
             return Err(invalid("source atlas region repeats an axis").into());
         }
         *axis = RegionAxis {
-            start: F2Dot14::from_f32(support.lower as f32).to_bits(),
-            peak: F2Dot14::from_f32(support.peak as f32).to_bits(),
-            end: F2Dot14::from_f32(support.upper as f32).to_bits(),
+            start: F2Dot14::from_f32(crate::numeric::lossy_f32(support.lower)).to_bits(),
+            peak: F2Dot14::from_f32(crate::numeric::lossy_f32(support.peak)).to_bits(),
+            end: F2Dot14::from_f32(crate::numeric::lossy_f32(support.upper)).to_bits(),
         };
     }
     Ok(AtlasRegion::new(axes))
@@ -559,22 +559,12 @@ fn invalid(details: impl Into<String>) -> FontReadError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use shift_font::test_support::fixtures;
 
     use super::*;
     use crate::font_source::{
         GlyphsFont, ProjectedGlyph, SourceAtlasPage, UfoFont, VariationCoordinate,
     };
-
-    fn fixture(path: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("fixtures/fonts")
-            .join(path)
-    }
 
     fn compile_page(
         font: &dyn FontSource,
@@ -589,7 +579,8 @@ mod tests {
 
     #[test]
     fn ufo_page_contains_resolvable_outline_geometry() {
-        let font = UfoFont::open(&fixture("mutatorsans/MutatorSansLightCondensed.ufo")).unwrap();
+        let font =
+            UfoFont::open(&fixtures::font("mutatorsans/MutatorSansLightCondensed.ufo")).unwrap();
         let glyph = font
             .directory()
             .glyphs
@@ -670,7 +661,7 @@ unitsPerEm = 1000;
                 .index
         };
         let (bar, smart) = (glyph("bar"), glyph("_smart.dash"));
-        assert!(font.glyph(smart).is_err());
+        font.glyph(smart).unwrap_err();
 
         let page = compile_page(&font, &[bar, smart]).unwrap();
         let weights = page
@@ -688,7 +679,7 @@ unitsPerEm = 1000;
 
     #[test]
     fn glyphs_page_flattens_component_closures() {
-        let font = GlyphsFont::open(&fixture("Homenaje.glyphs")).unwrap();
+        let font = GlyphsFont::open(&fixtures::font("Homenaje.glyphs")).unwrap();
         let glyph = font
             .directory()
             .glyphs
@@ -714,13 +705,14 @@ unitsPerEm = 1000;
 
     #[test]
     fn every_drawable_glyphs_projection_has_default_atlas_curves() {
-        let font = GlyphsFont::open(&fixture("MutatorSansVariable.glyphs")).unwrap();
+        let font = GlyphsFont::open(&fixtures::font("MutatorSansVariable.glyphs")).unwrap();
         assert_default_atlas_coverage(&font);
     }
 
     #[test]
     fn every_drawable_ufo_projection_has_default_atlas_curves() {
-        let font = UfoFont::open(&fixture("mutatorsans/MutatorSansLightCondensed.ufo")).unwrap();
+        let font =
+            UfoFont::open(&fixtures::font("mutatorsans/MutatorSansLightCondensed.ufo")).unwrap();
         assert_default_atlas_coverage(&font);
     }
 
@@ -862,7 +854,7 @@ unitsPerEm = 1000;
             .enumerate()
             .map(|(axis_index, design_value)| {
                 let mut mapping = directory
-                    .independent_mapping(super::super::AxisIndex::new(axis_index as u32))
+                    .independent_mapping(super::super::AxisIndex::at(axis_index))
                     .map(|mapping| {
                         mapping
                             .points
@@ -875,7 +867,7 @@ unitsPerEm = 1000;
                     .unwrap_or_default();
                 mapping.sort_by(|left, right| left.0.total_cmp(&right.0));
                 VariationCoordinate {
-                    axis: super::super::AxisIndex::new(axis_index as u32),
+                    axis: super::super::AxisIndex::at(axis_index),
                     value: piecewise_map(*design_value, &mapping),
                 }
             })

@@ -30,40 +30,22 @@ CREATE TABLE IF NOT EXISTS recovery_tombstones (
 );
 "#;
 
-/// Persisted lifecycle state of one sparse recovery overlay.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RecoveryState {
-    /// The overlay contains no unsaved authored changes.
-    Clean,
-    /// Sparse changes are based on the canonical saved commit.
-    Dirty,
-    /// A commit ID was persisted before applying changes to the canonical document.
-    SavePending,
-    /// The canonical saved commit changed from the overlay's base.
-    Conflict,
-}
-
-impl RecoveryState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Clean => "clean",
-            Self::Dirty => "dirty",
-            Self::SavePending => "save_pending",
-            Self::Conflict => "conflict",
-        }
+shift_font::string_enum! {
+    /// Persisted lifecycle state of one sparse recovery overlay.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum RecoveryState {
+        /// The overlay contains no unsaved authored changes.
+        Clean => "clean",
+        /// Sparse changes are based on the canonical saved commit.
+        Dirty => "dirty",
+        /// A commit ID was persisted before applying changes to the canonical document.
+        SavePending => "save_pending",
+        /// The canonical saved commit changed from the overlay's base.
+        Conflict => "conflict",
     }
-
-    fn parse(value: &str) -> Result<Self, StoreError> {
-        match value {
-            "clean" => Ok(Self::Clean),
-            "dirty" => Ok(Self::Dirty),
-            "save_pending" => Ok(Self::SavePending),
-            "conflict" => Ok(Self::Conflict),
-            other => Err(StoreError::InvalidDocument(format!(
-                "unknown recovery state {other:?}"
-            ))),
-        }
-    }
+    parse_error: StoreError = |value| {
+        StoreError::InvalidDocument(format!("unknown recovery state {value:?}"))
+    };
 }
 
 /// App-owned SQLite file containing only unsaved canonical row replacements and tombstones.
@@ -77,6 +59,14 @@ struct RecoveryMetadata {
     base_commit_id: CommitId,
     pending_commit_id: Option<CommitId>,
     state: RecoveryState,
+}
+
+/// The `recovery_metadata` row as stored, before its ids are validated.
+struct StoredMetadata {
+    document_id: String,
+    base_commit_id: String,
+    pending_commit_id: Option<String>,
+    state: String,
 }
 
 impl RecoveryOverlay {
@@ -263,30 +253,25 @@ impl RecoveryOverlay {
              FROM recovery_metadata WHERE id = 1",
             [],
             |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
+                Ok(StoredMetadata {
+                    document_id: row.get("document_id")?,
+                    base_commit_id: row.get("base_commit_id")?,
+                    pending_commit_id: row.get("pending_commit_id")?,
+                    state: row.get("state")?,
+                })
             },
         )?;
-        let document_id = DocumentId::from_stored(stored.0.clone())
-            .ok_or(StoreError::InvalidDocumentId(stored.0))?;
-        let base_commit_id =
-            CommitId::from_stored(stored.1.clone()).ok_or(StoreError::InvalidCommitId(stored.1))?;
-        let pending_commit_id = stored
-            .2
-            .map(|value| {
-                CommitId::from_stored(value.clone()).ok_or(StoreError::InvalidCommitId(value))
-            })
-            .transpose()?;
+        let commit_id = |value: String| {
+            CommitId::from_stored(value.clone()).ok_or(StoreError::InvalidCommitId(value))
+        };
+        let document_id = DocumentId::from_stored(stored.document_id.clone())
+            .ok_or(StoreError::InvalidDocumentId(stored.document_id))?;
 
         Ok(RecoveryMetadata {
             document_id,
-            base_commit_id,
-            pending_commit_id,
-            state: RecoveryState::parse(&stored.3)?,
+            base_commit_id: commit_id(stored.base_commit_id)?,
+            pending_commit_id: stored.pending_commit_id.map(commit_id).transpose()?,
+            state: stored.state.parse()?,
         })
     }
 }

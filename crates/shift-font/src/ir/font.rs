@@ -6,7 +6,7 @@ use crate::entity::{
     AnchorId, AxisId, ComponentId, ContourId, GlyphEntityId, GlyphId, LayerId, MetricId, PointId,
     SourceId,
 };
-use crate::error::{CoreError, CoreResult};
+use crate::error::{CoreError, CoreResult, EntityKind};
 use crate::features::FeatureData;
 use crate::glyph::{Glyph, GlyphLayer};
 use crate::glyph_category::{GlyphCategory, GlyphSubcategory};
@@ -17,7 +17,6 @@ use crate::lib_data::{LibData, LibValue};
 use crate::metrics::{FontMetrics, MetricDefinition, MetricKind, MetricValue};
 use crate::named_instance::{NamedInstance, validate_named_instances};
 use crate::source::Source;
-use crate::source::source_locations_equal;
 use crate::{AxisLabelId, GlyphName, NamedInstanceId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -539,17 +538,15 @@ impl Font {
     ///
     /// # Errors
     ///
-    /// Returns [`CoreError::InvalidEntityOrder`] unless `order` is an exact
+    /// Returns [`CoreError::OrderLengthMismatch`] or
+    /// [`CoreError::UnknownOrRepeatedId`] unless `order` is an exact
     /// permutation of the current axis identities.
     pub fn set_axis_order(&mut self, order: &[AxisId]) -> CoreResult<()> {
         if order.len() != self.axes().len() {
-            return Err(CoreError::InvalidEntityOrder {
-                kind: "axis",
-                message: format!(
-                    "expected {} identities, got {}",
-                    self.axes().len(),
-                    order.len()
-                ),
+            return Err(CoreError::OrderLengthMismatch {
+                kind: EntityKind::Axis,
+                expected: self.axes().len(),
+                actual: order.len(),
             });
         }
 
@@ -562,9 +559,9 @@ impl Font {
         let mut reordered = Vec::with_capacity(remaining.len());
         for axis_id in order {
             let Some(axis) = remaining.remove(axis_id) else {
-                return Err(CoreError::InvalidEntityOrder {
-                    kind: "axis",
-                    message: format!("identity {axis_id} is unknown or repeated"),
+                return Err(CoreError::UnknownOrRepeatedId {
+                    kind: EntityKind::Axis,
+                    id: axis_id.to_string(),
                 });
             };
             reordered.push(axis);
@@ -907,17 +904,15 @@ impl Font {
     ///
     /// # Errors
     ///
-    /// Returns [`CoreError::InvalidEntityOrder`] unless `order` is an exact
+    /// Returns [`CoreError::OrderLengthMismatch`] or
+    /// [`CoreError::UnknownOrRepeatedId`] unless `order` is an exact
     /// permutation of the current source identities.
     pub fn set_source_order(&mut self, order: &[SourceId]) -> CoreResult<()> {
         if order.len() != self.sources().len() {
-            return Err(CoreError::InvalidEntityOrder {
-                kind: "source",
-                message: format!(
-                    "expected {} identities, got {}",
-                    self.sources().len(),
-                    order.len()
-                ),
+            return Err(CoreError::OrderLengthMismatch {
+                kind: EntityKind::Source,
+                expected: self.sources().len(),
+                actual: order.len(),
             });
         }
 
@@ -930,9 +925,9 @@ impl Font {
         let mut reordered = Vec::with_capacity(remaining.len());
         for source_id in order {
             let Some(source) = remaining.remove(source_id) else {
-                return Err(CoreError::InvalidEntityOrder {
-                    kind: "source",
-                    message: format!("identity {source_id} is unknown or repeated"),
+                return Err(CoreError::UnknownOrRepeatedId {
+                    kind: EntityKind::Source,
+                    id: source_id.to_string(),
                 });
             };
             reordered.push(source);
@@ -1020,7 +1015,7 @@ impl Font {
     }
 
     pub fn default_source(&self) -> Option<&Source> {
-        self.source(&self.data().default_source_id.clone()?)
+        self.source(self.data().default_source_id.as_ref()?)
     }
 
     pub fn is_variable(&self) -> bool {
@@ -1257,7 +1252,7 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::GlyphNotFound`] for an empty directory and
-    /// [`CoreError::InvalidEntityOrder`] when `glyph_id` is not the tail.
+    /// [`CoreError::GlyphNotAtTail`] when `glyph_id` is not the tail.
     pub fn pop_glyph(&mut self, glyph_id: GlyphId) -> CoreResult<Glyph> {
         let Some((tail_id, _)) = self
             .data()
@@ -1267,10 +1262,7 @@ impl Font {
             return Err(CoreError::GlyphNotFound(glyph_id));
         };
         if tail_id != &glyph_id {
-            return Err(CoreError::InvalidEntityOrder {
-                kind: "glyph",
-                message: format!("identity {glyph_id} is not the directory tail"),
-            });
+            return Err(CoreError::GlyphNotAtTail(glyph_id));
         }
 
         self.remove_glyph(&glyph_id).require(&glyph_id)
@@ -1594,7 +1586,7 @@ fn validate_source(
         current.id() != source.id()
             && current.is_master()
             && source.is_master()
-            && source_locations_equal(current.location(), source.location(), axes)
+            && current.location().is_equivalent_to(source.location(), axes)
     }) {
         return Err(CoreError::DuplicateSourceLocation {
             first: existing.id(),
@@ -1792,7 +1784,8 @@ mod tests {
         let source_id = font.default_source_id().unwrap();
 
         for glyph_index in 0..mark.glyphs {
-            let mut glyph = Glyph::with_unicode(format!("g{glyph_index:05}"), glyph_index as u32);
+            let unicode = u32::try_from(glyph_index).unwrap();
+            let mut glyph = Glyph::with_unicode(format!("g{glyph_index:05}"), unicode);
             let mut layer = GlyphLayer::with_width(
                 LayerId::new(),
                 source_id.clone(),
@@ -2357,7 +2350,13 @@ mod tests {
         ] {
             assert!(matches!(
                 font.set_source_order(&invalid),
-                Err(CoreError::InvalidEntityOrder { kind: "source", .. })
+                Err(CoreError::OrderLengthMismatch {
+                    kind: EntityKind::Source,
+                    ..
+                } | CoreError::UnknownOrRepeatedId {
+                    kind: EntityKind::Source,
+                    ..
+                })
             ));
             assert_eq!(font, reordered_sources);
         }
@@ -2395,7 +2394,13 @@ mod tests {
         ] {
             assert!(matches!(
                 font.set_axis_order(&invalid),
-                Err(CoreError::InvalidEntityOrder { kind: "axis", .. })
+                Err(CoreError::OrderLengthMismatch {
+                    kind: EntityKind::Axis,
+                    ..
+                } | CoreError::UnknownOrRepeatedId {
+                    kind: EntityKind::Axis,
+                    ..
+                })
             ));
             assert_eq!(font, reordered_axes);
         }
@@ -2420,7 +2425,7 @@ mod tests {
         let before_invalid_pop = font.clone();
         assert!(matches!(
             font.pop_glyph(glyph_id.clone()),
-            Err(CoreError::InvalidEntityOrder { kind: "glyph", .. })
+            Err(CoreError::GlyphNotAtTail(_))
         ));
         assert_eq!(font, before_invalid_pop);
         assert_eq!(font.pop_glyph(second_id.clone()).unwrap().id(), second_id);
@@ -2475,6 +2480,18 @@ mod tests {
         let glyph_ids: Vec<_> = font.glyphs_by_unicode(0x41).map(Glyph::id).collect();
 
         assert_eq!(glyph_ids, vec![a, a_alt]);
+    }
+
+    #[test]
+    fn serialized_fonts_are_stable_across_a_round_trip() {
+        let fonts = [sample_font(), crate::test_support::sample_variable_font()];
+        for font in fonts {
+            let first = serde_json::to_vec(&font).unwrap();
+            let decoded: Font = serde_json::from_slice(&first).unwrap();
+            let second = serde_json::to_vec(&decoded).unwrap();
+
+            assert_eq!(String::from_utf8(first), String::from_utf8(second));
+        }
     }
 
     #[test]

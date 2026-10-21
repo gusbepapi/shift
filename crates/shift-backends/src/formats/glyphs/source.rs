@@ -106,7 +106,7 @@ impl GlyphsFont {
                 .get(glyph.to_usize())
                 .ok_or(FontReadError::GlyphOutOfRange {
                     glyph,
-                    glyph_count: self.directory.glyphs.len() as u32,
+                    glyph_count: self.directory.glyph_count(),
                 })?;
         self.source.glyphs.get(entry.name.as_str()).ok_or_else(|| {
             FontReadError::InvalidProjection {
@@ -160,14 +160,14 @@ fn project_glyphs_glyph(
         };
         let converted = convert_glyphs_layer(font, glyph, layer)?;
         layers.push((
-            SourceIndex::new(master_index as u32),
+            SourceIndex::at(master_index),
             font.master_locations[master_index].clone(),
             converted,
         ));
     }
     if layers.is_empty() {
         layers.push((
-            SourceIndex::new(font.source.default_master_idx as u32),
+            SourceIndex::at(font.source.default_master_idx),
             font.master_locations
                 .get(font.source.default_master_idx)
                 .cloned()
@@ -178,7 +178,7 @@ fn project_glyphs_glyph(
     project_layers(
         layers,
         &font.interpolation_axes,
-        SourceIndex::new(font.source.default_master_idx as u32),
+        SourceIndex::at(font.source.default_master_idx),
     )
 }
 
@@ -312,19 +312,10 @@ fn glyphs_point_kind(
 
 #[cfg(test)]
 mod tests {
+    use shift_font::test_support::fixtures;
     use std::fs;
 
     use super::*;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("fixtures/fonts")
-            .join(name)
-    }
 
     const MAPPED_INSTANCE_GLYPHS: &str = r#"{
 .appVersion = "3414";
@@ -386,7 +377,7 @@ unitsPerEm = 1000;
 
     #[test]
     fn directory_sources_keep_retained_master_order() {
-        let font = GlyphsFont::open(&fixture("MutatorSansVariable.glyphs")).unwrap();
+        let font = GlyphsFont::open(&fixtures::font("MutatorSansVariable.glyphs")).unwrap();
         let expected_names = font
             .source
             .masters
@@ -408,7 +399,7 @@ unitsPerEm = 1000;
             .zip(&font.master_locations)
             .enumerate()
         {
-            assert_eq!(source.index, SourceIndex::new(index as u32));
+            assert_eq!(source.index, SourceIndex::at(index));
             assert_eq!(source.location.as_ref(), location);
         }
     }
@@ -452,7 +443,7 @@ unitsPerEm = 1000;
 
     #[test]
     fn glyphs_projection_resolves_component_closure_without_shift_identity() {
-        let font = GlyphsFont::open(&fixture("Homenaje.glyphs")).unwrap();
+        let font = GlyphsFont::open(&fixtures::font("Homenaje.glyphs")).unwrap();
         let glyph = font
             .directory()
             .glyphs
@@ -470,7 +461,7 @@ unitsPerEm = 1000;
     fn glyphs_projection_uses_retained_source_after_removal() {
         let temporary = tempfile::tempdir().unwrap();
         let copied = temporary.path().join("Removed.glyphs");
-        fs::copy(fixture("Homenaje.glyphs"), &copied).unwrap();
+        fs::copy(fixtures::font("Homenaje.glyphs"), &copied).unwrap();
         let font = GlyphsFont::open(&copied).unwrap();
         let glyph = font.directory().glyphs[0].index;
         let expected = font.glyph(glyph).unwrap();
@@ -481,7 +472,7 @@ unitsPerEm = 1000;
 
     #[test]
     fn glyphs_projection_retains_non_default_variation() {
-        let font = GlyphsFont::open(&fixture("MutatorSansVariable.glyphs")).unwrap();
+        let font = GlyphsFont::open(&fixtures::font("MutatorSansVariable.glyphs")).unwrap();
         let glyph = font
             .directory()
             .glyphs
