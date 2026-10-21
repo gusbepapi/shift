@@ -105,27 +105,21 @@ jobs:
         continue-on-error: true
         run: node scripts/smoke-packaged.mjs "${{ steps.package.outputs.path }}" nightly
 
+      # Placing the application and the command-line tool side by side in one archive
+      - name: Bundle application and command-line tool
+        run: |
+          set -euo pipefail
+          STAGE=dist/shift-linux-x64
+          rm -rf dist
+          mkdir -p "$STAGE"
+          cp -R "${{ steps.package.outputs.path }}/." "$STAGE/"
+          install -m 755 target/release/shift-cli "$STAGE/shift-cli"
+          tar -czf dist/shift-linux-x64.tar.gz -C dist shift-linux-x64
+
       - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
-          name: shift-linux-x64-archive
-          path: ${{ env.OUTPUT_ROOT }}/*.tar.gz
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload unpacked application
-        uses: actions/upload-artifact@v7
-        with:
-          name: shift-linux-x64-unpacked
-          path: ${{ steps.package.outputs.path }}
-          if-no-files-found: error
-          retention-days: 14
-
-      # Shipping the command-line tool on its own, next to the application
-      - name: Upload command-line tool
-        uses: actions/upload-artifact@v7
-        with:
-          name: shift-linux-x64-cli
-          path: target/release/shift-cli
+          name: shift-linux-x64
+          path: dist/shift-linux-x64.tar.gz
           if-no-files-found: error
           retention-days: 14

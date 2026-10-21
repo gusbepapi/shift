@@ -116,25 +116,21 @@ jobs:
         continue-on-error: true
         run: node scripts/smoke-packaged.mjs "${{ steps.package.outputs.path }}" nightly
 
+      # Placing the application and the command-line tool side by side in one archive
       - name: Create archive
         run: |
           set -euo pipefail
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "${{ steps.package.outputs.app }}" "dist/Shift-Nightly-macOS-universal.zip"
+          STAGE=dist/stage
+          rm -rf dist
+          mkdir -p "$STAGE"
+          ditto "${{ steps.package.outputs.app }}" "$STAGE/Shift Nightly.app"
+          install -m 755 target/release/shift-cli "$STAGE/shift-cli"
+          ditto -c -k --sequesterRsrc "$STAGE" "dist/shift-macOS-universal.zip"
 
       - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
           name: shift-macOS-universal
-          path: dist/Shift-Nightly-macOS-universal.zip
-          if-no-files-found: error
-          retention-days: 14
-
-      # Shipping the command-line tool on its own, next to the application
-      - name: Upload command-line tool
-        uses: actions/upload-artifact@v7
-        with:
-          name: shift-macOS-universal-cli
-          path: target/release/shift-cli
+          path: dist/shift-macOS-universal.zip
           if-no-files-found: error
           retention-days: 14
