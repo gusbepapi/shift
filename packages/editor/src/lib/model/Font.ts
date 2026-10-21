@@ -1418,6 +1418,21 @@ export class Font {
   }
 
   /**
+   * Replaces the palettes and colour glyphs as one undoable edit.
+   *
+   * @remarks
+   * {@link colorCell} changes only after the workspace echo is folded. Compose the next value
+   * with the pure edits in `lib/color/colorData`; Rust rejects a value that breaks its rules.
+   * Call inside an edit-coordinator transaction to control the undo step label.
+   */
+  setColor(color: ColorData): void {
+    this.editCoordinator.push({
+      kind: "setColor",
+      setColor: { colorData: JSON.stringify(color) },
+    });
+  }
+
+  /**
    * Creates one variation axis with renderer-minted stable identity.
    *
    * @param axis - Complete axis definition apart from the id assigned here.

@@ -24,6 +24,7 @@ import type {
   WorkspaceSnapshot,
 } from "@shift/types";
 import { segmentIdFor } from "@shift/glyph-state";
+import { parseColorData } from "../color/colorData";
 import { Validate } from "@shift/validation";
 import {
   batch,
@@ -333,6 +334,7 @@ export class FontStore {
               : current.languageIds,
             sources: next.sources ?? current.sources,
             kerning: next.kerning ?? current.kerning,
+            color: next.color ? parseColorData(next.color) : current.color,
           }
         : current;
 

@@ -35,6 +35,7 @@ import type {
   ShaperFont,
   SlugAtlas,
 } from "@shift/types";
+import { parseColorData } from "@shift/editor";
 import { signal } from "@shift/editor/signals";
 
 /**
@@ -456,6 +457,7 @@ export class FontSessionClient {
       languageIds: next.languages ? (next.languages.languageIds ?? null) : current.languageIds,
       sources: next.sources ?? current.sources,
       kerning: next.kerning ?? current.kerning,
+      color: next.color ? parseColorData(next.color) : current.color,
     });
 
     return applied;
