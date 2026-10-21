@@ -6,6 +6,7 @@ import { useRef } from "react";
 import { Button } from "@shift/ui";
 import { BooleanOps } from "./BooleanOps";
 import { AnchorSection } from "./sidebar-right/AnchorSection";
+import { GlyphColourSection } from "./sidebar-right/GlyphColourSection";
 import { GlyphKerningSection } from "./sidebar-right/GlyphKerningSection";
 import { HandleSection } from "./sidebar-right/HandleSection";
 import { KerningPairSection } from "./sidebar-right/KerningPairSection";
@@ -69,6 +70,9 @@ export const RightSidebar = () => {
             <div ref={selectionBlockRef} className="flex flex-col">
               <SidebarGroup>
                 <GlyphKerningSection anchorRef={selectionBlockRef} />
+              </SidebarGroup>
+              <SidebarGroup>
+                <GlyphColourSection />
               </SidebarGroup>
               {hasTransformSelection ? (
                 <SidebarGroup>
