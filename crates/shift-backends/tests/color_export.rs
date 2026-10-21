@@ -516,3 +516,155 @@ fn svg_documents_survive_woff_wrapping() {
         .collect();
     assert!(tags.contains(&&b"SVG "[..]));
 }
+
+/// A decoded `sbix` bitmap with its offset from the glyph origin.
+struct Bitmap {
+    origin_x: i16,
+    origin_y: i16,
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    ppem: u16,
+}
+
+impl Bitmap {
+    /// Returns the pixel under a point in font units.
+    fn pixel_at(&self, bytes: &[u8], x: f64, y: f64) -> [u8; 4] {
+        let upem = f64::from(FontRef::new(bytes).unwrap().head().unwrap().units_per_em());
+        let scale = f64::from(self.ppem) / upem;
+        let column = (x * scale - f64::from(self.origin_x)).floor() as usize;
+        let row = (f64::from(self.origin_y) + self.height as f64 - y * scale).floor() as usize;
+        assert!(column < self.width && row < self.height, "{column},{row}");
+        let at = (row * self.width + column) * 4;
+        self.rgba[at..at + 4].try_into().unwrap()
+    }
+}
+
+/// Decodes the bitmap of a glyph in the strike of a pixel size.
+fn sbix_bitmap(bytes: &[u8], ppem: u16, glyph: u16) -> Option<Bitmap> {
+    let parsed = FontRef::new(bytes).unwrap();
+    let sbix = parsed.sbix().ok()?;
+    let strikes = sbix.strikes();
+    let strike = (0..strikes.len())
+        .map(|index| strikes.get(index).unwrap())
+        .find(|strike| strike.ppem() == ppem)?;
+    let data = strike
+        .glyph_data(write_fonts::types::GlyphId::new(u32::from(glyph)))
+        .unwrap()?;
+    assert_eq!(data.graphic_type().to_string(), "png ");
+    let mut reader = png::Decoder::new(data.data()).read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut rgba).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    Some(Bitmap {
+        origin_x: data.origin_offset_x(),
+        origin_y: data.origin_offset_y(),
+        width: info.width as usize,
+        height: info.height as usize,
+        rgba,
+        ppem,
+    })
+}
+
+/// Compiles `base` with one colour glyph for `A` whose layers are `layers`.
+fn compile_ttf_with(base: &Font, layers: Vec<Paint>) -> Vec<u8> {
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(base, "A"),
+            paint: Paint::Layers { layers },
+        }],
+    );
+    FontExporter::new()
+        .compile(&font, ExportFormat::Ttf)
+        .unwrap()
+}
+
+#[test]
+fn colour_glyphs_get_a_png_in_every_sbix_strike() {
+    let base = sample_font();
+    let bytes = compile_ttf_with(&base, vec![layer(&base, "B", solid(0, 1.0))]);
+    let a = gid(&bytes, "A");
+
+    let parsed = FontRef::new(&bytes).unwrap();
+    let sbix = parsed.sbix().unwrap();
+    assert_eq!(sbix.strikes().len(), 3);
+    for ppem in [32, 64, 128] {
+        let strike_ppi = (0..3)
+            .map(|index| sbix.strikes().get(index).unwrap())
+            .find(|strike| strike.ppem() == ppem)
+            .unwrap()
+            .ppi();
+        assert_eq!(strike_ppi, 72);
+        let bitmap = sbix_bitmap(&bytes, ppem, a).expect("a bitmap for A");
+        assert!(bitmap.width > 0 && bitmap.height > 0);
+        // Glyphs that are not colour base glyphs have no bitmap
+        assert!(sbix_bitmap(&bytes, ppem, gid(&bytes, "B")).is_none());
+    }
+}
+
+#[test]
+fn sbix_bitmaps_hold_the_palette_colour_inside_the_outline_only() {
+    let base = sample_font();
+    let bytes = compile_ttf_with(&base, vec![layer(&base, "B", solid(0, 1.0))]);
+    let bitmap = sbix_bitmap(&bytes, 128, gid(&bytes, "A")).unwrap();
+
+    // The middle of the triangle (100,0) (300,700) (500,0) is palette 0, entry 0
+    assert_eq!(bitmap.pixel_at(&bytes, 300.0, 200.0), [10, 20, 30, 255]);
+    // The padded corner and the area beside the apex are transparent
+    assert_eq!(bitmap.rgba[3], 0);
+    assert_eq!(bitmap.pixel_at(&bytes, 120.0, 600.0)[3], 0);
+}
+
+#[test]
+fn sbix_layer_opacity_scales_the_alpha_of_the_bitmap() {
+    let base = sample_font();
+    let bytes = compile_ttf_with(&base, vec![layer(&base, "B", solid(0, 0.5))]);
+    let bitmap = sbix_bitmap(&bytes, 128, gid(&bytes, "A")).unwrap();
+
+    let [_, _, _, alpha] = bitmap.pixel_at(&bytes, 300.0, 200.0);
+    assert!((i32::from(alpha) - 128).abs() <= 2, "{alpha}");
+}
+
+#[test]
+fn sbix_gradients_vary_along_their_axis() {
+    let base = sample_font();
+    let stops = vec![
+        ColorStop {
+            offset: 0.0,
+            color: PaintColor::Palette { index: 1 },
+            alpha: 1.0,
+        },
+        ColorStop {
+            offset: 1.0,
+            color: PaintColor::Foreground,
+            alpha: 0.0,
+        },
+    ];
+    let bytes = compile_ttf_with(
+        &base,
+        vec![layer(
+            &base,
+            "B",
+            Paint::LinearGradient {
+                stops,
+                p0: ColorPoint::new(0.0, 0.0),
+                p1: ColorPoint::new(0.0, 700.0),
+                p2: None,
+            },
+        )],
+    );
+    let bitmap = sbix_bitmap(&bytes, 128, gid(&bytes, "A")).unwrap();
+
+    let low = bitmap.pixel_at(&bytes, 300.0, 100.0)[3];
+    let high = bitmap.pixel_at(&bytes, 300.0, 500.0)[3];
+    assert!(low > 200 && high < 110 && low > high, "{low} {high}");
+}
+
+#[test]
+fn fonts_without_colour_glyphs_carry_no_sbix_table() {
+    let bytes = FontExporter::new()
+        .compile(&sample_font(), ExportFormat::Ttf)
+        .unwrap();
+    assert!(FontRef::new(&bytes).unwrap().sbix().is_err());
+}

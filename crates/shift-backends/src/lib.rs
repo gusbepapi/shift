@@ -18,6 +18,7 @@ pub mod import;
 mod import_report;
 mod kerning_import;
 mod metrics;
+mod sbix;
 pub mod shaper_font;
 mod shift2fontir;
 mod source_glyph_ids;

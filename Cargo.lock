@@ -2330,6 +2330,7 @@ dependencies = [
  "norad 0.18.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "ordered-float",
  "plist",
+ "png",
  "quick-xml 0.37.5",
  "rayon",
  "serde",
@@ -2340,6 +2341,7 @@ dependencies = [
  "skrifa",
  "tempfile",
  "thiserror",
+ "tiny-skia",
  "write-fonts",
 ]
 

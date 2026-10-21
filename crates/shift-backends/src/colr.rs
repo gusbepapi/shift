@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::sbix::sbix_table;
 use crate::svg::svg_table;
 use shift_font::{ColorData, ColorGlyph, GlyphId, Paint, PaintColor};
 use skrifa::{FontRef as SkrifaFont, MetadataProvider};
@@ -125,6 +126,9 @@ pub fn add_color_tables(
             })?;
         if let Some(svg) = svg_table(ttf, color, &resolve, &compiled)? {
             builder.add_raw(Tag::new(b"SVG "), svg);
+        }
+        if let Some(sbix) = sbix_table(ttf, color, &resolve, &compiled)? {
+            builder.add_raw(Tag::new(b"sbix"), sbix);
         }
         rebuilt = true;
     }

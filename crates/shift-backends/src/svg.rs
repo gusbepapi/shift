@@ -236,7 +236,7 @@ impl Document<'_, '_> {
 /// The line starts at `p0` and runs along the perpendicular of `p0`-`p2`, as far
 /// as `p1` projects onto it. Without `p2` that perpendicular is `p0`-`p1`'s own
 /// direction, so the line ends at `p1`.
-fn linear_end(p0: ColorPoint, p1: ColorPoint, p2: Option<ColorPoint>) -> ColorPoint {
+pub(crate) fn linear_end(p0: ColorPoint, p1: ColorPoint, p2: Option<ColorPoint>) -> ColorPoint {
     let Some(p2) = p2 else {
         return p1;
     };
