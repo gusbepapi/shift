@@ -128,6 +128,7 @@ font_intents! {
         CreateNamedInstance,
         UpdateNamedInstance,
         DeleteNamedInstance,
+        SetColor,
         SetColorPalettes,
         SetColorGlyph,
         RemoveColorGlyph,
@@ -1001,6 +1002,62 @@ mod tests {
         assert!(font.color().glyphs.is_empty());
         font.apply_change_set(&removal.changes.inverted()).unwrap();
         assert_eq!(font.color().glyphs.len(), 1);
+        font.apply_change_set(&applied.changes.inverted()).unwrap();
+        assert_eq!(font, original);
+    }
+
+    #[test]
+    fn set_color_replaces_the_document_atomically_and_undoes_as_one_step() {
+        use crate::ir::{ColorData, Paint, PaintColor, Rgba};
+
+        let mut font = Font::new();
+        let id = GlyphId::new();
+        let fill_id = GlyphId::new();
+        for (glyph_id, name) in [(&id, "a"), (&fill_id, "a.fill")] {
+            font.apply_intents(&FontIntentSet {
+                intents: vec![FontIntent::CreateGlyph(CreateGlyph {
+                    glyph_id: Some(glyph_id.clone()),
+                    name: name.to_string(),
+                    unicodes: Vec::new(),
+                })],
+            })
+            .unwrap();
+        }
+        let original = font.clone();
+        let color = ColorData {
+            palettes: vec![ColorPalette {
+                name: None,
+                colors: vec![Rgba::new(0, 0, 255, 255)],
+            }],
+            glyphs: vec![ColorGlyph {
+                glyph: id,
+                paint: Paint::Glyph {
+                    glyph: fill_id,
+                    fill: Box::new(Paint::Solid {
+                        color: PaintColor::Palette { index: 0 },
+                        alpha: 1.0,
+                    }),
+                },
+            }],
+        };
+
+        let applied = font
+            .apply_intents(&FontIntentSet {
+                intents: vec![FontIntent::SetColor(SetColor {
+                    color: color.clone(),
+                })],
+            })
+            .unwrap();
+        assert_eq!(font.color(), &color);
+
+        let mut invalid = color;
+        invalid.palettes.clear();
+        let rejected = font.apply_intents(&FontIntentSet {
+            intents: vec![FontIntent::SetColor(SetColor { color: invalid })],
+        });
+        assert!(matches!(rejected, Err(CoreError::InvalidColor { .. })));
+        assert_eq!(font.color().palettes.len(), 1);
+
         font.apply_change_set(&applied.changes.inverted()).unwrap();
         assert_eq!(font, original);
     }

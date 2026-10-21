@@ -1,6 +1,7 @@
 //! Intents that act on the font: glyphs, sources, axes, kerning, and layer creation.
 
 use super::*;
+use crate::ColorData;
 
 /// Creates glyph identity and metadata only. Authored editable data is
 /// created by explicit `CreateGlyphLayer` intents.
@@ -194,6 +195,22 @@ impl FontLevelIntent for SetColorPalettes {
         let mut color = font.color().clone();
         color.palettes = self.palettes.clone();
         font.set_color(color)?;
+        Ok((Vec::new(), None))
+    }
+}
+
+/// Replaces the palettes and every colour glyph as one validated document.
+///
+/// The renderer composes palette and paint edits locally, so one intent can add an entry to every
+/// palette and repaint the layers that use it without an invalid state in between.
+#[derive(Clone, Debug)]
+pub struct SetColor {
+    pub color: ColorData,
+}
+
+impl FontLevelIntent for SetColor {
+    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
+        font.set_color(self.color.clone())?;
         Ok((Vec::new(), None))
     }
 }

@@ -2691,3 +2691,55 @@ fn fixture(path: &str) -> PathBuf {
         .join("../..")
         .join(path)
 }
+
+fn one_palette(red: u8) -> shift_font::ColorData {
+    shift_font::ColorData {
+        palettes: vec![shift_font::ColorPalette {
+            name: Some("Light".to_string()),
+            colors: vec![shift_font::Rgba::new(red, 0, 0, 255)],
+        }],
+        glyphs: Vec::new(),
+    }
+}
+
+fn set_color(workspace: &mut FontWorkspace, color: shift_font::ColorData) {
+    workspace
+        .apply(
+            &FontIntentSet {
+                intents: vec![FontIntent::SetColor(shift_font::SetColor { color })],
+            },
+            Some("Set Colour".to_string()),
+        )
+        .unwrap();
+}
+
+#[test]
+fn colour_edits_persist_across_resume_and_undo_and_redo() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("working.sqlite");
+    let mut workspace = FontWorkspace::create_untitled(&store_path, NewWorkspace::new()).unwrap();
+    assert!(workspace.font().color().is_empty());
+
+    set_color(&mut workspace, one_palette(10));
+    drop(workspace);
+
+    let mut workspace = FontWorkspace::resume(&store_path).unwrap();
+    assert_eq!(workspace.font().color(), &one_palette(10));
+
+    set_color(&mut workspace, one_palette(200));
+    let undone = workspace.undo().unwrap().expect("setColor should undo");
+    assert!(
+        undone
+            .changes
+            .impact()
+            .contains(shift_font::FontChangeImpact::COLOR)
+    );
+    assert_eq!(workspace.font().color(), &one_palette(10));
+
+    workspace.redo().unwrap().expect("setColor should redo");
+    assert_eq!(workspace.font().color(), &one_palette(200));
+    drop(workspace);
+
+    let workspace = FontWorkspace::resume(&store_path).unwrap();
+    assert_eq!(workspace.font().color(), &one_palette(200));
+}
