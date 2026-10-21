@@ -1,4 +1,5 @@
 import type {
+  ColorData,
   FontMetrics,
   MetricDefinition,
   MetricKind,
@@ -211,6 +212,8 @@ interface ComponentGlyphs {
   readonly missingGlyphIds: readonly GlyphId[];
 }
 
+const EMPTY_COLOR_DATA: ColorData = { palettes: [], glyphs: [] };
+
 const DEFAULT_FONT_METRICS: FontMetrics = {
   unitsPerEm: 1000,
 };
@@ -236,6 +239,7 @@ export class Font {
 
   readonly #sourceMetricsInterpolationCell: Signal<SourceMetricsInterpolation | null>;
   readonly #kerningCell: Signal<Kerning>;
+  readonly #colorCell: Signal<ColorData>;
   readonly #defaultSourceMetricsCell: Signal<SourceMetrics>;
 
   readonly #metadataCell: Signal<FontMetadata>;
@@ -294,6 +298,7 @@ export class Font {
     });
 
     this.#kerningCell = store.kerning.cell;
+    this.#colorCell = computed(() => store.workspaceCell.value?.color ?? EMPTY_COLOR_DATA);
 
     this.#metadataCell = computed(() => fontCell.value?.metadata ?? {});
     this.#sourcesCell = computed(() => fontCell.value?.sources ?? []);
@@ -399,6 +404,11 @@ export class Font {
   /** Axes, mappings, and sources, with location operations over them. */
   get designspace(): Designspace {
     return this.#designspace;
+  }
+
+  /** Reactive palettes and colour glyph paint graphs; empty for a font without colour. */
+  get colorCell(): Signal<ColorData> {
+    return this.#colorCell;
   }
 
   /** Reactive committed variation axes for sidebar controls. */

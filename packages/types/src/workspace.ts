@@ -12,6 +12,7 @@ import type {
   Source,
   SourceMetricsInterpolationSnapshot,
 } from "./bridge";
+import type { ColorData } from "./color";
 import type { GlyphId, SourceId } from "./ids";
 
 /** Point-in-time view of an open workspace: identity and records, no geometry. */
@@ -30,6 +31,8 @@ export interface WorkspaceSnapshot {
   /** Tracked Hyperglot language ids; `null` when the font stores no list. */
   languageIds: string[] | null;
   kerning: KerningSnapshot;
+  /** Palettes and colour glyph paint graphs; absent in snapshots that predate colour. */
+  color?: ColorData;
 }
 
 export interface WorkspaceGlyphLayerSnapshot {

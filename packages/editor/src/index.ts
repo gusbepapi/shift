@@ -4,6 +4,8 @@ export { EditorHistory } from "./lib/editor/history/EditorHistory";
 export { HistoryCapture } from "./lib/editor/history/HistoryCapture";
 export { applyListSelection } from "./lib/editor/listSelection";
 export { Font } from "./lib/model/Font";
+export { colorLayers, colorLayersOf, cssColor, resolvePaintColor } from "./lib/color/colorLayers";
+export type { ColorLayer, LayerFill } from "./lib/color/colorLayers";
 export { FontStore, type GlyphInvalidation } from "./lib/model/FontStore";
 export { Glyph, GlyphLayer, GlyphRenderModel } from "./lib/model/Glyph";
 export { ComponentGlyph } from "./lib/model/ComponentGlyph";

@@ -63,6 +63,14 @@ export interface BridgeApi {
   saveWorkspaceAsDocument(path: string, recoveryPath: string): DocumentState
   discardWorkspaceChanges(): DocumentState
   getMetadata(): FontMetadata
+  /**
+   * Returns the font-wide colour data as JSON, with palettes and the paint graph of every
+   * colour glyph.
+   *
+   * The payload is the serialised [`shift_font::ColorData`], whose paint graph is recursive and
+   * so has no flat wire struct. It is empty for a font without colour glyphs.
+   */
+  getColorData(): string
   getMetrics(): FontMetrics
   /**
    * Lists glyph records whose layers are only those on [`Font::masters`], so every listed

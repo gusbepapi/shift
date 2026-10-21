@@ -80,6 +80,16 @@ export {
 
 export type { AxisDefinition, NamedInstanceDefinition, SourceMetrics } from "./domain";
 export type {
+  ColorData,
+  ColorGlyph,
+  ColorPalette,
+  ColorPoint,
+  ColorStop,
+  Paint,
+  PaintColor,
+  Rgba,
+} from "./color";
+export type {
   FontSessionMode,
   WorkspaceDocumentSourceKind,
   WorkspaceDocumentState,

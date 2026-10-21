@@ -1,5 +1,5 @@
 import { createBridge, type ShiftBridge, type Specimen } from "@shift/bridge";
-import type { GlyphSnapshot } from "@shift/types";
+import type { ColorData, GlyphSnapshot } from "@shift/types";
 import fs from "node:fs";
 import path from "node:path";
 import { serveChannel, type ChannelServer, type Transport } from "../../shared/workspace/channel";
@@ -670,6 +670,7 @@ export class WorkspaceHost {
       namedInstances: this.#bridge.getNamedInstances(),
       languageIds: this.#bridge.getLanguageIds(),
       kerning: this.#bridge.getKerning(),
+      color: JSON.parse(this.#bridge.getColorData()) as ColorData,
     };
   }
 

@@ -1319,6 +1319,16 @@ impl Bridge {
     Ok(FontMetadata::from(self.font()?.metadata()).into())
   }
 
+  /// Returns the font-wide colour data as JSON, with palettes and the paint graph of every
+  /// colour glyph.
+  ///
+  /// The payload is the serialised [`shift_font::ColorData`], whose paint graph is recursive and
+  /// so has no flat wire struct. It is empty for a font without colour glyphs.
+  #[napi]
+  pub fn get_color_data(&self) -> errors::Result<String> {
+    color_data_json(self.font()?.color())
+  }
+
   #[napi]
   pub fn get_metrics(&self) -> errors::Result<NapiFontMetrics> {
     Ok(FontMetrics::from(self.font()?.metrics()).into())
@@ -2905,6 +2915,13 @@ fn map_metric_definition(definition: NapiMetricDefinition) -> errors::Result<Fon
   ))
 }
 
+fn color_data_json(color: &shift_font::ColorData) -> errors::Result<String> {
+  serde_json::to_string(color).map_err(|error| BridgeError::InvalidInput {
+    kind: "colour data",
+    value: error.to_string(),
+  })
+}
+
 fn map_axis(axis: NapiAxis) -> errors::Result<FontAxis> {
   let axis_id = parse::<AxisId>(&axis.id)?;
   let mut mapped = match axis.axis_type {
@@ -3948,6 +3965,42 @@ mod tests {
     let (_, store_path) = test_paths("workspace");
     bridge.create_untitled_workspace(store_path, None).unwrap();
     bridge
+  }
+
+  #[test]
+  fn colour_data_is_empty_for_a_new_workspace() {
+    let bridge = bridge_with_workspace();
+
+    let json: serde_json::Value =
+      serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
+
+    assert_eq!(json, serde_json::json!({ "palettes": [], "glyphs": [] }));
+  }
+
+  #[test]
+  fn colour_data_json_names_palettes_and_paint_graphs() {
+    let glyph = GlyphId::new();
+    let color = shift_font::ColorData {
+      palettes: vec![shift_font::ColorPalette {
+        name: Some("Light".into()),
+        colors: vec![shift_font::Rgba::new(255, 0, 0, 255)],
+      }],
+      glyphs: vec![shift_font::ColorGlyph {
+        glyph,
+        paint: shift_font::Paint::Solid {
+          color: shift_font::PaintColor::Palette { index: 0 },
+          alpha: 1.0,
+        },
+      }],
+    };
+
+    let json: serde_json::Value =
+      serde_json::from_str(&color_data_json(&color).unwrap()).unwrap();
+
+    assert_eq!(json["palettes"][0]["name"], "Light");
+    assert_eq!(json["palettes"][0]["colors"][0]["r"], 255);
+    assert_eq!(json["glyphs"][0]["paint"]["type"], "solid");
+    assert_eq!(json["glyphs"][0]["paint"]["color"]["kind"], "palette");
   }
 
   #[test]
