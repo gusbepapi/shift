@@ -1,6 +1,6 @@
 # shift-backends
 
-<!-- reviewed: 2026-10-15 review-every: 90d -->
+<!-- reviewed: 2026-10-21 review-every: 90d -->
 
 Font format backends that convert between on-disk font files and the `Font` IR used throughout the editor.
 
@@ -30,6 +30,8 @@ Font format backends that convert between on-disk font files and the `Font` IR u
 
 **Architecture Invariant:** TrueType export compiles an owned snapshot of the Shift `Font` IR directly through fontir/fontc. It must not serialize a temporary UFO or fall back to another authoring format. WHY: `.shift` is the canonical authoring source, and an intermediate format would discard or reinterpret Shift concepts before compilation.
 
+**Architecture Invariant:** Colour never goes through fontc. Export compiles the outlines with fontc, then `colr::add_color_tables` writes `COLR`, `CPAL`, `SVG ` and `sbix` into the compiled binary from palette indices, and `.glyphs` export and import map the same `ColorData`. WHY: fontc turns colour into literal colours looked up again in palette 0 and writes every stop opaque, which loses palette identity, opacity, and entries that share a colour in one palette but differ in another.
+
 **Architecture Invariant:** TTF/OTF, UFO, Designspace, and Glyphs streaming imports convert glyphs in bounded Rayon batches and preserve input order when publishing each batch. Eager readers drain those same canonical streams rather than maintaining a second conversion path. UFO and Designspace share `GlifGlyphStream`; Glyphs parses its source model once, publishes stable glyph identities, then releases owned Shift batches through `GlyphsGlyphStream`. SQLite remains outside this crate and is written by one workspace-owned sink. WHY: one conversion path prevents eager/streaming semantic drift, while concurrent SQLite authors would add contention and weaken transaction ownership.
 
 **Architecture Invariant:** Compiled-font directories enumerate `maxp` glyph IDs, not only `cmap` mappings. Unencoded glyphs receive their `post`/CFF name or a synthesized `gidN` name. `GlyphIndex` is the dense backend-local GID and never crosses the native session boundary; the bridge maps it to an eager stable session `GlyphId`. WHY: `cmap` is character lookup, not the complete glyph directory.
@@ -55,6 +57,11 @@ src/
   font_loader.rs     -- extension-based format dispatch into readers, writers, and retained sources
   errors.rs          -- BackendError/FormatBackendError thiserror hierarchy and result aliases
   atomic.rs          -- crash-safe write, fsync, and swap helpers shared by the writers
+  numeric.rs         -- named numeric conversions whose loss is intended (clamps, rounding, f32)
+  color_tables.rs    -- ColorTable/ColorTables: which tables carry colour glyphs in an export
+  colr.rs            -- COLR v0/v1 and hand-serialised CPAL (v0, or v1 with palette labels); drives the other colour tables
+  svg.rs             -- SVG table: one document per colour glyph, palette entries as CSS variables
+  sbix.rs            -- sbix table: PNG strikes rendered with tiny-skia
   format.rs          -- source format vocabulary
   import.rs          -- glyph-free source header and bounded conversion cursor
   import_report.rs   -- source-to-Shift fidelity losses
@@ -76,7 +83,7 @@ src/
       reader.rs       -- maxp-complete authored conversion stream
     ufo/              -- retained UFO source plus eager reader and atomic writer
     designspace/      -- retained Designspace source, mappings, reader, and writer
-    glyphs/           -- retained Glyphs source, conversion stream, fidelity report, and reader
+    glyphs/           -- retained Glyphs source, conversion stream, fidelity report, reader, writer, and colour import (`color.rs`) and export (`writer/color.rs`)
   shift2fontir/       -- owned Shift FontView -> fontir/fontc adapter
   export.rs           -- direct fontc TTF compilation and atomic output write
   shaper_font/        -- authored FEA -> minimal layout-only shaper font, diagnostics, last-good state; LiveShaper over shift-shape
@@ -108,6 +115,7 @@ src/
 - `UfoBackend` -- unit struct implementing `FontBackend` by delegating to `UfoReader`/`UfoWriter`
 - `GlyphsReader` -- eagerly drains the canonical `.glyphs` / `.glyphspackage` stream for compatibility callers; read-only (no writer)
 - `GlyphsGlyphStream` -- owns one upstream-parsed Glyphs model and converts bounded, layer-aware Shift glyph batches in directory order
+- `ColorTables` / `ColorTable` -- the set of `COLR`, `SVG ` and `sbix` that an export writes colour glyphs into; the default is all three
 - `FontExporter` -- compiles a `FontView` directly to TTF via `ShiftIrSource` and fontc
 - `ShaperFontRequest` / `ShaperFont::compile` -- compile a font's authored feature source with fea-rs into a shaper font: `GSUB`/`GPOS`/`GDEF`, `head`, and `fvar`, with no outlines, `cmap`, or `hmtx`. Glyph ids index the request's glyph order with `.notdef` first; `GDEF` glyph classes come from glyph categories unless the source declares its own; diagnostics carry UTF-16 ranges
 - `ShaperFontState` -- keeps the last successfully compiled shaper font active while later feature source has errors, and skips recompiling an unchanged request
@@ -136,6 +144,16 @@ src/
 **Compiling TTF:** `FontExporter` snapshots the supplied `FontView` into owned Shift values, creates fontir work for metadata, metrics, glyphs, anchors, features, and kerning, and passes `ShiftIrSource` directly to `fontc::generate_font`. The returned bytes are atomically written to the requested `.ttf` path. Variable compilation converts Shift axes and independent mappings to fontdrasil coordinate converters, normalizes master source locations, and emits each authored glyph master. Missing non-default glyph layers are sparse masters; every glyph must have a default-source layer. Glyphs listed under `public.skipExportGlyphs` are built but not emitted (`emit_to_binary = false`), so fontc decomposes the components that use them, as its own Glyphs and UFO frontends do. Standard source metrics are emitted at every master location so fontc can build variable metric tables. Kerning is emitted at the default location and at every master with authored pairs; fontc fills a pair a master does not author with the UFO fallback lookup. Kerning groups drop members outside the compiled glyph set, and pairs naming a missing glyph or an unemitted group are skipped rather than failing the export, matching fontc's Glyphs and UFO frontends.
 
 **Variable metadata:** Independent axis mappings compile to OpenType `avar` version 1. Axis labels compile to `STAT` axis values, including ranges, linked values, and elidable flags. Only explicit Shift `NamedInstance` values compile to `fvar`; source names are never inferred as products. The adapter maps complete external instance locations to fontir and lets compiler-only defaults and name IDs remain compiler concerns. Cross-axis mappings remain authored in Shift but direct TTF export rejects them until the compiler stack supports `avar` version 2.
+
+## Colour glyphs
+
+Shift keeps colour as `ColorData`: palettes of equal length, and one paint graph per base glyph (a glyph, or a stack of glyph layers, each filled with a solid colour or a linear or radial gradient). Paints name palette entries by index, so switching palette recolours the font.
+
+**Export tables:** `FontExporter::compile_with` takes a `ColorTables`. The default writes all three tables; an empty set writes none. `COLR` and `CPAL` come first, then `SVG ` and `sbix`. A glyph whose layers are all opaque solid fills becomes a `COLR` version 0 record, and any other glyph becomes a version 1 paint graph with a clip box. `CPAL` is serialised by hand because `write-fonts` always emits version 0; palette names become a version 1 label array with name IDs from 256. `CPAL` is written when `COLR` or `SVG ` is chosen, since both refer to it. `SVG ` writes one uncompressed document per colour glyph, with palette entries as `var(--colorN)` and the text colour as `context-fill`. `sbix` renders PNG strikes at 32, 64 and 128 ppem, and is the largest table, so web fonts usually leave it out. OTF output copies the colour tables of the compiled TrueType unchanged. `shift compile --color-tables colr,svg,sbix,none` and the bridge's optional `colorTables` request field choose the set; omitting it keeps every table.
+
+**Glyphs export:** Palettes become the `Color Palettes` parameter. A glyph whose layers are all opaque solid fills keeps its master layers and gains palette layers (`colorPalette` set to the entry, `"*"` for the text colour). Any other colour glyph becomes `color = 1` master layers with literal `fillColor` or `gradient` attributes, coloured from palette 0; gradient layers carry outlines, because fontc measures a gradient against the bounds of the glyph it paints. Palette names, a radial gradient's inner circle and radius, and a linear gradient's rotation point have no place in the format.
+
+**Glyphs import:** The inverse mapping. Palette layers become paint layers filled with the named entry; otherwise each shape of a `color = 1` layer becomes one, filled by its `fillColor` or `gradient`. A layer that is one unmoved component keeps the glyph it names, which is what the export writes; any other layer becomes a new glyph `<glyph>.color<N>` with a layer in every master that has the Glyphs layer. Literal colours are appended to every palette, equal colours sharing an entry, and gradient points, which Glyphs measures as fractions of the bounds of the run of shapes sharing a gradient, become font units. The new glyphs are planned before the first batch, so the directory declares them and `GlyphStream::color` is complete up front. The workspace writes it with `FontImportWriter::write_color` after the last glyph batch, because colour names glyph identities that exist only then; eager reads set it after the last glyph. `ImportReport` lists palette layers that name a missing entry, palettes of uneven length, gradient types other than linear and circle, and paint read from the default master only.
 
 ## Workflow recipes
 
@@ -168,6 +186,8 @@ src/
 - **Kerning references dangle by design:** Pairs and group members keep `GlyphId`s, `KerningGroupId`s, and `SourceId`s that may not exist (a deleted glyph, group, or source). They never resolve, writers skip them, and they come back to life when the glyph, group, or source is restored by undo. A new group that reuses a deleted group's name gets a new id and does not inherit its pairs.
 - **Cross-axis mappings:** Direct TTF compilation rejects cross-axis mappings until the compiler stack supports `avar` version 2. It never flattens the mapping or falls back to temporary UFO compilation.
 - **Binary atlas capabilities:** Direct Grid compilation supports quadratic glyf/gvar plus HVAR or phantom advances and static CFF. CFF2, cubic glyf extensions, avar version 2, and VARC fail explicitly rather than falling back to another renderer or authored conversion.
+- **Colour paint comes from one master:** Shift keeps one paint graph per glyph, so `.glyphs` import reads paint from the default master, and the other masters supply only the outlines of new layer glyphs. A `color = 1` glyph that Shift exported comes back with one layer glyph per path, which draws the same but is not structurally identical.
+- **Colour tables and size:** All three colour tables are written by default. `sbix` embeds PNGs at three sizes, so choose the tables per export when size matters.
 - **Authored STAT tables:** When Shift axis labels exist, export appends a generated `STAT` feature block. If authored feature text also declares `STAT`, the feature compiler reports the conflict.
 
 ## Retained OpenType atlas profile
@@ -198,6 +218,7 @@ cargo test -p shift-backends loads_homenaje_glyphs_file
 cargo test -p shift-backends loads_glyphs_package
 cargo test -p shift-backends --test export
 cargo test -p shift-backends --test native_document_export
+cargo test -p shift-backends --test color_export --test glyphs_color_export --test glyphs_color_import
 
 # Manual release profile: open/directory, selected projection,
 # complete sequential/parallel projection, and peak RSS
