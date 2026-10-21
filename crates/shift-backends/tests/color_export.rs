@@ -1,6 +1,6 @@
 //! Colour glyphs compile into `COLR` and `CPAL` tables in every export format.
 
-use shift_backends::{ExportFormat, FontExporter};
+use shift_backends::{ColorTable, ColorTables, ExportFormat, FontExportRequest, FontExporter};
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Contour, Font, Glyph, GlyphId,
     GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba, test_support::sample_variable_font,
@@ -667,4 +667,114 @@ fn fonts_without_colour_glyphs_carry_no_sbix_table() {
         .compile(&sample_font(), ExportFormat::Ttf)
         .unwrap();
     assert!(FontRef::new(&bytes).unwrap().sbix().is_err());
+}
+
+/// Compiles a font with one colour glyph into the chosen colour tables.
+fn compile_into(tables: &[ColorTable]) -> Vec<u8> {
+    let base = sample_font();
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: layer(&base, "B", solid(0, 0.5)),
+        }],
+    );
+    FontExporter::new()
+        .compile_with(
+            &font,
+            ExportFormat::Ttf,
+            &tables.iter().copied().collect::<ColorTables>(),
+        )
+        .unwrap()
+}
+
+/// Lists which of `COLR`, `CPAL`, `SVG ` and `sbix` a font carries.
+fn colour_tags(bytes: &[u8]) -> Vec<&'static str> {
+    let font = FontRef::new(bytes).unwrap();
+    ["COLR", "CPAL", "SVG ", "sbix"]
+        .into_iter()
+        .filter(|tag| {
+            font.table_data(write_fonts::types::Tag::new_checked(tag.as_bytes()).unwrap())
+                .is_some()
+        })
+        .collect()
+}
+
+#[test]
+fn every_colour_table_is_written_by_default() {
+    let base = sample_font();
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: layer(&base, "B", solid(0, 1.0)),
+        }],
+    );
+
+    let bytes = FontExporter::new()
+        .compile(&font, ExportFormat::Ttf)
+        .unwrap();
+
+    assert_eq!(colour_tags(&bytes), ["COLR", "CPAL", "SVG ", "sbix"]);
+}
+
+#[test]
+fn colr_alone_writes_the_palettes_and_paint_graphs_only() {
+    let bytes = compile_into(&[ColorTable::Colr]);
+
+    assert_eq!(colour_tags(&bytes), ["COLR", "CPAL"]);
+}
+
+#[test]
+fn svg_alone_writes_the_palettes_the_documents_refer_to() {
+    let bytes = compile_into(&[ColorTable::Svg]);
+
+    assert_eq!(colour_tags(&bytes), ["CPAL", "SVG "]);
+    assert!(svg_document(&bytes, gid(&bytes, "A")).is_some());
+}
+
+#[test]
+fn sbix_alone_writes_bitmaps_without_palettes() {
+    let bytes = compile_into(&[ColorTable::Sbix]);
+
+    assert_eq!(colour_tags(&bytes), ["sbix"]);
+    assert!(sbix_bitmap(&bytes, 64, gid(&bytes, "A")).is_some());
+}
+
+#[test]
+fn choosing_no_table_writes_no_colour_data() {
+    let bytes = compile_into(&[]);
+
+    assert!(colour_tags(&bytes).is_empty());
+}
+
+#[test]
+fn an_export_request_carries_its_colour_tables_to_the_file() {
+    let base = sample_font();
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: layer(&base, "B", solid(0, 1.0)),
+        }],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Web.woff2");
+
+    FontExporter::new()
+        .export(
+            &font,
+            FontExportRequest {
+                path: path.clone(),
+                format: ExportFormat::Woff2,
+                color_tables: [ColorTable::Colr].into_iter().collect(),
+            },
+        )
+        .unwrap();
+
+    // The same font with every table is larger, because it adds SVG and bitmaps
+    let everything = FontExporter::new()
+        .compile(&font, ExportFormat::Woff2)
+        .unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() < everything.len() as u64);
 }

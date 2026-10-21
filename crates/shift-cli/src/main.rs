@@ -26,7 +26,9 @@ use inspect::{InspectReport, RenderMode};
 use kerning::{get_kerning, kerning_groups, list_kerning};
 use miette::IntoDiagnostic;
 use serde::Serialize;
-use shift_backends::{ExportFormat, FontExportRequest, FontExportResult, FontExporter};
+use shift_backends::{
+    ColorTable, ColorTables, ExportFormat, FontExportRequest, FontExportResult, FontExporter,
+};
 use shift_store::ShiftStore;
 use skill::{SkillReport, install_skill, show_skill, skill_status};
 
@@ -255,15 +257,33 @@ fn compile(args: CompileArgs) -> miette::Result<FontExportResult> {
         .and_then(|store| store.load_font_state())
         .into_diagnostic()?;
     let format = compile_format(&args);
+    let color_tables = compile_color_tables(&args);
     FontExporter::new()
         .export(
             &font,
             FontExportRequest {
                 path: args.output,
                 format,
+                color_tables,
             },
         )
         .into_diagnostic()
+}
+
+/// Resolves the colour tables from `--color-tables`, defaulting to all of them.
+fn compile_color_tables(args: &CompileArgs) -> ColorTables {
+    let Some(listed) = &args.color_tables else {
+        return ColorTables::default();
+    };
+    listed
+        .iter()
+        .filter_map(|table| match table {
+            cli::CompileColorTable::Colr => Some(ColorTable::Colr),
+            cli::CompileColorTable::Svg => Some(ColorTable::Svg),
+            cli::CompileColorTable::Sbix => Some(ColorTable::Sbix),
+            cli::CompileColorTable::None => None,
+        })
+        .collect()
 }
 
 /// Resolves the export format from `--format`, then the output extension, then TTF.
@@ -368,6 +388,7 @@ mod tests {
             path: source_path,
             output: output_path.clone(),
             format: None,
+            color_tables: None,
         })
         .unwrap();
 
@@ -382,6 +403,42 @@ mod tests {
         assert_eq!(&bytes[..4], &[0x00, 0x01, 0x00, 0x00]);
     }
 
+    fn args_with_color_tables(color_tables: Option<Vec<cli::CompileColorTable>>) -> CompileArgs {
+        CompileArgs {
+            path: "Dogfood.shift".into(),
+            output: "Dogfood.ttf".into(),
+            format: None,
+            color_tables,
+        }
+    }
+
+    #[test]
+    fn compile_writes_every_colour_table_unless_told_otherwise() {
+        let tables = compile_color_tables(&args_with_color_tables(None));
+
+        assert_eq!(tables, ColorTables::default());
+    }
+
+    #[test]
+    fn compile_colour_tables_follow_the_listed_tables() {
+        let listed = args_with_color_tables(Some(vec![
+            cli::CompileColorTable::Colr,
+            cli::CompileColorTable::Sbix,
+        ]));
+
+        let tables = compile_color_tables(&listed);
+
+        assert!(tables.contains(ColorTable::Colr) && tables.contains(ColorTable::Sbix));
+        assert!(!tables.contains(ColorTable::Svg));
+    }
+
+    #[test]
+    fn compile_colour_tables_none_writes_no_colour_data() {
+        let none = args_with_color_tables(Some(vec![cli::CompileColorTable::None]));
+
+        assert!(compile_color_tables(&none).is_empty());
+    }
+
     #[test]
     fn compile_command_infers_format_from_output_extension() {
         let temp = tempfile::tempdir().unwrap();
@@ -393,6 +450,7 @@ mod tests {
             path: source_path.clone(),
             output: glyphs_path.clone(),
             format: None,
+            color_tables: None,
         })
         .unwrap();
         assert_eq!(result.format, ExportFormat::Glyphs);
@@ -407,6 +465,7 @@ mod tests {
             path: source_path,
             output: woff2_path.clone(),
             format: Some(cli::CompileFormat::Woff2),
+            color_tables: None,
         })
         .unwrap();
         assert_eq!(result.format, ExportFormat::Woff2);

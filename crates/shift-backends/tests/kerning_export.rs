@@ -43,6 +43,7 @@ fn compile(font: &Font) -> Vec<u8> {
             FontExportRequest {
                 path: path.clone(),
                 format: ExportFormat::Ttf,
+                color_tables: Default::default(),
             },
         )
         .expect("MutatorSans should compile");

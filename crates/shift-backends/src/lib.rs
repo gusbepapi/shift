@@ -4,6 +4,7 @@
 
 mod atomic;
 mod cff;
+mod color_tables;
 mod colr;
 pub mod errors;
 pub mod export;
@@ -26,6 +27,7 @@ mod svg;
 mod traits;
 mod webfont;
 
+pub use color_tables::{ColorTable, ColorTables};
 pub use errors::{BackendError, BackendResult, FormatBackendError, FormatBackendResult};
 pub use export::{ExportError, ExportFormat, FontExportRequest, FontExportResult, FontExporter};
 pub use font_source::{

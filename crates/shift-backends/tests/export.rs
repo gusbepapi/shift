@@ -88,6 +88,7 @@ fn compiles_mutatorsans_fixture_to_ttf_tables() {
             FontExportRequest {
                 path: output_path.clone(),
                 format: ExportFormat::Ttf,
+                color_tables: Default::default(),
             },
         )
         .expect("MutatorSans Shift document should compile as TTF");
@@ -164,6 +165,7 @@ fn compiles_variable_shift_document_to_variation_tables() {
             FontExportRequest {
                 path: output_path.clone(),
                 format: ExportFormat::Ttf,
+                color_tables: Default::default(),
             },
         )
         .expect("variable Shift document should compile as TTF");

@@ -14,6 +14,7 @@ use write_fonts::types::NameId;
 
 use crate::atomic::write_file_atomic;
 use crate::cff::{CffError, ttf_to_otf};
+use crate::color_tables::ColorTables;
 use crate::colr::{ColorError, add_color_tables};
 use crate::errors::FormatBackendError;
 use crate::formats::glyphs::GlyphsWriter;
@@ -67,6 +68,8 @@ pub struct FontExportRequest {
     /// Destination replaced after compilation succeeds.
     pub path: PathBuf,
     pub format: ExportFormat,
+    /// Tables that carry colour glyphs; every table by default.
+    pub color_tables: ColorTables,
 }
 
 /// Confirms the destination and format of a completed export.
@@ -90,6 +93,9 @@ pub enum ExportError {
 
     #[error("cross-axis mappings are not supported by TTF export yet ({mapping_count} mappings)")]
     UnsupportedCrossAxisMappings { mapping_count: usize },
+
+    #[error("unsupported colour table: {table}")]
+    UnsupportedColorTable { table: String },
 
     #[error("cannot compile this Shift font: {message}")]
     InvalidSource { message: String },
@@ -143,7 +149,7 @@ impl FontExporter {
         request: FontExportRequest,
     ) -> Result<FontExportResult, ExportError> {
         ensure_output_extension(&request.path, request.format)?;
-        let bytes = self.compile(font, request.format)?;
+        let bytes = self.compile_with(font, request.format, &request.color_tables)?;
         write_file_atomic(&request.path, &bytes).map_err(|source| ExportError::WriteOutput {
             path: request.path.clone(),
             source,
@@ -156,13 +162,28 @@ impl FontExporter {
     }
 
     /// Compiles a TrueType binary from the supplied font in memory without
-    /// writing it anywhere.
+    /// writing it anywhere, with colour glyphs in every colour table.
     ///
     /// # Errors
     ///
     /// Returns [`ExportError`] when the source cannot be represented in the
     /// supported compiler model or compilation fails.
     pub fn compile_ttf(&self, font: &impl FontView) -> Result<Vec<u8>, ExportError> {
+        self.compile_ttf_with(font, &ColorTables::default())
+    }
+
+    /// Compiles a TrueType binary like [`Self::compile_ttf`], writing colour
+    /// glyphs only into `color_tables`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError`] when the source cannot be represented in the
+    /// supported compiler model or compilation fails.
+    pub fn compile_ttf_with(
+        &self,
+        font: &impl FontView,
+        color_tables: &ColorTables,
+    ) -> Result<Vec<u8>, ExportError> {
         let source = ShiftIrSource::from_font_view(font).map_err(map_source_error)?;
         let bytes = compile_ttf(source)?;
         let names = font
@@ -170,11 +191,16 @@ impl FontExporter {
             .iter()
             .map(|glyph| (glyph.id(), glyph.name().to_string()))
             .collect();
-        Ok(add_color_tables(&bytes, font.color(), &names)?)
+        Ok(add_color_tables(
+            &bytes,
+            font.color(),
+            &names,
+            color_tables,
+        )?)
     }
 
     /// Compiles the font into the bytes of the requested format without
-    /// writing them anywhere.
+    /// writing them anywhere, with colour glyphs in every colour table.
     ///
     /// # Errors
     ///
@@ -185,12 +211,28 @@ impl FontExporter {
         font: &impl FontView,
         format: ExportFormat,
     ) -> Result<Vec<u8>, ExportError> {
+        self.compile_with(font, format, &ColorTables::default())
+    }
+
+    /// Compiles the font like [`Self::compile`], writing colour glyphs only
+    /// into `color_tables`. The Glyphs format ignores the choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError`] when the source cannot be represented in the
+    /// supported compiler model, compilation fails, or packing fails.
+    pub fn compile_with(
+        &self,
+        font: &impl FontView,
+        format: ExportFormat,
+        color_tables: &ColorTables,
+    ) -> Result<Vec<u8>, ExportError> {
         match format {
             ExportFormat::Glyphs => Ok(GlyphsWriter::new().render(font)?.into_bytes()),
-            ExportFormat::Ttf => self.compile_ttf(font),
-            ExportFormat::Otf => Ok(ttf_to_otf(&self.compile_ttf(font)?)?),
-            ExportFormat::Woff => Ok(to_woff(&self.compile_ttf(font)?)?),
-            ExportFormat::Woff2 => Ok(to_woff2(&self.compile_ttf(font)?)?),
+            ExportFormat::Ttf => self.compile_ttf_with(font, color_tables),
+            ExportFormat::Otf => Ok(ttf_to_otf(&self.compile_ttf_with(font, color_tables)?)?),
+            ExportFormat::Woff => Ok(to_woff(&self.compile_ttf_with(font, color_tables)?)?),
+            ExportFormat::Woff2 => Ok(to_woff2(&self.compile_ttf_with(font, color_tables)?)?),
         }
     }
 
@@ -314,6 +356,7 @@ mod tests {
                 FontExportRequest {
                     path: output_path.clone(),
                     format: ExportFormat::Ttf,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap();
@@ -588,6 +631,7 @@ mod tests {
                 FontExportRequest {
                     path: output_path.clone(),
                     format: ExportFormat::Ttf,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap_err();
@@ -609,6 +653,7 @@ mod tests {
                 FontExportRequest {
                     path: path.clone(),
                     format: ExportFormat::Glyphs,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap();
@@ -624,6 +669,7 @@ mod tests {
                 FontExportRequest {
                     path: temp_dir.path().join("Dogfood.ttf"),
                     format: ExportFormat::Glyphs,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap_err();
@@ -647,6 +693,7 @@ mod tests {
                 FontExportRequest {
                     path: path.clone(),
                     format: ExportFormat::Otf,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap_err();
@@ -675,6 +722,7 @@ mod tests {
                     FontExportRequest {
                         path: path.clone(),
                         format,
+                        color_tables: Default::default(),
                     },
                 )
                 .unwrap();
@@ -698,6 +746,7 @@ mod tests {
                 FontExportRequest {
                     path: output_path.clone(),
                     format: ExportFormat::Woff2,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap_err();
@@ -745,6 +794,7 @@ mod tests {
                 FontExportRequest {
                     path: output_path.clone(),
                     format: ExportFormat::Ttf,
+                    color_tables: Default::default(),
                 },
             )
             .unwrap_err();

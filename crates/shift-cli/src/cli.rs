@@ -412,6 +412,24 @@ pub struct CompileArgs {
     /// Output format. When omitted, it is inferred from the output extension, defaulting to ttf.
     #[arg(short, long, value_enum)]
     pub format: Option<CompileFormat>,
+
+    /// Tables that carry colour glyphs, comma separated; `none` writes no colour data.
+    /// All three are written when omitted, and sbix is the largest.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "TABLES")]
+    pub color_tables: Option<Vec<CompileColorTable>>,
+}
+
+/// Colour tables accepted by `shift compile --color-tables`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CompileColorTable {
+    /// Vector paint graphs and palettes.
+    Colr,
+    /// SVG documents.
+    Svg,
+    /// PNG bitmaps at fixed sizes.
+    Sbix,
+    /// No colour tables.
+    None,
 }
 
 /// Output formats accepted by `shift compile --format`.

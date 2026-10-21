@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::color_tables::{ColorTable, ColorTables};
 use crate::sbix::sbix_table;
 use crate::svg::svg_table;
 use shift_font::{ColorData, ColorGlyph, GlyphId, Paint, PaintColor};
@@ -74,7 +75,9 @@ fn read_error(error: &impl std::fmt::Display) -> ColorError {
 /// Inserts `CPAL` and `COLR` tables for `color` into the compiled `ttf`.
 ///
 /// `names` maps each authored glyph identity to the name fontc compiled it
-/// under. Returns the input unchanged when the font has no colour data.
+/// under, and `tables` chooses the tables that carry the colour glyphs.
+/// Palettes are written when `COLR` or `SVG ` is chosen. Returns the input
+/// unchanged when the font has no colour data or no table is chosen.
 ///
 /// # Errors
 ///
@@ -84,8 +87,9 @@ pub fn add_color_tables(
     ttf: &[u8],
     color: &ColorData,
     names: &HashMap<GlyphId, String>,
+    tables: &ColorTables,
 ) -> Result<Vec<u8>, ColorError> {
-    if color.is_empty() {
+    if color.is_empty() || tables.is_empty() {
         return Ok(ttf.to_vec());
     }
 
@@ -105,7 +109,8 @@ pub fn add_color_tables(
     let mut builder = FontBuilder::new();
     let mut rebuilt = false;
 
-    if color.palette_len() > 0 {
+    let wants_palettes = tables.contains(ColorTable::Colr) || tables.contains(ColorTable::Svg);
+    if color.palette_len() > 0 && wants_palettes {
         let labels = PaletteLabels::allocate(color, &font)?;
         builder.add_raw(Tag::new(b"CPAL"), cpal(color, &labels.ids)?);
         if let Some(name) = labels.name {
@@ -119,18 +124,26 @@ pub fn add_color_tables(
     }
 
     if !color.glyphs.is_empty() {
-        builder
-            .add_table(&colr(color, &resolve, &compiled)?)
-            .map_err(|error| ColorError::Rebuild {
-                message: error.to_string(),
-            })?;
-        if let Some(svg) = svg_table(ttf, color, &resolve, &compiled)? {
+        if tables.contains(ColorTable::Colr) {
+            builder
+                .add_table(&colr(color, &resolve, &compiled)?)
+                .map_err(|error| ColorError::Rebuild {
+                    message: error.to_string(),
+                })?;
+            rebuilt = true;
+        }
+        if tables.contains(ColorTable::Svg)
+            && let Some(svg) = svg_table(ttf, color, &resolve, &compiled)?
+        {
             builder.add_raw(Tag::new(b"SVG "), svg);
+            rebuilt = true;
         }
-        if let Some(sbix) = sbix_table(ttf, color, &resolve, &compiled)? {
+        if tables.contains(ColorTable::Sbix)
+            && let Some(sbix) = sbix_table(ttf, color, &resolve, &compiled)?
+        {
             builder.add_raw(Tag::new(b"sbix"), sbix);
+            rebuilt = true;
         }
-        rebuilt = true;
     }
 
     if !rebuilt {
