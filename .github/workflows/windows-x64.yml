@@ -102,20 +102,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Uploading the unpacked application for running without installation
-      - name: Upload unpacked application
-        uses: actions/upload-artifact@v7
-        with:
-          name: shift-windows-x64-unpacked
-          path: ${{ steps.package.outputs.path }}
-          if-no-files-found: error
-          retention-days: 14
+      # Placing the application and the command-line tool side by side in one archive
+      - name: Bundle application and command-line tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE=dist/shift-windows-x64
+          rm -rf dist
+          mkdir -p "$STAGE"
+          cp -R "${{ steps.package.outputs.path }}/." "$STAGE/"
+          cp target/release/shift-cli.exe "$STAGE/shift-cli.exe"
+          (cd dist && 7z a -tzip shift-windows-x64.zip shift-windows-x64)
 
-      # Shipping the command-line tool on its own, next to the application
-      - name: Upload command-line tool
+      - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
-          name: shift-windows-x64-cli
-          path: target/release/shift-cli.exe
+          name: shift-windows-x64
+          path: dist/shift-windows-x64.zip
           if-no-files-found: error
           retention-days: 14
