@@ -335,7 +335,7 @@ fn recovered_directory_open_remains_payload_lazy() {
             .glyph_count(),
         sample_font().glyph_count()
     );
-    assert!(recovered.load_glyph_layer(&layer_id).is_err());
+    recovered.load_glyph_layer(&layer_id).unwrap_err();
 }
 
 #[test]
@@ -377,10 +377,7 @@ fn recovery_overlay_adds_a_new_glyph_and_layer_without_copying_the_directory() {
         .unwrap_err();
     assert!(matches!(
         error,
-        shift_store::StoreError::Font(shift_font::CoreError::InvalidEntityOrder {
-            kind: "glyph",
-            ..
-        })
+        shift_store::StoreError::PoppedGlyphNotAtTail(_)
     ));
 
     document

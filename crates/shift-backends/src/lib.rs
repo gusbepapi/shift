@@ -1,6 +1,10 @@
 // Library code returns errors instead of panicking: a panic kills the
 // WebAssembly engine. Tests may unwrap (clippy.toml).
 #![warn(clippy::unwrap_used, clippy::print_stdout)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "import and export run natively only"
+)]
 
 mod atomic;
 mod cff;
@@ -19,6 +23,7 @@ pub mod import;
 mod import_report;
 mod kerning_import;
 mod metrics;
+mod numeric;
 mod sbix;
 pub mod shaper_font;
 mod shift2fontir;

@@ -31,20 +31,20 @@ mod kerning;
 mod layer_payload;
 mod report;
 
-pub use axis::set_axis;
-pub use color::{remove_color_glyph, set_color_glyph, set_palettes};
-pub use font_info::{font_info, set_font};
-pub use glyph::{add_glyph, add_layer, copy_layer, set_layer};
+pub(crate) use axis::set_axis;
+pub(crate) use color::{remove_color_glyph, set_color_glyph, set_palettes};
+pub(crate) use font_info::{font_info, set_font};
+pub(crate) use glyph::{add_glyph, add_layer, copy_layer, set_layer};
 pub(crate) use glyph::{resolve_glyph_id, resolve_source_id};
-pub use glyph_batch::set_glyphs;
-pub use glyph_export::{ExportSources, export_glyphs};
-pub use instance::{add_instance, remove_instance, set_instance};
-pub use kerning::{
+pub(crate) use glyph_batch::set_glyphs;
+pub(crate) use glyph_export::{ExportSources, export_glyphs};
+pub(crate) use instance::{add_instance, remove_instance, set_instance};
+pub(crate) use kerning::{
     assign_kerning_group, create_kerning_group, delete_kerning_group, remove_kerning,
     rename_kerning_group, set_kerning, unassign_kerning_group,
 };
 use report::report_changes;
-pub use report::{AuthoringChange, AuthoringReport};
+pub(crate) use report::{AuthoringChange, AuthoringReport};
 
 /// Creates a canonical SQLite `.shift` document with the model's default source.
 ///
@@ -54,7 +54,7 @@ pub use report::{AuthoringChange, AuthoringReport};
 ///
 /// Returns an error for a non-`.shift` path, an existing destination, or a
 /// document serialization or filesystem failure.
-pub fn create_font(args: CreateFontArgs) -> Result<AuthoringReport> {
+pub(crate) fn create_font(args: CreateFontArgs) -> Result<AuthoringReport> {
     validate_new_document_path(&args.path)?;
     let font = match &args.from {
         Some(source) => font_structure(source)?,
@@ -115,7 +115,7 @@ fn font_structure(path: &Path) -> Result<Font> {
 ///
 /// Returns an error when the document cannot be loaded, the axis is invalid or
 /// conflicts with existing authoring data, or the destination cannot be saved.
-pub fn add_axis(args: AddAxisArgs) -> Result<AuthoringReport> {
+pub(crate) fn add_axis(args: AddAxisArgs) -> Result<AuthoringReport> {
     let axis = Axis::new(
         args.tag,
         args.name,
@@ -139,7 +139,7 @@ pub fn add_axis(args: AddAxisArgs) -> Result<AuthoringReport> {
 ///
 /// Returns an error for malformed coordinates, unknown or repeated tags,
 /// non-finite values, invalid source authoring, or persistence failures.
-pub fn add_source(args: AddSourceArgs) -> Result<AuthoringReport> {
+pub(crate) fn add_source(args: AddSourceArgs) -> Result<AuthoringReport> {
     let font = glyph::load_font(&args.path)?;
     let mut location = DesignLocation::at_defaults(font.axes());
     for (axis_id, value) in parse_location(&font, &args.location)? {

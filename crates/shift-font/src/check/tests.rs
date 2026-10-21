@@ -1,4 +1,4 @@
-use crate::test_support::sample_variable_font;
+use crate::test_support::{closed_contour, sample_variable_font};
 use crate::{
     Contour, DesignLocation, Font, GlyphLayer, KerningGroup, KerningGroupId, KerningPair,
     KerningPosition, KerningSide, PointType, SourceId,
@@ -53,12 +53,7 @@ fn first_contour(layer: &mut GlyphLayer) -> &mut Contour {
 }
 
 fn square(x: f64, y: f64, size: f64) -> Contour {
-    let mut contour = Contour::new();
-    for (dx, dy) in [(0.0, 0.0), (0.0, size), (size, size), (size, 0.0)] {
-        contour.add_point(x + dx, y + dy, PointType::OnCurve, false);
-    }
-    contour.close();
-    contour
+    closed_contour(&[(x, y), (x, y + size), (x + size, y + size), (x + size, y)])
 }
 
 #[test]
@@ -306,8 +301,8 @@ fn a_round_contour_starting_elsewhere_is_not_reported_when_it_keeps_its_shape() 
         for step in 0..8 {
             let angle = std::f64::consts::TAU * ((step + offset) % 8) as f64 / 8.0;
             contour.add_point(
-                300.0 + 200.0 * angle.cos(),
-                300.0 + 200.0 * angle.sin(),
+                300.0 + 200.0 * libm::cos(angle),
+                300.0 + 200.0 * libm::sin(angle),
                 PointType::OnCurve,
                 false,
             );

@@ -1,4 +1,5 @@
-use crate::error::OrMissing;
+use crate::error::{OrMissing, StoreEntity};
+use crate::numeric::sql_int;
 use std::collections::HashSet;
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -97,7 +98,7 @@ impl ShiftStore {
         replace_font_header_in_tx(&tx, font)?;
 
         for (order_index, glyph) in font.glyphs().enumerate() {
-            write_glyph_in_tx(&tx, glyph, order_index as i64)?;
+            write_glyph_in_tx(&tx, glyph, sql_int(order_index))?;
         }
 
         tx.commit()?;
@@ -124,21 +125,13 @@ fn validate_glyph_order(
         }
     }
     if !appended.is_empty() && !popped.is_empty() {
-        return Err(font::CoreError::InvalidEntityOrder {
-            kind: "glyph",
-            message: "one committed change set cannot both append and pop glyphs".into(),
-        }
-        .into());
+        return Err(StoreError::AppendAndPopGlyphs);
     }
 
     let first_appended_order = post_font.glyph_count().saturating_sub(appended.len());
     for (offset, glyph_id) in appended.iter().enumerate() {
         if post_font.glyph_order(glyph_id) != Some(first_appended_order + offset) {
-            return Err(font::CoreError::InvalidEntityOrder {
-                kind: "glyph",
-                message: format!("appended identity {glyph_id} is not in the tail segment"),
-            }
-            .into());
+            return Err(StoreError::AppendedGlyphNotAtTail(glyph_id.clone()));
         }
     }
     for (offset, glyph_id) in popped.iter().enumerate() {
@@ -149,14 +142,10 @@ fn validate_glyph_order(
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
-            .or_missing("glyph", glyph_id)?;
+            .or_missing(StoreEntity::Glyph, glyph_id)?;
         let expected = post_font.glyph_count() + popped.len() - offset - 1;
-        if order_index != expected as i64 {
-            return Err(font::CoreError::InvalidEntityOrder {
-                kind: "glyph",
-                message: format!("popped identity {glyph_id} is not the directory tail"),
-            }
-            .into());
+        if order_index != sql_int(expected) {
+            return Err(StoreError::PoppedGlyphNotAtTail(glyph_id.clone()));
         }
     }
     Ok(())
@@ -207,7 +196,7 @@ pub(crate) fn replace_font_header_in_tx(
     replace_kerning(tx, font.kerning())?;
 
     for (order_index, axis) in font.axes().iter().enumerate() {
-        insert_axis(tx, axis, order_index as i64, false)?;
+        insert_axis(tx, axis, sql_int(order_index), false)?;
     }
     replace_axis_mappings(tx, font.axis_mappings())?;
     replace_named_instances(tx, font.named_instances())?;
@@ -228,7 +217,7 @@ pub(crate) fn replace_font_header_in_tx(
                 line_gap: source.line_gap(),
                 underline_position: source.underline_position(),
                 underline_thickness: source.underline_thickness(),
-                order_index: order_index as i64,
+                order_index: sql_int(order_index),
             },
         )?;
         replace_source_metric_values(tx, &source.id(), source.metric_values().iter())?;
@@ -242,7 +231,7 @@ pub(crate) fn replace_font_header_in_tx(
 
         for (axis_id, value) in source.location() {
             // Location entries on undefined axes have no row to reference.
-            if font.axes().iter().any(|axis| axis.id() == *axis_id) {
+            if font.axis(axis_id).is_some() {
                 upsert_source_location(tx, &source.id(), axis_id, *value)?;
             }
         }
@@ -290,7 +279,7 @@ pub(crate) fn write_glyph_directory_in_tx(
                 .execute(params![
                     glyph.id(),
                     i64::from(*unicode),
-                    unicode_order as i64
+                    sql_int(unicode_order)
                 ])?;
             }
             for (key, value) in glyph.lib() {
@@ -474,7 +463,7 @@ pub(crate) fn replace_source_kerning(
 fn replace_axes(tx: &Transaction<'_>, axes: &[font::Axis]) -> Result<(), StoreError> {
     let retained_ids = axes.iter().map(font::Axis::id).collect::<HashSet<_>>();
     for (order_index, axis) in axes.iter().enumerate() {
-        upsert_axis_with_order(tx, axis, order_index as i64)?;
+        upsert_axis_with_order(tx, axis, sql_int(order_index))?;
     }
     for axis_id in table_ids::<font::AxisId>(tx, "axes")? {
         if !retained_ids.contains(&axis_id) {
@@ -494,7 +483,7 @@ fn replace_sources(
         .map(font::Source::id)
         .collect::<HashSet<_>>();
     for (order_index, source) in sources.sources.iter().enumerate() {
-        write_source_snapshot_in_tx(tx, source, order_index as i64)?;
+        write_source_snapshot_in_tx(tx, source, sql_int(order_index))?;
     }
     for source_id in table_ids::<font::SourceId>(tx, "sources")? {
         if !retained_ids.contains(&source_id) {
@@ -508,7 +497,7 @@ fn replace_glyph(
     tx: &Transaction<'_>,
     value: &font::Replacement<Option<font::Glyph>>,
 ) -> Result<(), StoreError> {
-    let glyph_id = replacement_glyph_id(value)?;
+    let glyph_id = value.glyph_id()?;
     match &value.after {
         Some(glyph) => {
             let existing_order = tx
@@ -545,13 +534,9 @@ fn replace_glyph(
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?
-                .or_missing("glyph", &glyph_id)?;
+                .or_missing(StoreEntity::Glyph, &glyph_id)?;
             if order_index + 1 != count {
-                return Err(font::CoreError::InvalidEntityOrder {
-                    kind: "glyph",
-                    message: format!("identity {glyph_id} is not the directory tail"),
-                }
-                .into());
+                return Err(StoreError::GlyphNotAtTail(glyph_id));
             }
             tx.execute("DELETE FROM glyphs WHERE id = ?1", [&glyph_id])?;
         }
@@ -564,7 +549,7 @@ fn replace_layer(
     glyph_id: &font::GlyphId,
     value: &font::Replacement<Option<std::sync::Arc<font::GlyphLayer>>>,
 ) -> Result<(), StoreError> {
-    let layer_id = replacement_layer_id(value)?;
+    let layer_id = value.layer_id()?;
     match &value.after {
         Some(layer) => write_layer_in_tx(tx, glyph_id, layer),
         None => {
@@ -572,40 +557,6 @@ fn replace_layer(
             Ok(())
         }
     }
-}
-
-fn replacement_glyph_id(
-    value: &font::Replacement<Option<font::Glyph>>,
-) -> Result<font::GlyphId, StoreError> {
-    value
-        .before
-        .as_ref()
-        .map(font::Glyph::id)
-        .or_else(|| value.after.as_ref().map(font::Glyph::id))
-        .ok_or_else(|| {
-            font::CoreError::InvalidEntityOrder {
-                kind: "changeset",
-                message: "glyph replacement has no value on either side".to_string(),
-            }
-            .into()
-        })
-}
-
-fn replacement_layer_id(
-    value: &font::Replacement<Option<std::sync::Arc<font::GlyphLayer>>>,
-) -> Result<font::LayerId, StoreError> {
-    value
-        .before
-        .as_ref()
-        .map(|layer| layer.id())
-        .or_else(|| value.after.as_ref().map(|layer| layer.id()))
-        .ok_or_else(|| {
-            font::CoreError::InvalidEntityOrder {
-                kind: "changeset",
-                message: "layer replacement has no value on either side".to_string(),
-            }
-            .into()
-        })
 }
 
 /// Every id stored in `table`, as the id type the caller compares against.
@@ -681,7 +632,7 @@ pub(crate) fn replace_axis_mappings(
             params![
                 mapping.id(),
                 serde_json::to_string(mapping)?,
-                order_index as i64,
+                sql_int(order_index),
             ],
         )?;
     }
@@ -699,7 +650,7 @@ pub(crate) fn replace_named_instances(
             params![
                 instance.id(),
                 serde_json::to_string(instance)?,
-                order_index as i64,
+                sql_int(order_index),
             ],
         )?;
     }
@@ -752,7 +703,12 @@ pub(crate) fn replace_metric_definitions(
         };
         tx.execute(
             "INSERT INTO metric_definitions (id, kind, name, order_index) VALUES (?1, ?2, ?3, ?4)",
-            params![definition.id(), kind, definition.name(), order_index as i64,],
+            params![
+                definition.id(),
+                kind,
+                definition.name(),
+                sql_int(order_index),
+            ],
         )?;
     }
     Ok(())
@@ -931,7 +887,7 @@ fn replace_glyph_unicodes(
             VALUES (?1, ?2, ?3)
             ",
         )?
-        .execute(params![glyph_id, *unicode as i64, order_index as i64])?;
+        .execute(params![glyph_id, *unicode as i64, sql_int(order_index)])?;
     }
 
     Ok(())
@@ -978,7 +934,7 @@ fn update_font_metadata(
             metadata.version_minor.map(i64::from),
         ],
     )?;
-    require_changed(rows_changed, "font info", "1")
+    require_changed(rows_changed, StoreEntity::FontInfo, "1")
 }
 
 /// Persists the live font's default source identity without changing other font fields.
@@ -990,7 +946,7 @@ pub(crate) fn set_default_source_id(
         "UPDATE font_info SET default_source_id = ?1 WHERE id = 1",
         [source_id.map(font::SourceId::as_str)],
     )?;
-    require_changed(rows_changed, "font info", "1")
+    require_changed(rows_changed, StoreEntity::FontInfo, "1")
 }
 
 pub(crate) fn upsert_font_info(tx: &Transaction<'_>, font: &font::Font) -> Result<(), StoreError> {
@@ -1097,7 +1053,7 @@ fn replace_font_guidelines(
                 guideline.angle(),
                 guideline.name(),
                 guideline.color(),
-                order_index as i64,
+                sql_int(order_index),
             ],
         )?;
     }
@@ -1166,7 +1122,7 @@ fn insert_kerning_group(
                 group_id.as_str(),
                 position,
                 member.as_str(),
-                order_index as i64
+                sql_int(order_index)
             ],
         )?;
     }
@@ -1292,6 +1248,6 @@ fn typed_json(kind: &'static str, value: impl serde::Serialize) -> serde_json::V
     })
 }
 
-fn require_changed(rows_changed: usize, kind: &'static str, id: &str) -> Result<(), StoreError> {
+fn require_changed(rows_changed: usize, kind: StoreEntity, id: &str) -> Result<(), StoreError> {
     (rows_changed > 0).then_some(()).or_missing(kind, &id)
 }

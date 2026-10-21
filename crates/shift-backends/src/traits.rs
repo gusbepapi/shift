@@ -31,6 +31,14 @@ pub trait FontView {
         };
         &NONE
     }
+
+    /// The default source, when the font names one it contains.
+    fn default_source(&self) -> Option<&Source> {
+        let default_source_id = self.default_source_id()?;
+        self.sources()
+            .iter()
+            .find(|source| source.id() == default_source_id)
+    }
 }
 
 impl FontView for Font {

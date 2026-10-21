@@ -8,12 +8,17 @@
 // Library code returns errors instead of panicking: a panic kills the
 // WebAssembly engine. Tests may unwrap (clippy.toml).
 #![warn(clippy::unwrap_used, clippy::print_stdout)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "GPU geometry runs natively and needs no cross-target bit equality"
+)]
 
 mod atlas;
 mod authored;
 mod curve;
 mod error;
 pub mod length;
+mod numeric;
 mod outline;
 mod pack;
 mod render;

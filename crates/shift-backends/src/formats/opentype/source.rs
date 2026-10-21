@@ -84,16 +84,16 @@ fn binary_directory(
         .into_iter()
         .enumerate()
         .map(|(index, unicodes)| {
-            let raw_id = GlyphId::new(index as u32);
-            (
+            let raw_id = GlyphId::new(u32::try_from(index)?);
+            Ok((
                 names
                     .get(raw_id)
                     .map(|name| name.to_string())
                     .unwrap_or_else(|| format!("gid{index}")),
                 unicodes.into_boxed_slice(),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>, FontReadError>>()?;
     let metrics = font.metrics(Size::unscaled(), LocationRef::default());
     let family_name = localized_string(font, StringId::FAMILY_NAME);
     let style_name = localized_string(font, StringId::SUBFAMILY_NAME);
@@ -232,8 +232,7 @@ fn binary_directory(
                 axis_ids
                     .iter()
                     .cloned()
-                    .zip(instance.user_coords().map(|coordinate| coordinate as f64))
-                    .collect(),
+                    .zip(instance.user_coords().map(|coordinate| coordinate as f64)),
             );
             NamedInstance::new(
                 localized_string(font, instance.subfamily_name_id())
@@ -273,16 +272,7 @@ fn format_for_path(path: &Path) -> Result<FontFormat, FontReadError> {
 mod tests {
     use super::*;
     use crate::font_source::GlyphPointKind;
-
-    fn fixture(path: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("fixtures/fonts")
-            .join(path)
-    }
+    use shift_font::test_support::fixtures;
 
     #[test]
     fn avar_on_an_axis_whose_default_is_its_minimum_imports_a_valid_mapping() {
@@ -310,7 +300,7 @@ mod tests {
 
     #[test]
     fn retained_true_type_projection_infers_smooth_points() {
-        let font = OpenTypeFont::open(&fixture("mutatorsans/MutatorSans.ttf")).unwrap();
+        let font = OpenTypeFont::open(&fixtures::font("mutatorsans/MutatorSans.ttf")).unwrap();
         let glyph = font
             .directory()
             .glyphs

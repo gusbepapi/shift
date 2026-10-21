@@ -362,7 +362,7 @@ fn variable_glyph_projection(
             .enumerate()
             .filter(|(_, axis)| axis.peak != 0)
             .map(|(axis, support)| VariationSupport {
-                axis: crate::font_source::AxisIndex::new(axis as u32),
+                axis: crate::font_source::AxisIndex::at(axis),
                 lower: f64::from(support.start) / 16384.0,
                 peak: f64::from(support.peak) / 16384.0,
                 upper: f64::from(support.end) / 16384.0,
@@ -406,8 +406,7 @@ pub fn build_binary_atlas_page(
     band_count: u32,
 ) -> Result<SourceAtlasPage, SourceAtlasError> {
     validate_roots(source.directory(), roots)?;
-    let (font, variable_tables) =
-        tables::variable_tables(source).map_err(SourceAtlasError::from)?;
+    let (font, variable_tables) = tables::variable_tables(source)?;
     let Some((loca, glyf, gvar)) = variable_tables else {
         return build_static_cff_atlas_page(source, &font, roots, band_count);
     };
@@ -474,7 +473,7 @@ fn build_static_cff_atlas_page(
     roots: &[GlyphIndex],
     band_count: u32,
 ) -> Result<SourceAtlasPage, SourceAtlasError> {
-    validate_static_cff(source, font).map_err(SourceAtlasError::from)?;
+    validate_static_cff(source, font)?;
 
     let mut compiler = PageCompiler::new(band_count, Vec::new(), Vec::new())?;
     for root in roots {
@@ -558,7 +557,7 @@ fn normalize_user_coordinate(value: f64, minimum: f64, default: f64, maximum: f6
     } else {
         (value - default) / (maximum - default)
     };
-    F2Dot14::from_f32(normalized as f32).to_bits()
+    F2Dot14::from_f32(crate::numeric::lossy_f32(normalized)).to_bits()
 }
 
 pub(super) fn tuple_region(tuple: &TupleVariation<'_, GlyphDelta>) -> AtlasRegion {
@@ -595,7 +594,7 @@ pub(super) fn tuple_region(tuple: &TupleVariation<'_, GlyphDelta>) -> AtlasRegio
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use shift_font::test_support::fixtures;
 
     use shift_slug::{AtlasBuilder, Curve, DEFAULT_BAND_COUNT, OutlineCommand};
     use skrifa::outline::pen::PathStyle;
@@ -642,22 +641,7 @@ mod tests {
         "apps/desktop/src/renderer/src/assets/fonts/HostGrotesk-VariableFont_wght.ttf";
 
     fn host_grotesk() -> OpenTypeFont {
-        OpenTypeFont::open(&repository_root().join(HOST_GROTESK_VARIABLE)).unwrap()
-    }
-
-    fn repository_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf()
-    }
-
-    fn fixture(name: &str) -> PathBuf {
-        repository_root()
-            .join("fixtures/fonts/mutatorsans")
-            .join(name)
+        OpenTypeFont::open(&fixtures::repository_root().join(HOST_GROTESK_VARIABLE)).unwrap()
     }
 
     #[test]
@@ -736,7 +720,9 @@ mod tests {
 
     #[test]
     fn rotated_skewed_composite_matches_skrifa() {
-        let source = OpenTypeFont::open(&fixture("RotatedSkewedComposite.ttf")).unwrap();
+        let source =
+            OpenTypeFont::open(&fixtures::font("mutatorsans").join("RotatedSkewedComposite.ttf"))
+                .unwrap();
         let root = source.directory().glyphs[34].index;
         let page = build_binary_atlas_page(&source, &[root], DEFAULT_BAND_COUNT).unwrap();
         let preview_extents = page.preview_extents().unwrap();
@@ -852,7 +838,8 @@ mod tests {
 
     #[test]
     fn static_cff_projection_and_page_match_skrifa() {
-        let source = OpenTypeFont::open(&fixture("MutatorSans.otf")).unwrap();
+        let source =
+            OpenTypeFont::open(&fixtures::font("mutatorsans").join("MutatorSans.otf")).unwrap();
         let root = source.directory().glyphs[0].index;
         let projected = source.glyph(root).unwrap();
         assert_eq!(projected.root.glyph, root);
@@ -905,7 +892,7 @@ mod tests {
                 .axes
                 .iter()
                 .zip(location.coordinates())
-                .map(|(axis, value)| (axis.tag.as_str(), *value as f32)),
+                .map(|(axis, value)| (axis.tag.as_str(), crate::numeric::lossy_f32(*value))),
         )
     }
 

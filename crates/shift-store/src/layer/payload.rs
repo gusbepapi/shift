@@ -10,31 +10,13 @@ thread_local! {
     static ZSTD_DECOMPRESSOR: RefCell<Option<zstd::bulk::Decompressor<'static>>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LayerPayloadCompression {
-    None,
-    ZstandardV1,
-}
-
-impl LayerPayloadCompression {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::ZstandardV1 => "zstd.v1",
-        }
+shift_font::string_enum! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum LayerPayloadCompression {
+        None => "none",
+        ZstandardV1 => "zstd.v1",
     }
-}
-
-impl TryFrom<&str> for LayerPayloadCompression {
-    type Error = StoreError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "none" => Ok(Self::None),
-            "zstd.v1" => Ok(Self::ZstandardV1),
-            value => Err(StoreError::UnsupportedLayerCompression(value.to_owned())),
-        }
-    }
+    parse_error: StoreError = |value| StoreError::UnsupportedLayerCompression(value.to_owned());
 }
 
 pub(crate) struct StoredLayerPayload {
@@ -52,13 +34,13 @@ pub(crate) fn compress_layer(decoded: &[u8]) -> Result<StoredLayerPayload, Store
         if slot.is_none() {
             *slot = Some(
                 zstd::bulk::Compressor::new(ZSTD_COMPRESSION_LEVEL)
-                    .map_err(|error| StoreError::LayerCompression(error.to_string()))?,
+                    .map_err(StoreError::LayerCompression)?,
             );
         }
         slot.as_mut()
             .expect("compressor was initialized")
             .compress(decoded)
-            .map_err(|error| StoreError::LayerCompression(error.to_string()))
+            .map_err(StoreError::LayerCompression)
     })?;
     let decoded_byte_length = decoded.len() as u64;
     let decoded_blake3 = *blake3::hash(decoded).as_bytes();
@@ -104,7 +86,8 @@ pub(crate) fn decompress_layer(
         LayerPayloadCompression::ZstandardV1 => {
             let frame_length =
                 zstd::zstd_safe::find_frame_compressed_size(&stored.bytes).map_err(|code| {
-                    StoreError::LayerDecompression(zstd::zstd_safe::get_error_name(code).to_owned())
+                    let reason = zstd::zstd_safe::get_error_name(code);
+                    StoreError::LayerDecompression(std::io::Error::other(reason))
                 })?;
             if frame_length != stored.bytes.len() {
                 return Err(directory_mismatch(
@@ -125,14 +108,13 @@ pub(crate) fn decompress_layer(
                 let mut slot = slot.borrow_mut();
                 if slot.is_none() {
                     *slot = Some(
-                        zstd::bulk::Decompressor::new()
-                            .map_err(|error| StoreError::LayerDecompression(error.to_string()))?,
+                        zstd::bulk::Decompressor::new().map_err(StoreError::LayerDecompression)?,
                     );
                 }
                 slot.as_mut()
                     .expect("decompressor was initialized")
                     .decompress(&stored.bytes, decoded_capacity)
-                    .map_err(|error| StoreError::LayerDecompression(error.to_string()))
+                    .map_err(StoreError::LayerDecompression)
             })?
         }
     };
@@ -187,22 +169,22 @@ mod tests {
         assert_eq!(truncated.compression, LayerPayloadCompression::ZstandardV1);
         truncated.bytes.pop();
         truncated.stored_byte_length -= 1;
-        assert!(decompress_layer("layer_test", truncated).is_err());
+        decompress_layer("layer_test", truncated).unwrap_err();
 
         let mut trailing = compress_layer(&decoded).unwrap();
         trailing.bytes.push(0);
         trailing.stored_byte_length += 1;
-        assert!(decompress_layer("layer_test", trailing).is_err());
+        decompress_layer("layer_test", trailing).unwrap_err();
 
         let mut wrong_hash = compress_layer(&decoded).unwrap();
         wrong_hash.decoded_blake3[0] ^= 1;
-        assert!(decompress_layer("layer_test", wrong_hash).is_err());
+        decompress_layer("layer_test", wrong_hash).unwrap_err();
     }
 
     #[test]
     fn unsupported_compression_and_oversized_decode_are_rejected() {
         assert!(matches!(
-            LayerPayloadCompression::try_from("zstd.v2"),
+            "zstd.v2".parse::<LayerPayloadCompression>(),
             Err(StoreError::UnsupportedLayerCompression(_))
         ));
 

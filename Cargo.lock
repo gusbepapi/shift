@@ -2405,6 +2405,7 @@ dependencies = [
  "icu_properties",
  "indexmap",
  "kurbo",
+ "libm",
  "linesweeper",
  "rusqlite",
  "serde",
