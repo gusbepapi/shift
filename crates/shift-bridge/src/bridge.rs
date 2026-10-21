@@ -6,11 +6,12 @@ use napi::{Error, Status};
 use napi_derive::napi;
 use shift_backends::shaper_font::{LiveShaper, ShaperFontRequest, ShaperFontState};
 use shift_backends::{
-  AxisIndex as SourceAxisIndex, ExportFormat, FontDirectory, FontExportRequest, FontExportResult,
-  FontExporter, FontSource, FontView, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
-  GlyphProjection as SourceGlyphProjection, GlyphShape as SourceGlyphShape, OpenedFont,
-  ProjectedGlyph as SourceProjectedGlyph, SourceAtlasDescriptor, SourceGlyphIds, VariationAxisKind,
-  build_binary_atlas_page, font_loader::FontLoader, variable_glyph_inputs,
+  AxisIndex as SourceAxisIndex, ColorTable, ColorTables, ExportFormat, FontDirectory,
+  FontExportRequest, FontExportResult, FontExporter, FontSource, FontView, GlyphIndex,
+  GlyphPointKind as SourceGlyphPointKind, GlyphProjection as SourceGlyphProjection,
+  GlyphShape as SourceGlyphShape, OpenedFont, ProjectedGlyph as SourceProjectedGlyph,
+  SourceAtlasDescriptor, SourceGlyphIds, VariationAxisKind, build_binary_atlas_page,
+  font_loader::FontLoader, variable_glyph_inputs,
 };
 use shift_font::composite::resolved_contours_to_svg_path;
 use shift_font::{
@@ -78,6 +79,9 @@ use std::{
 pub struct NapiFontExportRequest {
   pub path: String,
   pub format: String,
+  /// Tables that carry colour glyphs: any of `colr`, `svg` and `sbix`. Every
+  /// table is written when omitted, and an empty list writes none.
+  pub color_tables: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -137,9 +141,19 @@ impl TryFrom<NapiFontExportRequest> for FontExportRequest {
     let format = ExportFormat::try_from(request.format.as_str())
       .map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
 
+    let color_tables = match request.color_tables {
+      None => ColorTables::default(),
+      Some(tables) => tables
+        .iter()
+        .map(|table| ColorTable::try_from(table.as_str()))
+        .collect::<std::result::Result<ColorTables, _>>()
+        .map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?,
+    };
+
     Ok(Self {
       path: request.path.into(),
       format,
+      color_tables,
     })
   }
 }

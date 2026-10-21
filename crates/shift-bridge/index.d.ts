@@ -298,6 +298,11 @@ export interface NapiFeatureSetting {
 export interface NapiFontExportRequest {
   path: string
   format: string
+  /**
+   * Tables that carry colour glyphs: any of `colr`, `svg` and `sbix`. Every
+   * table is written when omitted, and an empty list writes none.
+   */
+  colorTables?: Array<string> | undefined | null
 }
 
 export interface NapiFontExportResult {

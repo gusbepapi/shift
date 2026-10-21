@@ -285,6 +285,11 @@ export interface FeatureSetting {
 export interface FontExportRequest {
   path: string
   format: string
+  /**
+   * Tables that carry colour glyphs: any of `colr`, `svg` and `sbix`. Every
+   * table is written when omitted, and an empty list writes none.
+   */
+  colorTables?: Array<string> | undefined | null
 }
 
 export interface FontExportResult {
