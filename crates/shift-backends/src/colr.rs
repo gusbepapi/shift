@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use shift_font::{ColorData, ColorGlyph, GlyphId, Paint, PaintColor};
 use skrifa::{FontRef as SkrifaFont, MetadataProvider};
 use write_fonts::FontBuilder;
-use write_fonts::NullableOffsetMarker;
+use write_fonts::OffsetMarker;
+use write_fonts::from_obj::ToOwnedTable;
 use write_fonts::read::tables::glyf::Glyph as GlyfGlyph;
 use write_fonts::read::{FontRef, TableProvider};
 use write_fonts::tables::colr::{
@@ -23,11 +24,25 @@ use write_fonts::tables::colr::{
     Extend, Layer, LayerList, Paint as ColrPaint, PaintColrLayers, PaintGlyph, PaintLinearGradient,
     PaintRadialGradient, PaintSolid,
 };
-use write_fonts::tables::cpal::{ColorRecord, Cpal};
-use write_fonts::types::{F2Dot14, FWord, GlyphId16};
+use write_fonts::tables::name::{Name, NameRecord};
+use write_fonts::types::{F2Dot14, FWord, GlyphId16, NameId, Tag};
 
 /// Palette index that selects the text foreground colour.
 const FOREGROUND: u16 = 0xFFFF;
+
+/// Label that `CPAL` uses for a palette without a name.
+const NO_LABEL: u16 = 0xFFFF;
+
+/// First name ID that a font may use for its own strings.
+const FIRST_FONT_NAME_ID: u16 = 256;
+
+/// Last name ID that a font may use for its own strings.
+const LAST_FONT_NAME_ID: u16 = 32767;
+
+/// Windows platform, Unicode BMP encoding and US English language of a `name` record.
+const WINDOWS_PLATFORM: u16 = 3;
+const UNICODE_BMP_ENCODING: u16 = 1;
+const US_ENGLISH: u16 = 0x0409;
 
 /// Describes a failure to add colour tables to a compiled font.
 #[derive(Debug, thiserror::Error)]
@@ -86,11 +101,15 @@ pub fn add_color_tables(
     let mut rebuilt = false;
 
     if color.palette_len() > 0 {
-        builder
-            .add_table(&cpal(color)?)
-            .map_err(|error| ColorError::Rebuild {
-                message: error.to_string(),
-            })?;
+        let labels = PaletteLabels::allocate(color, &font)?;
+        builder.add_raw(Tag::new(b"CPAL"), cpal(color, &labels.ids)?);
+        if let Some(name) = labels.name {
+            builder
+                .add_table(&name)
+                .map_err(|error| ColorError::Rebuild {
+                    message: error.to_string(),
+                })?;
+        }
         rebuilt = true;
     }
 
@@ -155,35 +174,142 @@ impl<'a> CompiledGlyphs<'a> {
     }
 }
 
-fn cpal(color: &ColorData) -> Result<Cpal, ColorError> {
-    let per_palette = color.palette_len();
-    let records: Vec<ColorRecord> = color
-        .palettes
-        .iter()
-        .flat_map(|palette| palette.colors.iter())
-        .map(|c| ColorRecord {
-            red: c.r,
-            green: c.g,
-            blue: c.b,
-            alpha: c.a,
+/// Name IDs of the palette labels, and the `name` table that defines them.
+struct PaletteLabels {
+    /// One name ID per palette, [`NO_LABEL`] for a palette without a name.
+    ids: Vec<u16>,
+    /// The font's `name` table with the labels added, or `None` when no
+    /// palette has a name and the table stays as compiled.
+    name: Option<Name>,
+}
+
+impl PaletteLabels {
+    /// Adds a `name` record for each distinct palette name, from the first
+    /// font-specific name ID that the compiled `name` table leaves free.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError`] when the `name` table cannot be read or the
+    /// font-specific name IDs run out.
+    fn allocate(color: &ColorData, font: &FontRef<'_>) -> Result<Self, ColorError> {
+        let named = color
+            .palettes
+            .iter()
+            .any(|palette| palette.name.as_deref().is_some_and(|name| !name.is_empty()));
+        if !named {
+            return Ok(Self {
+                ids: vec![NO_LABEL; color.palettes.len()],
+                name: None,
+            });
+        }
+
+        let mut name: Name = match font.name() {
+            Ok(table) => table.to_owned_table(),
+            Err(_) => Name::default(),
+        };
+        let mut next = name
+            .name_record
+            .iter()
+            .map(|record| record.name_id.to_u16().saturating_add(1))
+            .fold(FIRST_FONT_NAME_ID, u16::max);
+        let mut assigned: HashMap<&str, u16> = HashMap::new();
+        let mut ids = Vec::with_capacity(color.palettes.len());
+
+        for palette in &color.palettes {
+            let Some(label) = palette.name.as_deref().filter(|label| !label.is_empty()) else {
+                ids.push(NO_LABEL);
+                continue;
+            };
+            if let Some(id) = assigned.get(label) {
+                ids.push(*id);
+                continue;
+            }
+            if next > LAST_FONT_NAME_ID {
+                return Err(ColorError::TooLarge {
+                    message: "no font-specific name IDs left for the palette names".to_string(),
+                });
+            }
+            name.name_record.push(NameRecord::new(
+                WINDOWS_PLATFORM,
+                UNICODE_BMP_ENCODING,
+                US_ENGLISH,
+                NameId::new(next),
+                OffsetMarker::new(label.to_string()),
+            ));
+            assigned.insert(label, next);
+            ids.push(next);
+            next += 1;
+        }
+
+        name.name_record.sort_by_key(|record| {
+            (
+                record.platform_id,
+                record.encoding_id,
+                record.language_id,
+                record.name_id,
+            )
+        });
+        Ok(Self {
+            ids,
+            name: Some(name),
         })
-        .collect();
+    }
+}
+
+/// Serialises the `CPAL` table.
+///
+/// `write-fonts` always writes version 0 and drops the label arrays, so the
+/// table is written here. It is version 1 when any palette has a label, and
+/// version 0 otherwise.
+fn cpal(color: &ColorData, labels: &[u16]) -> Result<Vec<u8>, ColorError> {
     let too_large = |what: &str| ColorError::TooLarge {
         message: format!("too many {what}"),
     };
-    Ok(Cpal {
-        num_palette_entries: u16::try_from(per_palette)
-            .map_err(|_| too_large("palette entries"))?,
-        num_palettes: u16::try_from(color.palettes.len()).map_err(|_| too_large("palettes"))?,
-        num_color_records: u16::try_from(records.len()).map_err(|_| too_large("colour records"))?,
-        color_records_array: NullableOffsetMarker::new(Some(records)),
-        color_record_indices: (0..color.palettes.len())
-            .map(|index| {
-                u16::try_from(index * per_palette).map_err(|_| too_large("colour records"))
-            })
-            .collect::<Result<_, _>>()?,
-        ..Default::default()
-    })
+    let per_palette = color.palette_len();
+    let palettes = color.palettes.len();
+    let records: Vec<_> = color
+        .palettes
+        .iter()
+        .flat_map(|palette| palette.colors.iter())
+        .collect();
+    let labelled = labels.iter().any(|label| *label != NO_LABEL);
+
+    let entries = u16::try_from(per_palette).map_err(|_| too_large("palette entries"))?;
+    let palette_count = u16::try_from(palettes).map_err(|_| too_large("palettes"))?;
+    let record_count = u16::try_from(records.len()).map_err(|_| too_large("colour records"))?;
+
+    // Version 1 adds three 32-bit offsets after the palette indices
+    let header_len = 12 + 2 * palettes + if labelled { 12 } else { 0 };
+    let records_offset = u32::try_from(header_len).map_err(|_| too_large("palettes"))?;
+    let labels_offset = records_offset
+        .checked_add(u32::from(record_count) * 4)
+        .ok_or_else(|| too_large("colour records"))?;
+
+    let mut bytes = Vec::with_capacity(header_len + records.len() * 4 + palettes * 2);
+    bytes.extend(u16::from(labelled).to_be_bytes());
+    bytes.extend(entries.to_be_bytes());
+    bytes.extend(palette_count.to_be_bytes());
+    bytes.extend(record_count.to_be_bytes());
+    bytes.extend(records_offset.to_be_bytes());
+    for index in 0..palettes {
+        let first = u16::try_from(index * per_palette).map_err(|_| too_large("colour records"))?;
+        bytes.extend(first.to_be_bytes());
+    }
+    if labelled {
+        // Palette types and entry labels are absent
+        bytes.extend(0u32.to_be_bytes());
+        bytes.extend(labels_offset.to_be_bytes());
+        bytes.extend(0u32.to_be_bytes());
+    }
+    for c in records {
+        bytes.extend([c.b, c.g, c.r, c.a]);
+    }
+    if labelled {
+        for label in labels {
+            bytes.extend(label.to_be_bytes());
+        }
+    }
+    Ok(bytes)
 }
 
 /// One layer of a colour glyph with its compiled glyph.

@@ -245,3 +245,106 @@ fn colour_tables_survive_woff_and_woff2_wrapping() {
         .unwrap();
     assert_eq!(&woff2[..4], b"wOF2");
 }
+
+/// The compiled font with `names` as palette names and one colour glyph.
+fn compile_named(names: [Option<&str>; 2]) -> Vec<u8> {
+    let base = sample_font();
+    let mut data = ColorData {
+        palettes: palettes(),
+        glyphs: vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: layer(&base, "B", solid(0, 1.0)),
+        }],
+    };
+    for (palette, name) in data.palettes.iter_mut().zip(names) {
+        palette.name = name.map(str::to_string);
+    }
+    let mut font = base;
+    font.set_color(data).unwrap();
+    FontExporter::new()
+        .compile(&font, ExportFormat::Ttf)
+        .unwrap()
+}
+
+/// Returns the English `name` table string for a name ID.
+fn name_string(font: &FontRef<'_>, name_id: u16) -> Option<String> {
+    let name = font.name().unwrap();
+    name.name_record()
+        .iter()
+        .find(|record| record.name_id().to_u16() == name_id && record.language_id() == 0x0409)
+        .map(|record| record.string(name.string_data()).unwrap().chars().collect())
+}
+
+#[test]
+fn palette_names_become_cpal_labels_in_the_name_table() {
+    let bytes = compile_named([Some("Light"), Some("Dark")]);
+    let parsed = FontRef::new(&bytes).unwrap();
+    let cpal = parsed.cpal().unwrap();
+
+    assert_eq!(cpal.version(), 1);
+    let labels = cpal.palette_labels_array().unwrap().unwrap();
+    assert_eq!(labels.len(), 2);
+    let ids: Vec<u16> = labels.iter().map(|label| label.get().to_u16()).collect();
+    assert!(ids.iter().all(|id| (256..=32767).contains(id)));
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(name_string(&parsed, ids[0]).as_deref(), Some("Light"));
+    assert_eq!(name_string(&parsed, ids[1]).as_deref(), Some("Dark"));
+
+    // The colour records are unchanged by the version 1 header
+    let records = cpal.color_records_array().unwrap().unwrap();
+    assert_eq!((records[0].red(), records[2].red()), (10, 200));
+    assert_eq!(records[3].alpha(), 128);
+}
+
+#[test]
+fn unnamed_palettes_in_a_named_font_have_no_label() {
+    let bytes = compile_named([None, Some("Dark")]);
+    let parsed = FontRef::new(&bytes).unwrap();
+    let labels = parsed
+        .cpal()
+        .unwrap()
+        .palette_labels_array()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(labels[0].get().to_u16(), 0xFFFF);
+    let dark = labels[1].get().to_u16();
+    assert_eq!(name_string(&parsed, dark).as_deref(), Some("Dark"));
+}
+
+#[test]
+fn palettes_with_the_same_name_share_one_name_record() {
+    let bytes = compile_named([Some("Brand"), Some("Brand")]);
+    let parsed = FontRef::new(&bytes).unwrap();
+    let labels = parsed
+        .cpal()
+        .unwrap()
+        .palette_labels_array()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(labels[0].get(), labels[1].get());
+}
+
+#[test]
+fn fonts_without_palette_names_keep_cpal_version_0() {
+    let bytes = compile_named([None, None]);
+    let parsed = FontRef::new(&bytes).unwrap();
+    let cpal = parsed.cpal().unwrap();
+
+    assert_eq!(cpal.version(), 0);
+    assert!(cpal.palette_labels_array().is_none());
+}
+
+#[test]
+fn palette_names_leave_the_existing_name_records_intact() {
+    let plain = compile_named([None, None]);
+    let named = compile_named([Some("Light"), Some("Dark")]);
+    let before = FontRef::new(&plain).unwrap();
+    let after = FontRef::new(&named).unwrap();
+
+    for id in [1u16, 2, 4, 6] {
+        assert_eq!(name_string(&before, id), name_string(&after, id), "{id}");
+    }
+    assert!(name_string(&before, 1).is_some());
+}
