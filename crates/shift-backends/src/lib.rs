@@ -21,6 +21,7 @@ mod metrics;
 pub mod shaper_font;
 mod shift2fontir;
 mod source_glyph_ids;
+mod svg;
 mod traits;
 mod webfont;
 

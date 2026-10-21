@@ -543,6 +543,26 @@ mod tests {
     }
 
     #[test]
+    fn colour_tables_are_copied_into_the_otf_unchanged() {
+        let ttf = static_ttf();
+        let font = FontRef::new(&ttf).unwrap();
+        let mut builder = FontBuilder::new();
+        for record in font.table_directory.table_records() {
+            let tag = record.tag();
+            builder.add_raw(tag, font.table_data(tag).unwrap().as_bytes().to_vec());
+        }
+        let svg = b"SVG table stand-in".to_vec();
+        builder.add_raw(Tag::new(b"SVG "), svg.clone());
+
+        let otf = ttf_to_otf(&builder.build()).unwrap();
+
+        let converted = FontRef::new(&otf).unwrap();
+        let copied = converted.table_data(Tag::new(b"SVG ")).unwrap();
+        assert_eq!(copied.as_bytes(), svg.as_slice());
+        assert!(converted.table_data(Tag::new(b"glyf")).is_none());
+    }
+
+    #[test]
     fn numbers_use_the_shortest_charstring_forms() {
         assert_eq!(charstring_number(0.0), [139]);
         assert_eq!(charstring_number(-107.0), [32]);

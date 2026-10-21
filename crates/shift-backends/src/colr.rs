@@ -6,12 +6,16 @@
 //! share a colour in one palette but differ in another. Shift therefore keeps
 //! colour out of fontc and writes both tables itself, from palette indices.
 //!
+//! Colour glyphs are also written as an OpenType `SVG ` table (see `svg`), for
+//! renderers that read SVG instead of `COLR`.
+//!
 //! A colour glyph whose layers are all opaque solid fills becomes a `COLR`
 //! version 0 record, which the oldest colour renderers read. Every other
 //! colour glyph becomes a version 1 paint graph with a clip box.
 
 use std::collections::HashMap;
 
+use crate::svg::svg_table;
 use shift_font::{ColorData, ColorGlyph, GlyphId, Paint, PaintColor};
 use skrifa::{FontRef as SkrifaFont, MetadataProvider};
 use write_fonts::FontBuilder;
@@ -28,7 +32,7 @@ use write_fonts::tables::name::{Name, NameRecord};
 use write_fonts::types::{F2Dot14, FWord, GlyphId16, NameId, Tag};
 
 /// Palette index that selects the text foreground colour.
-const FOREGROUND: u16 = 0xFFFF;
+pub(crate) const FOREGROUND: u16 = 0xFFFF;
 
 /// Label that `CPAL` uses for a palette without a name.
 const NO_LABEL: u16 = 0xFFFF;
@@ -119,6 +123,9 @@ pub fn add_color_tables(
             .map_err(|error| ColorError::Rebuild {
                 message: error.to_string(),
             })?;
+        if let Some(svg) = svg_table(ttf, color, &resolve, &compiled)? {
+            builder.add_raw(Tag::new(b"SVG "), svg);
+        }
         rebuilt = true;
     }
 
@@ -129,7 +136,7 @@ pub fn add_color_tables(
 }
 
 /// Glyph ids and bounds of the compiled font.
-struct CompiledGlyphs<'a> {
+pub(crate) struct CompiledGlyphs<'a> {
     ids: HashMap<String, GlyphId16>,
     font: FontRef<'a>,
 }
@@ -153,7 +160,7 @@ impl<'a> CompiledGlyphs<'a> {
     }
 
     /// Returns `(x_min, y_min, x_max, y_max)` of a glyph's outline, if it has one.
-    fn bounds(&self, glyph: GlyphId16) -> Option<[i16; 4]> {
+    pub(crate) fn bounds(&self, glyph: GlyphId16) -> Option<[i16; 4]> {
         let loca = self.font.loca(None).ok()?;
         let glyf = self.font.glyf().ok()?;
         let outline = loca.get_glyf(glyph.into(), &glyf).ok()??;
@@ -313,12 +320,12 @@ fn cpal(color: &ColorData, labels: &[u16]) -> Result<Vec<u8>, ColorError> {
 }
 
 /// One layer of a colour glyph with its compiled glyph.
-struct ResolvedLayer<'a> {
-    glyph: GlyphId16,
-    fill: &'a Paint,
+pub(crate) struct ResolvedLayer<'a> {
+    pub(crate) glyph: GlyphId16,
+    pub(crate) fill: &'a Paint,
 }
 
-fn layers_of<'a>(
+pub(crate) fn layers_of<'a>(
     paint: &'a Paint,
     resolve: &impl Fn(&GlyphId) -> Result<GlyphId16, ColorError>,
 ) -> Result<Vec<ResolvedLayer<'a>>, ColorError> {
@@ -551,7 +558,7 @@ fn radius(value: f64) -> write_fonts::types::UfWord {
 }
 
 /// Distance from `center` to the farthest corner of the layer's bounds.
-fn farthest_corner(center: shift_font::ColorPoint, bounds: Option<[i16; 4]>) -> f64 {
+pub(crate) fn farthest_corner(center: shift_font::ColorPoint, bounds: Option<[i16; 4]>) -> f64 {
     let Some([x0, y0, x1, y1]) = bounds else {
         return 0.0;
     };

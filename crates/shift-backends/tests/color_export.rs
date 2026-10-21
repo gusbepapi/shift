@@ -348,3 +348,171 @@ fn palette_names_leave_the_existing_name_records_intact() {
     }
     assert!(name_string(&before, 1).is_some());
 }
+
+/// Returns the SVG document that the `SVG ` table holds for a glyph.
+fn svg_document(bytes: &[u8], glyph: u16) -> Option<String> {
+    let parsed = FontRef::new(bytes).unwrap();
+    let svg = parsed.svg().ok()?;
+    let data = svg
+        .glyph_data(write_fonts::types::GlyphId::new(u32::from(glyph)))
+        .unwrap()?;
+    Some(String::from_utf8(data.to_vec()).unwrap())
+}
+
+/// Counts the elements named `name`, failing when the document is not well-formed XML.
+fn count_elements(document: &str, name: &str) -> usize {
+    use quick_xml::{Reader, events::Event};
+    let mut reader = Reader::from_str(document);
+    let mut count = 0;
+    loop {
+        match reader.read_event().expect("well-formed SVG") {
+            Event::Start(element) | Event::Empty(element)
+                if element.name().as_ref() == name.as_bytes() =>
+            {
+                count += 1;
+            }
+            Event::Eof => return count,
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn colour_glyphs_are_written_as_svg_documents_with_palette_variables() {
+    let base = sample_font();
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: Paint::Layers {
+                layers: vec![
+                    layer(&base, "acute", solid(0, 1.0)),
+                    layer(&base, "B", solid(1, 0.5)),
+                ],
+            },
+        }],
+    );
+    let bytes = FontExporter::new()
+        .compile(&font, ExportFormat::Ttf)
+        .unwrap();
+    let a = gid(&bytes, "A");
+
+    let document = svg_document(&bytes, a).expect("a document for A");
+
+    assert_eq!(count_elements(&document, "path"), 2);
+    assert!(document.contains(&format!(r#"id="glyph{a}""#)));
+    // The fallbacks are palette 0, and layer opacity is kept separately
+    assert!(document.contains("fill:var(--color0,#0a141e);fill-opacity:1"));
+    assert!(document.contains("fill:var(--color1,#0a141e);fill-opacity:0.5"));
+    // Outlines are flipped to SVG's downward y axis by one group
+    assert!(document.contains(r#"transform="scale(1,-1)""#));
+    assert!(document.contains(r#"d="M"#));
+    // Only the colour glyph has a document
+    assert!(svg_document(&bytes, gid(&bytes, "B")).is_none());
+}
+
+#[test]
+fn gradients_and_foreground_colour_are_written_into_svg_defs() {
+    let base = sample_font();
+    let stops = vec![
+        ColorStop {
+            offset: 0.0,
+            color: PaintColor::Palette { index: 1 },
+            alpha: 1.0,
+        },
+        ColorStop {
+            offset: 1.0,
+            color: PaintColor::Foreground,
+            alpha: 0.5,
+        },
+    ];
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: Paint::Layers {
+                layers: vec![
+                    layer(
+                        &base,
+                        "B",
+                        Paint::LinearGradient {
+                            stops: stops.clone(),
+                            p0: ColorPoint::new(0.0, 0.0),
+                            p1: ColorPoint::new(0.0, 700.0),
+                            p2: None,
+                        },
+                    ),
+                    layer(
+                        &base,
+                        "acute",
+                        Paint::RadialGradient {
+                            stops,
+                            c0: ColorPoint::new(300.0, 300.0),
+                            r0: None,
+                            c1: ColorPoint::new(300.0, 300.0),
+                            r1: Some(250.0),
+                        },
+                    ),
+                ],
+            },
+        }],
+    );
+    let bytes = FontExporter::new()
+        .compile(&font, ExportFormat::Ttf)
+        .unwrap();
+
+    let document = svg_document(&bytes, gid(&bytes, "A")).unwrap();
+
+    assert_eq!(count_elements(&document, "linearGradient"), 1);
+    assert_eq!(count_elements(&document, "radialGradient"), 1);
+    assert_eq!(count_elements(&document, "stop"), 4);
+    assert!(document.contains(r#"x1="0" y1="0" x2="0" y2="700""#));
+    assert!(document.contains(r#"cx="300" cy="300" r="250" fx="300" fy="300" fr="0""#));
+    assert!(document.contains("stop-color:var(--color1,#0a141e)"));
+    assert!(document.contains("stop-color:context-fill;stop-opacity:0.5"));
+    // Each path refers to a gradient that the defs define
+    for id in document
+        .split(r#"fill="url(#"#)
+        .skip(1)
+        .map(|rest| rest.split(')').next().unwrap())
+    {
+        assert!(document.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+}
+
+#[test]
+fn fonts_without_colour_glyphs_carry_no_svg_table() {
+    let bytes = FontExporter::new()
+        .compile(&sample_font(), ExportFormat::Ttf)
+        .unwrap();
+    assert!(FontRef::new(&bytes).unwrap().svg().is_err());
+
+    // Palettes alone do not need a colour glyph document
+    let base = sample_font();
+    let palettes_only = coloured(base, Vec::new());
+    let bytes = FontExporter::new()
+        .compile(&palettes_only, ExportFormat::Ttf)
+        .unwrap();
+    assert!(FontRef::new(&bytes).unwrap().svg().is_err());
+}
+
+#[test]
+fn svg_documents_survive_woff_wrapping() {
+    let base = sample_font();
+    let font = coloured(
+        base.clone(),
+        vec![ColorGlyph {
+            glyph: id(&base, "A"),
+            paint: layer(&base, "B", solid(0, 1.0)),
+        }],
+    );
+
+    let woff = FontExporter::new()
+        .compile(&font, ExportFormat::Woff)
+        .unwrap();
+    let table_count = usize::from(u16::from_be_bytes([woff[12], woff[13]]));
+    let tags: Vec<&[u8]> = (0..table_count)
+        .map(|index| &woff[44 + index * 20..48 + index * 20])
+        .collect();
+    assert!(tags.contains(&&b"SVG "[..]));
+}
