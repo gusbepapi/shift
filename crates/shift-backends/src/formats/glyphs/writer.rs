@@ -2,7 +2,8 @@
 //!
 //! The output keeps what Shift models: masters with their axis values and metrics, glyphs with
 //! Unicode values, outlines, components and anchors for every master, kerning with its groups,
-//! feature code, named instances and the glyphs that are not exported. Layers of sources that
+//! feature code, named instances, the glyphs that are not exported, and colour palettes with
+//! colour glyphs (see the `color` module for what Glyphs can hold). Layers of sources that
 //! are not masters, guidelines, hints and the remaining font information are not written.
 
 use std::collections::HashMap;
@@ -12,6 +13,8 @@ use shift_font::{
     Axis, AxisMapping, Component, Contour, Glyph, GlyphId, Kerning, KerningPosition, KerningSide,
     MetricKind, Point, PointType, Source,
 };
+
+mod color;
 
 use crate::errors::{FormatBackendError, FormatBackendResult};
 use crate::metrics::metric_position;
@@ -63,6 +66,9 @@ impl GlyphsWriter {
         if let Some(mappings) = axis_mappings_value(font.axes(), font.axis_mappings()) {
             parameters.push(parameter("Axis Mappings", mappings));
         }
+        if let Some(palettes) = color::palettes_parameter(font.color()) {
+            parameters.push(palettes);
+        }
         root.put("customParameters", Value::Array(parameters));
 
         let metadata = font.metadata();
@@ -93,13 +99,20 @@ impl GlyphsWriter {
             .collect();
         let kerning = font.kerning();
         let skipped = font.lib().skipped_export_glyphs();
+        let colours = color::ColorWriter::new(font, &glyph_names);
         root.put(
             "glyphs",
             Value::Array(
                 font.glyphs()
                     .iter()
                     .map(|glyph| {
-                        glyph_value(glyph, &masters, kerning, skipped.contains(glyph.name()))
+                        glyph_value(
+                            glyph,
+                            &masters,
+                            kerning,
+                            skipped.contains(glyph.name()),
+                            &colours,
+                        )
                     })
                     .collect(),
             ),
@@ -361,7 +374,14 @@ fn axis_mappings_value(axes: &[Axis], mappings: &[AxisMapping]) -> Option<Value>
     (!by_tag.is_empty()).then_some(Value::Dict(by_tag))
 }
 
-fn glyph_value(glyph: &Glyph, masters: &Masters<'_>, kerning: &Kerning, skipped: bool) -> Value {
+fn glyph_value(
+    glyph: &Glyph,
+    masters: &Masters<'_>,
+    kerning: &Kerning,
+    skipped: bool,
+    colours: &color::ColorWriter<'_, impl FontView>,
+) -> Value {
+    let colour = colours.plan(glyph);
     let mut dict = Dict::new();
     if skipped {
         dict.put("export", Value::number(0.0));
@@ -374,7 +394,7 @@ fn glyph_value(glyph: &Glyph, masters: &Masters<'_>, kerning: &Kerning, skipped:
         dict.put("kernRight", Value::string(&group));
     }
 
-    let layers = masters
+    let layers: Vec<Value> = masters
         .all
         .iter()
         .filter_map(|master| {
@@ -399,19 +419,36 @@ fn glyph_value(glyph: &Glyph, masters: &Masters<'_>, kerning: &Kerning, skipped:
             if !anchors.is_empty() {
                 value.put("anchors", Value::Array(anchors));
             }
+            let literal = colour
+                .as_ref()
+                .and_then(|colour| colours.literal_shapes(colour, master));
+            if literal.is_some() {
+                let mut attributes = Dict::new();
+                attributes.put("color", Value::number(1.0));
+                value.put("attr", Value::Dict(attributes));
+            }
             value.put("layerId", Value::string(&master.id));
-            let shapes: Vec<Value> = layer
-                .contours_iter()
-                .filter(|contour| !contour.is_empty())
-                .map(path_value)
-                .chain(layer.components_iter().map(component_value))
-                .collect();
+            let shapes: Vec<Value> = match literal {
+                Some(shapes) => shapes,
+                None => layer
+                    .contours_iter()
+                    .filter(|contour| !contour.is_empty())
+                    .map(path_value)
+                    .chain(layer.components_iter().map(component_value))
+                    .collect(),
+            };
             if !shapes.is_empty() {
                 value.put("shapes", Value::Array(shapes));
             }
             value.put("width", Value::number(layer.width()));
-            Some(Value::Dict(value))
+
+            let mut written = vec![Value::Dict(value)];
+            if let Some(colour) = &colour {
+                written.extend(colour.extra_layers(master, layer.width()));
+            }
+            Some(written)
         })
+        .flatten()
         .collect();
     dict.put("layers", Value::Array(layers));
 
@@ -438,7 +475,11 @@ fn kerning_group(kerning: &Kerning, position: KerningPosition, glyph: &GlyphId) 
 }
 
 fn path_value(contour: &Contour) -> Value {
-    let points = contour.points();
+    Value::Dict(path_dict(contour.points(), contour.is_closed()))
+}
+
+/// Writes points as a Glyphs path.
+fn path_dict(points: &[Point], closed: bool) -> Dict {
     let nodes = points
         .iter()
         .enumerate()
@@ -447,16 +488,16 @@ fn path_value(contour: &Contour) -> Value {
                 "({},{},{})",
                 format_number(point.x()),
                 format_number(point.y()),
-                node_type(point, index, points, contour.is_closed())
+                node_type(point, index, points, closed)
             )
         })
         .collect::<Vec<_>>();
     let mut dict = Dict::new();
-    if contour.is_closed() {
+    if closed {
         dict.put("closed", Value::number(1.0));
     }
     dict.put("nodes", Value::Raw(format!("(\n{}\n)", nodes.join(",\n"))));
-    Value::Dict(dict)
+    dict
 }
 
 /// Names the segment that arrives at `point`, the way a Glyphs node does.
@@ -626,6 +667,7 @@ fn format_string(text: &str) -> String {
     out
 }
 
+#[derive(Clone)]
 enum Value {
     String(String),
     Number(f64),
@@ -665,7 +707,7 @@ impl Value {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Dict {
     entries: Vec<(String, Value)>,
 }
@@ -741,6 +783,55 @@ mod tests {
         assert_eq!(format_string("123"), "\"123\"");
         assert_eq!(format_string("say \"hi\"\n"), "\"say \\\"hi\\\"\\n\"");
         assert_eq!(format_string(""), "\"\"");
+    }
+
+    #[test]
+    fn a_colour_file_imports_without_new_glyphs_or_changed_outlines() {
+        use shift_font::{
+            ColorData, ColorGlyph, ColorPalette, Contour, Glyph, GlyphLayer, LayerId, Paint,
+            PaintColor, PointType, Rgba,
+        };
+
+        let mut font = sample_variable_font();
+        let base = font.glyphs().next().unwrap().id();
+        let base_name = font.glyphs().next().unwrap().name().to_string();
+        let mut layer_glyph = Glyph::new("base.layer");
+        for source in font.sources().to_vec() {
+            let mut layer = GlyphLayer::with_width(LayerId::new(), source.id(), 600.0);
+            let mut contour = Contour::new();
+            contour.add_point(100.0, 0.0, PointType::OnCurve, false);
+            contour.add_point(300.0, 700.0, PointType::OnCurve, false);
+            contour.add_point(500.0, 0.0, PointType::OnCurve, false);
+            contour.close();
+            layer.add_contour(contour);
+            layer_glyph.set_layer(layer);
+        }
+        let layer = layer_glyph.id();
+        font.insert_glyph(layer_glyph).unwrap();
+        font.set_color(ColorData {
+            palettes: vec![ColorPalette {
+                name: None,
+                colors: vec![Rgba::new(1, 2, 3, 255)],
+            }],
+            glyphs: vec![ColorGlyph {
+                glyph: base,
+                paint: Paint::Glyph {
+                    glyph: layer,
+                    fill: Box::new(Paint::Solid {
+                        color: PaintColor::Palette { index: 0 },
+                        alpha: 1.0,
+                    }),
+                },
+            }],
+        })
+        .unwrap();
+
+        let text = GlyphsWriter::new().render(&font).unwrap();
+        let back = read_back(&text);
+
+        // Palette layers are not Shift glyphs, so the colour layers add nothing here
+        assert_eq!(back.glyph_count(), font.glyph_count());
+        assert_eq!(points(&back, &base_name), points(&font, &base_name));
     }
 
     #[test]
