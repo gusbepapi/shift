@@ -14,10 +14,9 @@
 //!   non-cyclic branches still contribute geometry.
 
 use crate::Require;
-use crate::curve::segment_bounds;
 use crate::{
     ComponentId, Contour, CoreError, CoreResult, CurveSegment, CurveSegmentIter, GlyphId,
-    GlyphLayer, Point, PointId, Transform,
+    GlyphLayer, Point, Transform,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -215,10 +214,7 @@ fn transform_contour_points(contour: &Contour, transform: Transform) -> Resolved
     let points = contour
         .points()
         .iter()
-        .map(|point| {
-            let kurbo::Point { x, y } = transform.transform_point(point.position());
-            Point::new(PointId::new(), x, y, point.point_type(), point.is_smooth())
-        })
+        .map(|point| point.copied_to(transform.transform_point(point.position())))
         .collect();
 
     ResolvedContour {
@@ -547,7 +543,7 @@ fn accumulate_contour_bbox(
     any: &mut bool,
 ) {
     for segment in CurveSegmentIter::new(points, closed) {
-        let (sx, sy, ex, ey) = segment_bounds(&segment);
+        let (sx, sy, ex, ey) = segment.bounds();
         *min_x = min_x.min(sx);
         *min_y = min_y.min(sy);
         *max_x = max_x.max(ex);

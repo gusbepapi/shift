@@ -88,11 +88,11 @@ pub enum Paint {
     /// Fills the outline of another glyph with the nested paint.
     Glyph {
         glyph: GlyphId,
-        fill: Box<Paint>,
+        fill: Box<Self>,
     },
     /// Paints the layers in order, first at the bottom.
     Layers {
-        layers: Vec<Paint>,
+        layers: Vec<Self>,
     },
     Solid {
         color: PaintColor,

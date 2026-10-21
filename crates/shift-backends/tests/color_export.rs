@@ -367,7 +367,7 @@ fn count_elements(document: &str, name: &str) -> usize {
     loop {
         match reader.read_event().expect("well-formed SVG") {
             Event::Start(element) | Event::Empty(element)
-                if element.name().as_ref() == name.as_bytes() =>
+                if element.name().as_ref() == name =>
             {
                 count += 1;
             }
@@ -511,10 +511,8 @@ fn svg_documents_survive_woff_wrapping() {
         .compile(&font, ExportFormat::Woff)
         .unwrap();
     let table_count = usize::from(u16::from_be_bytes([woff[12], woff[13]]));
-    let tags: Vec<&[u8]> = (0..table_count)
-        .map(|index| &woff[44 + index * 20..48 + index * 20])
-        .collect();
-    assert!(tags.contains(&&b"SVG "[..]));
+    let mut tags = (0..table_count).map(|index| &woff[44 + index * 20..48 + index * 20]);
+    assert!(tags.any(|tag| tag == b"SVG "));
 }
 
 /// A decoded `sbix` bitmap with its offset from the glyph origin.

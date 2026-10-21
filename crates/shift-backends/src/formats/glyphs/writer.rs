@@ -17,7 +17,6 @@ use shift_font::{
 mod color;
 
 use crate::errors::{FormatBackendError, FormatBackendResult};
-use crate::metrics::metric_position;
 use crate::traits::FontView;
 
 /// Version of the Glyphs application that the file claims to come from.
@@ -44,6 +43,10 @@ impl GlyphsWriter {
     ///
     /// Returns [`FormatBackendError::Glyphs`] when the font has no default master or a named
     /// instance cannot be placed in the design space.
+    #[allow(
+        clippy::unused_self,
+        reason = "a writer method; the writer is the entry point callers hold"
+    )]
     pub fn render(self, font: &impl FontView) -> FormatBackendResult<String> {
         let masters = Masters::of(font)?;
         let mut root = Dict::new();
@@ -94,7 +97,6 @@ impl GlyphsWriter {
 
         let glyph_names: HashMap<GlyphId, String> = font
             .glyphs()
-            .iter()
             .map(|glyph| (glyph.id(), glyph.name().to_string()))
             .collect();
         let kerning = font.kerning();
@@ -104,7 +106,6 @@ impl GlyphsWriter {
             "glyphs",
             Value::Array(
                 font.glyphs()
-                    .iter()
                     .map(|glyph| {
                         glyph_value(
                             glyph,
@@ -138,7 +139,7 @@ impl GlyphsWriter {
                 if !font.axes().is_empty() {
                     dict.put(
                         "axesValues",
-                        axes_values(font.axes(), |axis| design.get(&axis.id())),
+                        axes_values(font.axes(), |axis| design.value_on(axis)),
                     );
                 }
                 Ok(Value::Dict(dict))
@@ -235,12 +236,12 @@ enum Row {
 impl Row {
     fn glyphs_name(self) -> &'static str {
         match self {
-            Row::Kind(MetricKind::Ascender) => "ascender",
-            Row::Kind(MetricKind::CapHeight) => "cap height",
-            Row::Kind(MetricKind::XHeight) => "x-height",
-            Row::Kind(MetricKind::Descender) => "descender",
-            Row::Kind(_) => "baseline",
-            Row::ItalicAngle => "italic angle",
+            Self::Kind(MetricKind::Ascender) => "ascender",
+            Self::Kind(MetricKind::CapHeight) => "cap height",
+            Self::Kind(MetricKind::XHeight) => "x-height",
+            Self::Kind(MetricKind::Descender) => "descender",
+            Self::Kind(_) => "baseline",
+            Self::ItalicAngle => "italic angle",
         }
     }
 }
@@ -269,15 +270,7 @@ fn master_value(font: &impl FontView, master: &Master<'_>, rows: &[Row]) -> Valu
     if !font.axes().is_empty() {
         dict.put(
             "axesValues",
-            axes_values(font.axes(), |axis| {
-                Some(
-                    master
-                        .source
-                        .location()
-                        .get(&axis.id())
-                        .unwrap_or(axis.default()),
-                )
-            }),
+            axes_values(font.axes(), |axis| master.source.location().value_on(axis)),
         );
     }
     dict.put("id", Value::string(&master.id));
@@ -292,14 +285,13 @@ fn master_value(font: &impl FontView, master: &Master<'_>, rows: &[Row]) -> Valu
                     }
                 }
                 Row::Kind(kind) => {
-                    let position = metric_position(font.metric_definitions(), master.source, *kind);
-                    if let Some(position) = position {
-                        let overshoot = font
-                            .metric_definitions()
-                            .iter()
-                            .find(|definition| definition.kind() == *kind)
-                            .and_then(|definition| master.source.metric_value(&definition.id()))
-                            .map_or(0.0, |value| value.overshoot);
+                    let metric = font
+                        .metric_definitions()
+                        .iter()
+                        .find(|definition| definition.kind() == *kind)
+                        .and_then(|definition| master.source.metric_value(&definition.id()));
+                    if let Some(metric) = metric {
+                        let (position, overshoot) = (metric.position, metric.overshoot);
                         if overshoot != 0.0 {
                             value.put("over", Value::number(overshoot));
                         }
@@ -327,11 +319,11 @@ fn axis_value(axis: &Axis) -> Value {
     Value::Dict(dict)
 }
 
-fn axes_values(axes: &[Axis], value: impl Fn(&Axis) -> Option<f64>) -> Value {
+fn axes_values(axes: &[Axis], value: impl Fn(&Axis) -> f64) -> Value {
     Value::Raw(format!(
         "({})",
         axes.iter()
-            .map(|axis| format_number(value(axis).unwrap_or(axis.default())))
+            .map(|axis| format_number(value(axis)))
             .collect::<Vec<_>>()
             .join(",")
     ))
@@ -673,26 +665,26 @@ enum Value {
     Number(f64),
     /// Text that is already in property list syntax.
     Raw(String),
-    Array(Vec<Value>),
+    Array(Vec<Self>),
     Dict(Dict),
 }
 
 impl Value {
     fn string(text: &str) -> Self {
-        Value::String(text.to_string())
+        Self::String(text.to_string())
     }
 
     fn number(value: f64) -> Self {
-        Value::Number(value)
+        Self::Number(value)
     }
 
     fn render(&self, out: &mut String) {
         match self {
-            Value::String(text) => out.push_str(&format_string(text)),
-            Value::Number(value) => out.push_str(&format_number(*value)),
-            Value::Raw(text) => out.push_str(text),
-            Value::Array(items) if items.is_empty() => out.push_str("()"),
-            Value::Array(items) => {
+            Self::String(text) => out.push_str(&format_string(text)),
+            Self::Number(value) => out.push_str(&format_number(*value)),
+            Self::Raw(text) => out.push_str(text),
+            Self::Array(items) if items.is_empty() => out.push_str("()"),
+            Self::Array(items) => {
                 out.push_str("(\n");
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
@@ -702,7 +694,7 @@ impl Value {
                 }
                 out.push_str("\n)");
             }
-            Value::Dict(dict) => dict.render(out),
+            Self::Dict(dict) => dict.render(out),
         }
     }
 }

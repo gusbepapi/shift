@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use crate::font_source::geometry::SMOOTH_ANGLE_TOLERANCE;
     use shift_font::test_support::fixtures;
-    use shift_font::{CurveSegment, MetricKind};
+    use shift_font::{CurveSegment, StandardMetrics};
     use skrifa::outline::pen::PathElement;
 
     #[test]
@@ -311,9 +311,7 @@ mod tests {
         let header = retained.header.clone();
         let default_source_id = header.default_source_id().unwrap();
         let default_source = header
-            .sources()
-            .iter()
-            .find(|source| source.id() == default_source_id)
+            .source(&default_source_id)
             .expect("authored header should contain its default source");
 
         assert_eq!(header.metadata().family_name, directory.family_name);
@@ -325,17 +323,11 @@ mod tests {
         assert_eq!(header.axes().len(), directory.axes.len());
         assert_eq!(header.named_instances().len(), directory.instances.len());
         assert_eq!(default_source.line_gap(), Some(directory.metrics.line_gap));
-        for (kind, expected) in [
-            (MetricKind::Ascender, Some(directory.metrics.ascender)),
-            (MetricKind::Descender, Some(directory.metrics.descender)),
-            (MetricKind::CapHeight, directory.metrics.cap_height),
-            (MetricKind::XHeight, directory.metrics.x_height),
-        ] {
-            assert_eq!(
-                crate::metrics::metric_position(header.metric_definitions(), default_source, kind,),
-                expected,
-            );
-        }
+        let metrics = StandardMetrics::of(default_source, header.metric_definitions());
+        assert_eq!(metrics.ascender, Some(directory.metrics.ascender));
+        assert_eq!(metrics.descender, Some(directory.metrics.descender));
+        assert_eq!(metrics.cap_height, directory.metrics.cap_height);
+        assert_eq!(metrics.x_height, directory.metrics.x_height);
     }
 
     fn point_types(contour: &Contour) -> Vec<PointType> {
@@ -488,7 +480,9 @@ mod tests {
         let mut quads_checked = 0;
         for element in elements {
             match element {
-                PathElement::MoveTo { x, y } | PathElement::LineTo { x, y } => {
+                PathElement::MoveTo { x, y }
+                | PathElement::LineTo { x, y }
+                | PathElement::CurveTo { x, y, .. } => {
                     current = (x as f64, y as f64);
                 }
                 PathElement::QuadTo { cx0, cy0, x, y } => {
@@ -499,9 +493,6 @@ mod tests {
                     );
                     quads_checked += 1;
                     current = expected[2];
-                }
-                PathElement::CurveTo { x, y, .. } => {
-                    current = (x as f64, y as f64);
                 }
                 PathElement::Close => {}
             }

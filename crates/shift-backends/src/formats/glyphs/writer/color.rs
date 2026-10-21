@@ -325,7 +325,6 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
             Rc::new(
                 self.font
                     .glyphs()
-                    .into_iter()
                     .filter_map(|glyph| Some((glyph.id(), glyph.layer_for_source(source)?.clone())))
                     .collect(),
             )

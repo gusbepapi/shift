@@ -21,14 +21,14 @@ pub struct UfoFont {
 }
 
 impl UfoFont {
+    /// Opens a UFO for random access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontReadError::UnsupportedFormat`] when `path` is not a `.ufo`, and
+    /// [`FontReadError::MalformedSource`] when its metadata or layers cannot be read.
     pub fn open(path: &Path) -> Result<Self, FontReadError> {
-        if !matches!(
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref(),
-            Some("ufo")
-        ) {
+        if FontFormat::of_path(path) != Some(FontFormat::Ufo) {
             return Err(FontReadError::UnsupportedFormat {
                 path: path.to_path_buf(),
             });

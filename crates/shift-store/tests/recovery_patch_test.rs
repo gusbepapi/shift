@@ -536,18 +536,16 @@ fn kerning_edit(
     source_id: &str,
     value: Option<f64>,
 ) -> shift_font::FontChangeSet {
-    font.apply_intents(&shift_font::FontIntentSet {
-        intents: vec![shift_font::FontIntent::SetKerningValues(SetKerningValues {
-            edits: vec![shift_font::KerningValueEdit {
-                source_id: shift_font::SourceId::from_raw(source_id),
-                pair: shift_font::KerningPair::groups(
-                    shift_font::KerningGroupId::from_raw("first_A"),
-                    shift_font::KerningGroupId::from_raw("second_A"),
-                ),
-                value,
-            }],
-        })],
-    })
+    font.apply_intents(&shift_font::FontIntentSet::from(SetKerningValues {
+        edits: vec![shift_font::KerningValueEdit {
+            source_id: shift_font::SourceId::from_raw(source_id),
+            pair: shift_font::KerningPair::groups(
+                shift_font::KerningGroupId::from_raw("first_A"),
+                shift_font::KerningGroupId::from_raw("second_A"),
+            ),
+            value,
+        }],
+    }))
     .expect("kerning edit applies")
     .changes
 }
@@ -626,20 +624,23 @@ fn edit_groups(font: &mut shift_font::Font) -> shift_font::FontChangeSet {
     let round = shift_font::KerningGroupId::from_raw("a_round");
     font.apply_intents(&shift_font::FontIntentSet {
         intents: vec![
-            shift_font::FontIntent::CreateKerningGroup(CreateKerningGroup {
+            CreateKerningGroup {
                 group_id: round.clone(),
                 position: shift_font::KerningPosition::First,
                 name: "Round".to_string(),
-            }),
-            shift_font::FontIntent::SetKerningGroupMember(SetKerningGroupMember {
+            }
+            .into(),
+            SetKerningGroupMember {
                 position: shift_font::KerningPosition::First,
                 glyph_id: shift_font::GlyphId::from_raw("A"),
                 group_id: Some(round),
-            }),
-            shift_font::FontIntent::RenameKerningGroup(RenameKerningGroup {
+            }
+            .into(),
+            RenameKerningGroup {
                 group_id: shift_font::KerningGroupId::from_raw("second_A"),
                 name: "Apex".to_string(),
-            }),
+            }
+            .into(),
         ],
     })
     .expect("group edits apply")

@@ -36,11 +36,11 @@ impl ExportFormat {
     /// Returns the lowercase format token used by file extensions and commands.
     pub fn as_str(self) -> &'static str {
         match self {
-            ExportFormat::Ttf => "ttf",
-            ExportFormat::Otf => "otf",
-            ExportFormat::Glyphs => "glyphs",
-            ExportFormat::Woff => "woff",
-            ExportFormat::Woff2 => "woff2",
+            Self::Ttf => "ttf",
+            Self::Otf => "otf",
+            Self::Glyphs => "glyphs",
+            Self::Woff => "woff",
+            Self::Woff2 => "woff2",
         }
     }
 }
@@ -168,6 +168,10 @@ impl FontExporter {
     ///
     /// Returns [`ExportError`] when the source cannot be represented in the
     /// supported compiler model or compilation fails.
+    #[allow(
+        clippy::unused_self,
+        reason = "an exporter method; the exporter is the export entry point callers hold"
+    )]
     pub fn compile_ttf(&self, font: &impl FontView) -> Result<Vec<u8>, ExportError> {
         self.compile_ttf_with(font, &ColorTables::default())
     }
@@ -179,6 +183,10 @@ impl FontExporter {
     ///
     /// Returns [`ExportError`] when the source cannot be represented in the
     /// supported compiler model or compilation fails.
+    #[allow(
+        clippy::unused_self,
+        reason = "an exporter method; the exporter is the export entry point callers hold"
+    )]
     pub fn compile_ttf_with(
         &self,
         font: &impl FontView,
@@ -188,7 +196,6 @@ impl FontExporter {
         let bytes = compile_ttf(source)?;
         let names = font
             .glyphs()
-            .iter()
             .map(|glyph| (glyph.id(), glyph.name().to_string()))
             .collect();
         Ok(add_color_tables(
@@ -242,6 +249,10 @@ impl FontExporter {
     /// # Errors
     ///
     /// Returns [`ExportError`] when the font cannot be compiled.
+    #[allow(
+        clippy::unused_self,
+        reason = "an exporter method; the exporter is the export entry point callers hold"
+    )]
     pub fn propagated_anchors(
         &self,
         font: &impl FontView,
@@ -543,11 +554,7 @@ mod tests {
             })
             .collect();
         let category = categories.get(glyph_id).copied().unwrap_or_default();
-        let attaching = glyph
-            .layers()
-            .values()
-            .flat_map(|layer| layer.anchors())
-            .any(|anchor| !anchor.name().is_some_and(|name| name.starts_with('_')));
+        let attaching = glyph.has_attaching_anchor();
         compiled_anchors(&PropagationGlyph {
             anchors: &own,
             components: &components,

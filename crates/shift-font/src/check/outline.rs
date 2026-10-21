@@ -42,15 +42,12 @@ pub(super) fn check(
         return Ok(findings);
     }
 
-    let layers = master_layers(font, glyph);
+    let layers = font.masters_with_layers(glyph).collect::<Vec<_>>();
     if layers.is_empty() {
         return Ok(findings);
     }
 
-    let default = font
-        .default_source()
-        .filter(|source| source.is_master())
-        .map(Source::id);
+    let default = font.default_master().map(Source::id);
     let reference = match &default {
         Some(default) => layers.iter().find(|(source, _)| source.id() == *default),
         None => None,
@@ -165,13 +162,6 @@ fn decomposes_alike(font: &Font, glyph: &Glyph, a: &Source, b: &Source) -> bool 
     matches!((outline(a), outline(b)), (Some(a), Some(b)) if !a.is_empty() && a == b)
 }
 
-/// Returns one layer per master that draws `glyph`, in source order.
-fn master_layers<'a>(font: &'a Font, glyph: &'a Glyph) -> Vec<(&'a Source, &'a GlyphLayer)> {
-    font.masters()
-        .filter_map(|source| Some((source, glyph.layer_for_source(&source.id())?)))
-        .collect()
-}
-
 fn describe(difference: &LayerDifference) -> String {
     match difference {
         LayerDifference::ContourCount { reference, source } => {
@@ -225,7 +215,11 @@ impl Pair<'_> {
         let target = self.layer.contours_iter().collect::<Vec<_>>();
 
         let swaps = self.swapped_contours(&reference, &target);
-        let swapped = swaps.iter().flat_map(|&(i, j)| [i, j]).collect::<Vec<_>>();
+        let swapped = swaps
+            .iter()
+            .copied()
+            .flat_map(<[usize; 2]>::from)
+            .collect::<Vec<_>>();
         let order = swaps.iter().map(|&(i, j)| {
             self.finding(
                 Check::WrongContourOrder,

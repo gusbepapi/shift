@@ -8,7 +8,9 @@ use shift_font::{
 
 use crate::cli::{RemoveColorGlyphArgs, SetColorGlyphArgs, SetPalettesArgs};
 
-use super::{AuthoringReport, apply_mutation, glyph::load_font, glyph::resolve_glyph_id};
+use crate::selector::FontSelectors;
+
+use super::{AuthoringReport, apply_mutation, glyph::load_font};
 
 /// Replaces every palette with the palettes given on the command line.
 ///
@@ -43,7 +45,7 @@ pub(crate) fn set_palettes(args: &SetPalettesArgs) -> Result<AuthoringReport> {
 /// palette entries that do not exist, or a document/persistence failure.
 pub(crate) fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringReport> {
     let font = load_font(&args.path)?;
-    let glyph = resolve_glyph_id(&font, &args.glyph)?;
+    let glyph = font.glyph_id_for(&args.glyph)?;
     let layers = args
         .layers
         .iter()
@@ -52,7 +54,7 @@ pub(crate) fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringRepor
                 .split_once('=')
                 .ok_or_else(|| miette!("layer {text:?} must be GLYPH=FILL"))?;
             Ok(Paint::Glyph {
-                glyph: resolve_glyph_id(&font, name)?,
+                glyph: font.glyph_id_for(name)?,
                 fill: Box::new(parse_fill(fill)?),
             })
         })
@@ -79,7 +81,7 @@ pub(crate) fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringRepor
 /// document/persistence failure.
 pub(crate) fn remove_color_glyph(args: &RemoveColorGlyphArgs) -> Result<AuthoringReport> {
     let font = load_font(&args.path)?;
-    let glyph_id = resolve_glyph_id(&font, &args.glyph)?;
+    let glyph_id = font.glyph_id_for(&args.glyph)?;
     apply_mutation(
         &args.path,
         &args.mutation,

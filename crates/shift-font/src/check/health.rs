@@ -4,7 +4,6 @@
 
 use kurbo::BezPath;
 
-use crate::curve::segment_bounds;
 use crate::{CurveSegmentIter, DesignLocation, Font, Glyph, GlyphLayer, Point, Source};
 
 use super::polygon::Polygon;
@@ -23,7 +22,7 @@ pub(super) fn check(font: &Font, glyph: &Glyph) -> Vec<Finding> {
         return Vec::new();
     }
     let role = GlyphRole::of(glyph);
-    let default = font.default_source().filter(|source| source.is_master());
+    let default = font.default_master();
     let encoded = !glyph.unicodes().is_empty() && !role.space_like;
 
     let mut findings = Vec::new();
@@ -45,10 +44,7 @@ pub(super) fn check(font: &Font, glyph: &Glyph) -> Vec<Finding> {
         );
     }
 
-    for source in font.masters() {
-        let Some(layer) = glyph.layer_for_source(&source.id()) else {
-            continue;
-        };
+    for (source, layer) in font.masters_with_layers(glyph) {
         let layer = LayerCheck {
             font,
             glyph,
@@ -266,7 +262,7 @@ pub(super) fn extent<'a>(
     for (points, closed) in contours {
         let on_curve = Extent::of(points.iter().filter(|point| point.is_on_curve()));
         let segments = CurveSegmentIter::new(points, closed).map(|segment| {
-            let (min_x, min_y, max_x, max_y) = segment_bounds(&segment);
+            let (min_x, min_y, max_x, max_y) = segment.bounds();
             Extent {
                 min_x,
                 min_y,

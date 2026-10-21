@@ -8,8 +8,7 @@ mod source;
 mod writer;
 
 pub(crate) use conversion::{
-    anchor_parts, component_transform, default_design_value, font_header, master_design_values,
-    master_location_values, missing_component_details,
+    GlyphsAnchorExt, GlyphsFontExt, GlyphsMasterExt, font_header, missing_component_details,
 };
 pub(crate) use families::InstanceFamilies;
 pub(crate) use import::{stream_font, stream_retained};

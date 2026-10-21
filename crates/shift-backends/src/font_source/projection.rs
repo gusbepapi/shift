@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::str::FromStr;
 
 use fontdrasil::coords::{NormalizedCoord, NormalizedLocation};
@@ -79,7 +79,7 @@ impl FontDirectory {
                 },
             })
             .collect::<Vec<_>>();
-        let mut directory = FontDirectory::new(
+        let mut directory = Self::new(
             format,
             font.metadata().family_name.clone(),
             font.metadata().style_name.clone(),
@@ -103,7 +103,7 @@ impl FontDirectory {
                     location: font
                         .axes()
                         .iter()
-                        .map(|axis| source.location().get(&axis.id()).unwrap_or(axis.default()))
+                        .map(|axis| source.location().value_on(axis))
                         .collect::<Vec<_>>()
                         .into_boxed_slice(),
                     filename: source.filename().map(str::to_string),
@@ -121,12 +121,7 @@ impl FontDirectory {
                     location: font
                         .axes()
                         .iter()
-                        .map(|axis| {
-                            instance
-                                .location()
-                                .get(&axis.id())
-                                .unwrap_or(axis.default())
-                        })
+                        .map(|axis| instance.location().value_on(axis))
                         .collect::<Vec<_>>()
                         .into_boxed_slice(),
                     postscript_name: instance.postscript_name().map(str::to_string),
@@ -157,7 +152,7 @@ fn directory_mappings(font: &Font) -> Result<Vec<DirectoryMapping>, FontReadErro
     };
     let coordinate = |location: &Location, axis_id: &AxisId| {
         font.axis(axis_id)
-            .map(|axis| location.get(axis_id).unwrap_or(axis.default()))
+            .map(|axis| location.value_on(axis))
             .ok_or_else(|| invalid(&format!("mapping references unknown axis {axis_id}")))
     };
 
@@ -180,8 +175,7 @@ fn directory_mappings(font: &Font) -> Result<Vec<DirectoryMapping>, FontReadErro
                             point
                                 .output
                                 .get(axis_id)
-                                .map(Ok)
-                                .unwrap_or_else(|| coordinate(&point.input, axis_id))
+                                .map_or_else(|| coordinate(&point.input, axis_id), Ok)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(DirectoryMappingPoint {
@@ -215,9 +209,7 @@ fn directory_mappings(font: &Font) -> Result<Vec<DirectoryMapping>, FontReadErro
 
 fn directory_metrics(font: &Font, source: &FontSource) -> FontMetrics {
     let metric = |kind| {
-        font.metric_definitions()
-            .iter()
-            .find(|definition| definition.kind() == kind)
+        font.metric_definition_for_kind(kind)
             .and_then(|definition| source.metric_value(&definition.id()))
             .map(|value| value.position)
     };
@@ -296,7 +288,7 @@ where
                     .iter()
                     .map(|component| component.glyph)
             }))
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         for dependency in dependencies {
             self.resolve(dependency)?;
         }
@@ -955,11 +947,7 @@ mod tests {
         .into_iter()
         .zip(values)
         {
-            let definition = font
-                .metric_definitions()
-                .iter()
-                .find(|definition| definition.kind() == kind)
-                .unwrap();
+            let definition = font.metric_definition_for_kind(kind).unwrap();
             source.set_metric_value(definition.id(), MetricValue::new(position, 0.0));
         }
     }

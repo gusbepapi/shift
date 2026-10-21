@@ -5,8 +5,8 @@ use std::sync::Arc;
 use glyphs_reader::{Font as ParsedGlyphsFont, Glyph as ParsedGlyph, Layer, Node, NodeType, Shape};
 
 use super::{
-    InstanceFamilies, anchor_parts, component_transform, default_design_value, font_header,
-    master_design_values, master_location_values, missing_component_details,
+    GlyphsAnchorExt, GlyphsFontExt, GlyphsMasterExt, InstanceFamilies, font_header,
+    missing_component_details,
 };
 use crate::font_source::geometry::{
     ContourPoint, SourceComponent, SourceContour, SourceGeometry, control_point_kind,
@@ -34,6 +34,12 @@ pub struct GlyphsFont {
 }
 
 impl GlyphsFont {
+    /// Opens a Glyphs source for random access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontReadError::MalformedSource`] when the file cannot be parsed or its masters do
+    /// not form a valid directory.
     pub fn open(path: &Path) -> Result<Self, FontReadError> {
         let source = Arc::new(
             ParsedGlyphsFont::load(path)
@@ -44,8 +50,8 @@ impl GlyphsFont {
             .iter()
             .enumerate()
             .map(|(index, axis)| {
-                let design_values = master_design_values(&source, index);
-                let design_default = default_design_value(&source, index, &design_values);
+                let design_values = source.master_design_values(index);
+                let design_default = source.default_design_value(index, &design_values);
                 InterpolationAxis {
                     tag: axis.tag.clone(),
                     minimum: design_values.iter().copied().fold(design_default, f64::min),
@@ -82,8 +88,8 @@ impl GlyphsFont {
             .masters
             .iter()
             .map(|master| {
-                master_location_values(master, source.axes.len())
-                    .into_iter()
+                master
+                    .location_values(source.axes.len())
                     .enumerate()
                     .map(|(index, value)| value.unwrap_or(interpolation_axes[index].default))
                     .collect::<Vec<_>>()
@@ -100,14 +106,12 @@ impl GlyphsFont {
     }
 
     fn parsed_glyph(&self, glyph: GlyphIndex) -> Result<&ParsedGlyph, FontReadError> {
-        let entry =
-            self.directory
-                .glyphs
-                .get(glyph.to_usize())
-                .ok_or(FontReadError::GlyphOutOfRange {
-                    glyph,
-                    glyph_count: self.directory.glyph_count(),
-                })?;
+        let entry = self.directory.glyphs.get(glyph.to_usize()).ok_or_else(|| {
+            FontReadError::GlyphOutOfRange {
+                glyph,
+                glyph_count: self.directory.glyph_count(),
+            }
+        })?;
         self.source.glyphs.get(entry.name.as_str()).ok_or_else(|| {
             FontReadError::InvalidProjection {
                 details: format!("Glyphs directory lost glyph {:?}", entry.name),
@@ -184,7 +188,7 @@ fn project_glyphs_glyph(
 
 impl FontImporter for GlyphsFont {
     fn begin_import(&self) -> BackendResult<FontImport> {
-        let (header, stream, report) = super::stream_retained(&self.path, self.source.clone())
+        let (header, stream, report) = super::stream_retained(&self.path, Arc::clone(&self.source))
             .map_err(|source| BackendError::load(FontFormat::Glyphs, self.path.clone(), source))?;
         Ok(FontImport::new(
             header,
@@ -226,17 +230,9 @@ fn convert_glyphs_layer(
                             missing_component_details(component.name.as_str()),
                         )
                     })?;
-                let coefficients = component_transform(component);
                 components.push(SourceComponent {
                     glyph: base,
-                    transform: AffineTransform {
-                        xx: coefficients[0],
-                        xy: coefficients[1],
-                        yx: coefficients[2],
-                        yy: coefficients[3],
-                        dx: coefficients[4],
-                        dy: coefficients[5],
-                    },
+                    transform: AffineTransform::from_values(component.transform.as_coeffs()),
                 });
             }
         }
@@ -250,7 +246,7 @@ fn convert_glyphs_layer(
                 .anchors
                 .iter()
                 .map(|anchor| {
-                    let (name, x, y) = anchor_parts(anchor);
+                    let (name, x, y) = anchor.name_and_position();
                     GlyphAnchor { name, x, y }
                 })
                 .collect(),

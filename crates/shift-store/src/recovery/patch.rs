@@ -1,6 +1,6 @@
 use crate::error::{OrMissing, StoreEntity};
 use crate::numeric::sql_int;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use rusqlite::{Transaction, params};
 use shift_font as font;
@@ -15,15 +15,7 @@ use super::{
     },
 };
 use crate::{
-    FontInfo, StoreError,
-    change_set::{
-        replace_axis_mappings, replace_color, replace_kerning_groups, replace_lib_data,
-        replace_metric_definitions, replace_named_instances, replace_source_kerning,
-        upsert_axis_with_order, upsert_font_info, write_glyph_directory_in_tx,
-        write_source_snapshot_in_tx,
-    },
-    layer::write_layer_in_tx,
-    write_mode::WriteMode,
+    FontInfo, StoreError, change_set::StoreWriter, layer::write_layer_in_tx, write_mode::WriteMode,
 };
 
 const GLOBAL_OWNER: &str = "";
@@ -57,11 +49,11 @@ impl RecoveryOverlay {
         let definitions_changed = impact.contains(font::FontChangeImpact::METRIC_DEFINITIONS);
         let instances_changed = impact.contains(font::FontChangeImpact::NAMED_INSTANCES);
         let color_changed = impact.contains(font::FontChangeImpact::COLOR);
-        let mut axis_ids = HashSet::new();
-        let mut source_ids = HashSet::new();
-        let mut glyph_ids = HashSet::new();
-        let mut layer_ids = HashSet::new();
-        let mut kerning_source_ids = HashSet::new();
+        let mut axis_ids = BTreeSet::new();
+        let mut source_ids = BTreeSet::new();
+        let mut glyph_ids = BTreeSet::new();
+        let mut layer_ids = BTreeSet::new();
+        let mut kerning_source_ids = BTreeSet::new();
         let mut kerning_groups_changed = false;
 
         // Entity lifecycle omits pure reordering by design. Ordered relational
@@ -119,8 +111,9 @@ impl RecoveryOverlay {
         }
 
         let tx = self.conn.transaction()?;
+        let writer = StoreWriter::new(&tx);
         if metadata_changed || !source_ids.is_empty() {
-            upsert_font_info(&tx, post_font)?;
+            writer.upsert_font_info(post_font)?;
             if let Some(preserved) = preserved_font_info {
                 tx.execute(
                     "UPDATE font_info SET sample_text = ?1, vendor_id = ?2 WHERE id = 1",
@@ -132,23 +125,23 @@ impl RecoveryOverlay {
             }
         }
         if font_lib_changed {
-            replace_lib_data(&tx, "font_lib", "key", None, post_font.lib())?;
+            writer.replace_lib_data("font_lib", "key", None, post_font.lib())?;
             mark_replaced(&tx, FONT_LIB, GLOBAL_OWNER)?;
         }
         if mappings_changed {
-            replace_axis_mappings(&tx, post_font.axis_mappings())?;
+            writer.replace_axis_mappings(post_font.axis_mappings())?;
             mark_replaced(&tx, AXIS_MAPPINGS, GLOBAL_OWNER)?;
         }
         if definitions_changed {
-            replace_metric_definitions(&tx, post_font.metric_definitions())?;
+            writer.replace_metric_definitions(post_font.metric_definitions())?;
             mark_replaced(&tx, METRIC_DEFINITIONS, GLOBAL_OWNER)?;
         }
         if instances_changed {
-            replace_named_instances(&tx, post_font.named_instances())?;
+            writer.replace_named_instances(post_font.named_instances())?;
             mark_replaced(&tx, NAMED_INSTANCES, GLOBAL_OWNER)?;
         }
         if color_changed {
-            replace_color(&tx, post_font.color())?;
+            writer.replace_color(post_font.color())?;
             mark_replaced(&tx, COLOR_PALETTES, GLOBAL_OWNER)?;
             mark_replaced(&tx, COLOR_GLYPHS, GLOBAL_OWNER)?;
         }
@@ -161,7 +154,7 @@ impl RecoveryOverlay {
                 .find(|(_, axis)| axis.id() == axis_id)
             {
                 clear_tombstone(&tx, AXES, axis_id.as_str())?;
-                upsert_axis_with_order(&tx, axis, sql_int(order_index))?;
+                writer.upsert_axis_with_order(axis, sql_int(order_index))?;
             } else {
                 delete_axis_override(&tx, &axis_id)?;
                 mark_tombstone(&tx, AXES, axis_id.as_str())?;
@@ -176,7 +169,7 @@ impl RecoveryOverlay {
                 .find(|(_, source)| source.id() == source_id)
             {
                 clear_tombstone(&tx, SOURCES, source_id.as_str())?;
-                write_source_snapshot_in_tx(&tx, source, sql_int(order_index))?;
+                writer.write_source_snapshot(source, sql_int(order_index))?;
                 mark_replaced(&tx, SOURCE_LOCATIONS, source_id.as_str())?;
                 mark_replaced(&tx, SOURCE_METRIC_VALUES, source_id.as_str())?;
                 mark_replaced(&tx, SOURCE_LIB, source_id.as_str())?;
@@ -192,7 +185,7 @@ impl RecoveryOverlay {
                     .glyph_order(&glyph_id)
                     .or_missing(StoreEntity::GlyphOrder, &glyph_id)?;
                 clear_tombstone(&tx, GLYPHS, glyph_id.as_str())?;
-                write_glyph_directory_in_tx(&tx, glyph, sql_int(order_index), WriteMode::Upsert)?;
+                writer.write_glyph_directory(glyph, sql_int(order_index), WriteMode::Upsert)?;
                 mark_replaced(&tx, GLYPH_UNICODES, glyph_id.as_str())?;
                 mark_replaced(&tx, GLYPH_LIB, glyph_id.as_str())?;
             } else {
@@ -213,12 +206,12 @@ impl RecoveryOverlay {
         }
 
         if kerning_groups_changed {
-            replace_kerning_groups(&tx, post_font.kerning())?;
+            writer.replace_kerning_groups(post_font.kerning())?;
             mark_replaced(&tx, KERNING_GROUPS, GLOBAL_OWNER)?;
             mark_replaced(&tx, KERNING_GROUP_MEMBERS, GLOBAL_OWNER)?;
         }
         for source_id in kerning_source_ids {
-            replace_source_kerning(&tx, post_font.kerning(), &source_id)?;
+            writer.replace_source_kerning(post_font.kerning(), &source_id)?;
             mark_replaced(&tx, KERNING_PAIRS, source_id.as_str())?;
         }
 

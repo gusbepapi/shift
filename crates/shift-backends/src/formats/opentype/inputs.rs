@@ -400,6 +400,12 @@ fn source_atlas_read_error(error: SourceAtlasError) -> FontReadError {
 }
 
 /// Compiles one deterministic root batch directly from retained glyf/gvar semantics.
+///
+/// # Errors
+///
+/// Returns [`SourceAtlasError::Read`] when a root is out of range or a table cannot be read,
+/// [`SourceAtlasError::UnsupportedBinary`] when a glyph uses variation features the atlas does not
+/// model, and [`SourceAtlasError::Slug`] when the page outgrows the atlas limits.
 pub fn build_binary_atlas_page(
     source: &OpenTypeFont,
     roots: &[GlyphIndex],
@@ -450,19 +456,13 @@ pub fn build_binary_atlas_page(
                 let source_curves = curves
                     .sources
                     .remove(&weight)
-                    .unwrap_or_else(|| curves.base.clone());
+                    .unwrap_or_else(|| curves.base.curves().to_vec());
                 let source_advance =
                     advance.base + advance.deltas.get(&weight).copied().unwrap_or(0.0);
                 (weight, source_curves, source_advance)
             })
             .collect();
-        compiler.add_glyph(
-            root.to_u32(),
-            curves.base,
-            curves.line_flags,
-            advance.base,
-            sources,
-        )?;
+        compiler.add_glyph(root.to_u32(), curves.base, advance.base, sources)?;
     }
     Ok(compiler.finish())
 }
@@ -479,13 +479,7 @@ fn build_static_cff_atlas_page(
     for root in roots {
         let (pen, advance) = draw_static_cff_glyph(source, font, *root)?;
         let curves = pen.curves()?;
-        compiler.add_glyph(
-            root.to_u32(),
-            curves.base,
-            curves.line_flags,
-            advance,
-            Vec::new(),
-        )?;
+        compiler.add_glyph(root.to_u32(), curves.base, advance, Vec::new())?;
     }
     Ok(compiler.finish())
 }
