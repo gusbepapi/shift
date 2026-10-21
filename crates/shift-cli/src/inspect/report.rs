@@ -77,6 +77,96 @@ pub struct AxisLabelSummary {
     pub elidable: bool,
 }
 
+/// Palettes and colour glyphs, with colours as `#RRGGBBAA` and layers by glyph name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorSummary {
+    pub palettes: Vec<PaletteSummary>,
+    pub glyphs: Vec<ColorGlyphSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaletteSummary {
+    pub name: Option<String>,
+    pub colors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorGlyphSummary {
+    pub id: String,
+    pub name: String,
+    pub layers: Vec<ColorLayerSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorLayerSummary {
+    pub glyph: String,
+    pub fill: String,
+}
+
+impl ColorSummary {
+    fn from_font(font: &Font) -> Self {
+        let color = font.color();
+        let glyph_name = |id: &shift_font::GlyphId| {
+            font.glyph(id)
+                .map_or_else(|| id.to_string(), |glyph| glyph.name().to_string())
+        };
+        Self {
+            palettes: color
+                .palettes
+                .iter()
+                .map(|palette| PaletteSummary {
+                    name: palette.name.clone(),
+                    colors: palette
+                        .colors
+                        .iter()
+                        .map(|c| format!("#{:02X}{:02X}{:02X}{:02X}", c.r, c.g, c.b, c.a))
+                        .collect(),
+                })
+                .collect(),
+            glyphs: color
+                .glyphs
+                .iter()
+                .map(|entry| ColorGlyphSummary {
+                    id: entry.glyph.to_string(),
+                    name: glyph_name(&entry.glyph),
+                    layers: match &entry.paint {
+                        shift_font::Paint::Layers { layers } => layers.iter().collect(),
+                        single => vec![single],
+                    }
+                    .into_iter()
+                    .filter_map(|layer| match layer {
+                        shift_font::Paint::Glyph { glyph, fill } => Some(ColorLayerSummary {
+                            glyph: glyph_name(glyph),
+                            fill: describe_fill(fill),
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn describe_fill(paint: &shift_font::Paint) -> String {
+    use shift_font::{Paint, PaintColor};
+    let color = |color: &PaintColor| match color {
+        PaintColor::Foreground => "foreground".to_string(),
+        PaintColor::Palette { index } => format!("palette:{index}"),
+    };
+    match paint {
+        Paint::Solid { color: c, alpha } if *alpha < 1.0 => format!("{}@{alpha}", color(c)),
+        Paint::Solid { color: c, .. } => color(c),
+        Paint::LinearGradient { stops, .. } => format!("linear gradient, {} stops", stops.len()),
+        Paint::RadialGradient { stops, .. } => format!("radial gradient, {} stops", stops.len()),
+        Paint::Glyph { .. } | Paint::Layers { .. } => "nested".to_string(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NamedInstanceSummary {
@@ -188,6 +278,7 @@ pub struct InspectReport {
     pub axes: Vec<AxisSummary>,
     pub axis_mappings: Vec<AxisMappingSummary>,
     pub named_instances: Vec<NamedInstanceSummary>,
+    pub color: ColorSummary,
     pub metric_definitions: Vec<MetricDefinitionSummary>,
     pub sources: Vec<SourceSummary>,
     pub glyph_count: usize,
@@ -249,6 +340,7 @@ impl InspectReport {
                 .iter()
                 .map(|instance| NamedInstanceSummary::from_instance(instance, &axes_by_id))
                 .collect(),
+            color: ColorSummary::from_font(font),
             metric_definitions: font
                 .metric_definitions()
                 .iter()

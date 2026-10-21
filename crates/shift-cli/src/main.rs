@@ -11,13 +11,15 @@ use std::io::{self, IsTerminal, Write};
 use authoring::{
     AuthoringReport, ExportSources, add_axis, add_glyph, add_instance, add_layer, add_source,
     assign_kerning_group, copy_layer, create_font, create_kerning_group, delete_kerning_group,
-    export_glyphs, font_info, remove_instance, remove_kerning, rename_kerning_group, set_axis,
-    set_font, set_glyphs, set_instance, set_kerning, set_layer, unassign_kerning_group,
+    export_glyphs, font_info, remove_color_glyph, remove_instance, remove_kerning,
+    rename_kerning_group, set_axis, set_color_glyph, set_font, set_glyphs, set_instance,
+    set_kerning, set_layer, set_palettes, unassign_kerning_group,
 };
 use clap::Parser;
 use cli::{
-    AxisCommand, Cli, Command, CompileArgs, FontCommand, GlyphCommand, InstanceCommand,
-    KerningCommand, KerningGroupCommand, LayerCommand, SkillCommand, SourceCommand,
+    AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, FontCommand,
+    GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand,
+    PaletteCommand, SkillCommand, SourceCommand,
 };
 use glyph_inspect::GlyphInspection;
 use inspect::{InspectReport, RenderMode};
@@ -86,6 +88,24 @@ fn main() -> miette::Result<()> {
                 let json = args.mutation.json;
                 write_authoring_result(remove_instance(&args), json)
             }
+        },
+        Command::Color { command } => match command {
+            ColorCommand::Palette { command } => match command {
+                PaletteCommand::Set(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(set_palettes(&args), json)
+                }
+            },
+            ColorCommand::Glyph { command } => match command {
+                ColorGlyphCommand::Set(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(set_color_glyph(&args), json)
+                }
+                ColorGlyphCommand::Remove(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(remove_color_glyph(&args), json)
+                }
+            },
         },
         Command::Source { command } => match command {
             SourceCommand::Add(args) => {

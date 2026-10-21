@@ -86,6 +86,11 @@ pub enum AuthoringChange {
         count: usize,
         instances: Vec<InstanceReport>,
     },
+    ColorUpdated {
+        palettes: usize,
+        palette_colors: usize,
+        color_glyphs: Vec<String>,
+    },
     KerningGroupCreated {
         #[serde(flatten)]
         group: GroupReport,
@@ -244,6 +249,17 @@ impl AuthoringReport {
                 AuthoringChange::NamedInstancesUpdated { count, instances } => {
                     lines.push(format!("~ instances  {count} product presets"));
                     lines.extend(instances.iter().map(InstanceReport::render));
+                }
+                AuthoringChange::ColorUpdated {
+                    palettes,
+                    palette_colors,
+                    color_glyphs,
+                } => {
+                    lines.push(format!(
+                        "~ colour  {palettes} palettes of {palette_colors} colours, {} colour glyphs",
+                        color_glyphs.len()
+                    ));
+                    lines.extend(color_glyphs.iter().map(|name| format!("    {name}")));
                 }
                 AuthoringChange::KerningGroupCreated { group } => {
                     lines.push(format!("+ group   {}", group.render()));
@@ -404,6 +420,20 @@ pub(super) fn report_changes(font: &Font, changes: &FontChangeSet) -> Vec<Author
         report.push(AuthoringChange::NamedInstancesUpdated {
             count: instances.len(),
             instances,
+        });
+    }
+
+    if impact.contains(FontChangeImpact::COLOR) {
+        let color = font.color();
+        report.push(AuthoringChange::ColorUpdated {
+            palettes: color.palettes.len(),
+            palette_colors: color.palette_len(),
+            color_glyphs: color
+                .glyphs
+                .iter()
+                .filter_map(|entry| font.glyph(&entry.glyph))
+                .map(|glyph| glyph.name().to_string())
+                .collect(),
         });
     }
 

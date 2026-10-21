@@ -18,6 +18,7 @@ impl InspectReport {
             InspectView::Axes => self.render_axes(mode),
             InspectView::Mappings => self.render_mappings(mode),
             InspectView::Instances => self.render_instances(mode),
+            InspectView::Color => self.render_color(mode),
             InspectView::Sources => self.render_sources(mode),
             InspectView::Glyphs => self.render_glyphs(mode),
             InspectView::Layers => self.render_layers(mode),
@@ -41,6 +42,8 @@ impl InspectReport {
                 ("axes", self.axes.len().to_string()),
                 ("mappings", self.axis_mappings.len().to_string()),
                 ("instances", self.named_instances.len().to_string()),
+                ("palettes", self.color.palettes.len().to_string()),
+                ("colour glyphs", self.color.glyphs.len().to_string()),
                 (
                     "metric definitions",
                     self.metric_definitions.len().to_string(),
@@ -198,6 +201,30 @@ impl InspectReport {
         }
 
         section_with_table("Instances", &table, mode)
+    }
+
+    fn render_color(&self, mode: RenderMode) -> String {
+        if self.color.palettes.is_empty() && self.color.glyphs.is_empty() {
+            return empty_section("Colour", "No palettes or colour glyphs", mode);
+        }
+
+        let mut lines = vec![styled_section("Palettes", mode)];
+        for (index, palette) in self.color.palettes.iter().enumerate() {
+            lines.push(format!(
+                "  {index}  {}  {}",
+                palette.name.as_deref().unwrap_or("-"),
+                palette.colors.join(" ")
+            ));
+        }
+        lines.push(String::new());
+        lines.push(styled_section("Colour glyphs", mode));
+        for glyph in &self.color.glyphs {
+            lines.push(format!("  {}  {}", glyph.name, compact_id(&glyph.id)));
+            for layer in &glyph.layers {
+                lines.push(format!("    {}  {}", layer.glyph, layer.fill));
+            }
+        }
+        lines.join("\n")
     }
 
     fn render_glyphs(&self, mode: RenderMode) -> String {

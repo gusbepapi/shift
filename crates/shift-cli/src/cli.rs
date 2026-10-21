@@ -7,6 +7,11 @@ use clap::{Args, ColorChoice, Parser, Subcommand, ValueEnum, ValueHint};
 use crate::glyph_inspect::GlyphInspectView;
 use crate::inspect::InspectView;
 
+mod color;
+pub use color::{
+    ColorCommand, ColorGlyphCommand, PaletteCommand, RemoveColorGlyphArgs, SetColorGlyphArgs,
+    SetPalettesArgs,
+};
 mod font;
 pub use font::{FontInfoArgs, SetFontArgs};
 mod kerning;
@@ -74,6 +79,13 @@ pub enum Command {
     Instance {
         #[command(subcommand)]
         command: InstanceCommand,
+    },
+
+    /// Author colour palettes and colour glyphs (COLR/CPAL).
+    #[command(alias = "colour")]
+    Color {
+        #[command(subcommand)]
+        command: ColorCommand,
     },
 
     /// Author master sources.

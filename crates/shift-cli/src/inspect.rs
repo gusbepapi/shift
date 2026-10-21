@@ -13,6 +13,7 @@ pub enum InspectView {
     Axes,
     Mappings,
     Instances,
+    Color,
     Sources,
     Glyphs,
     Layers,
