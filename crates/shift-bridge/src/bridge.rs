@@ -18,10 +18,10 @@ use shift_font::{
   CreateGlyph, CreateGlyphLayer, CreateKerningGroup, CreateNamedInstance, CreateSource,
   DecomposeComponents, DeleteAxis, DeleteKerningGroup, DeleteNamedInstance, DeleteSource,
   MaterializeGlyphLayer, MoveAnchors, MovePoints, RemoveAnchors, RemoveComponents, RemovePoints,
-  RenameAnchors, RenameKerningGroup, ReverseContour, SetAxisMappings, SetComponentAlignment,
-  SetComponentTransforms, SetContourClosed, SetContourStart, SetKerningGroupMember,
-  SetKerningValues, SetLanguages, SetMetricDefinitions, SetPointSmooth, SetXAdvance,
-  TransformLayer, TranslatePoints, UpdateAxis, UpdateFontMetadata, UpdateGlyph,
+  RenameAnchors, RenameKerningGroup, ReverseContour, SetAxisMappings, SetColor,
+  SetComponentAlignment, SetComponentTransforms, SetContourClosed, SetContourStart,
+  SetKerningGroupMember, SetKerningValues, SetLanguages, SetMetricDefinitions, SetPointSmooth,
+  SetXAdvance, TransformLayer, TranslatePoints, UpdateAxis, UpdateFontMetadata, UpdateGlyph,
   UpdateNamedInstance, UpdateSource,
 };
 use shift_font::{
@@ -1416,6 +1416,7 @@ impl Bridge {
     let named_instances_changed = impact.contains(FontChangeImpact::NAMED_INSTANCES);
     let sources_changed = impact.contains(FontChangeImpact::SOURCES);
     let kerning_changed = impact.contains(FontChangeImpact::KERNING);
+    let color_changed = impact.contains(FontChangeImpact::COLOR);
 
     let touched_layer_ids: Vec<LayerId> = outcome
       .layers
@@ -1478,6 +1479,7 @@ impl Bridge {
             .transpose()?,
           sources: sources_changed.then(|| self.get_sources()).transpose()?,
           kerning: kerning_changed.then(|| self.get_kerning()).transpose()?,
+          color: color_changed.then(|| self.get_color_data()).transpose()?,
         })
       })
       .transpose()?;
@@ -2690,6 +2692,15 @@ fn map_intent(intent: NapiFontIntent) -> errors::Result<FontIntent> {
         language_ids: payload.language_ids,
       }))
     }
+    "setColor" => {
+      let payload = intent.set_color.ok_or_else(|| missing("setColor"))?;
+      let color =
+        serde_json::from_str(&payload.color_data).map_err(|error| BridgeError::InvalidInput {
+          kind: "colour data",
+          value: error.to_string(),
+        })?;
+      Ok(FontIntent::SetColor(SetColor { color }))
+    }
     "createAxis" => {
       let payload = intent.create_axis.ok_or_else(|| missing("createAxis"))?;
       Ok(FontIntent::CreateAxis(CreateAxis {
@@ -3075,6 +3086,7 @@ mod tests {
       update_glyph: None,
       update_font_metadata: None,
       set_languages: None,
+      set_color: None,
       create_axis: None,
       update_axis: None,
       delete_axis: None,
@@ -3971,8 +3983,7 @@ mod tests {
   fn colour_data_is_empty_for_a_new_workspace() {
     let bridge = bridge_with_workspace();
 
-    let json: serde_json::Value =
-      serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
 
     assert_eq!(json, serde_json::json!({ "palettes": [], "glyphs": [] }));
   }
@@ -3994,8 +4005,7 @@ mod tests {
       }],
     };
 
-    let json: serde_json::Value =
-      serde_json::from_str(&color_data_json(&color).unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&color_data_json(&color).unwrap()).unwrap();
 
     assert_eq!(json["palettes"][0]["name"], "Light");
     assert_eq!(json["palettes"][0]["colors"][0]["r"], 255);

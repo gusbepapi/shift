@@ -782,7 +782,7 @@ export interface NapiFontIntent {
    * named-instance create/update/delete, source create/delete, glyph
    * or layer creation, "setKerningValues", and the kerning group kinds
    * "createKerningGroup" | "setKerningGroupMember" | "renameKerningGroup"
-   * | "deleteKerningGroup".
+   * | "deleteKerningGroup", and "setColor" for palettes and colour glyphs.
    * Every kind shares the same apply path; one set is one undo step.
    */
   kind: string
@@ -811,6 +811,7 @@ export interface NapiFontIntent {
   updateGlyph?: NapiUpdateGlyphIntent
   updateFontMetadata?: NapiUpdateFontMetadataIntent
   setLanguages?: NapiSetLanguagesIntent
+  setColor?: NapiSetColorIntent
   createAxis?: NapiCreateAxisIntent
   updateAxis?: NapiUpdateAxisIntent
   deleteAxis?: NapiDeleteAxisIntent
@@ -885,6 +886,8 @@ export interface NapiFontReplacement {
   sources?: Array<NapiSource>
   /** Complete kerning when its values or interpolation basis changed. */
   kerning?: NapiKerningSnapshot
+  /** Complete colour data as JSON when palettes or colour glyphs changed; absent otherwise. */
+  color?: string
 }
 
 export interface NapiFontSnapshot {
@@ -1338,6 +1341,15 @@ export interface NapiSetKerningGroupMemberIntent {
 /** Sets or removes kerning pair values at sources as one undoable edit. */
 export interface NapiSetKerningValuesIntent {
   edits: Array<NapiKerningValueEdit>
+}
+
+/** Replaces the font's palettes and colour glyphs as one undoable edit. */
+export interface NapiSetColorIntent {
+  /**
+   * The complete colour data as JSON, because the paint graph is recursive and has no flat
+   * wire struct. It has the shape `get_color_data` returns.
+   */
+  colorData: string
 }
 
 /** Replaces the font's tracked language list as one undoable edit. */

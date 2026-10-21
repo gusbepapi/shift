@@ -1583,7 +1583,7 @@ pub struct NapiFontIntent {
     /// named-instance create/update/delete, source create/delete, glyph
     /// or layer creation, "setKerningValues", and the kerning group kinds
     /// "createKerningGroup" | "setKerningGroupMember" | "renameKerningGroup"
-    /// | "deleteKerningGroup".
+    /// | "deleteKerningGroup", and "setColor" for palettes and colour glyphs.
     /// Every kind shares the same apply path; one set is one undo step.
     pub kind: String,
     pub add_points: Option<NapiAddPointsIntent>,
@@ -1611,6 +1611,7 @@ pub struct NapiFontIntent {
     pub update_glyph: Option<NapiUpdateGlyphIntent>,
     pub update_font_metadata: Option<NapiUpdateFontMetadataIntent>,
     pub set_languages: Option<NapiSetLanguagesIntent>,
+    pub set_color: Option<NapiSetColorIntent>,
     pub create_axis: Option<NapiCreateAxisIntent>,
     pub update_axis: Option<NapiUpdateAxisIntent>,
     pub delete_axis: Option<NapiDeleteAxisIntent>,
@@ -1696,6 +1697,14 @@ pub struct NapiSetLanguagesIntent {
     /// Hyperglot language ids in display order. Blank ids are dropped and
     /// duplicates keep their first position; an empty list is stored as-is.
     pub language_ids: Vec<String>,
+}
+
+/// Replaces the font's palettes and colour glyphs as one undoable edit.
+#[napi(object)]
+pub struct NapiSetColorIntent {
+    /// The complete colour data as JSON, because the paint graph is recursive and has no flat
+    /// wire struct. It has the shape `get_color_data` returns.
+    pub color_data: String,
 }
 
 /// Font-level glyph creation. The glyph id is client-minted (decision 6:
@@ -1883,6 +1892,8 @@ pub struct NapiFontReplacement {
     pub sources: Option<Vec<NapiSource>>,
     /// Complete kerning when its values or interpolation basis changed.
     pub kerning: Option<NapiKerningSnapshot>,
+    /// Complete colour data as JSON when palettes or colour glyphs changed; absent otherwise.
+    pub color: Option<String>,
 }
 
 /// Pure-state response to `apply`: no change records cross to the renderer.

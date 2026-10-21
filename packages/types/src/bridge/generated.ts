@@ -751,7 +751,7 @@ export interface FontIntent {
    * named-instance create/update/delete, source create/delete, glyph
    * or layer creation, "setKerningValues", and the kerning group kinds
    * "createKerningGroup" | "setKerningGroupMember" | "renameKerningGroup"
-   * | "deleteKerningGroup".
+   * | "deleteKerningGroup", and "setColor" for palettes and colour glyphs.
    * Every kind shares the same apply path; one set is one undo step.
    */
   kind: string
@@ -780,6 +780,7 @@ export interface FontIntent {
   updateGlyph?: UpdateGlyphIntent
   updateFontMetadata?: UpdateFontMetadataIntent
   setLanguages?: SetLanguagesIntent
+  setColor?: SetColorIntent
   createAxis?: CreateAxisIntent
   updateAxis?: UpdateAxisIntent
   deleteAxis?: DeleteAxisIntent
@@ -854,6 +855,8 @@ export interface FontReplacement {
   sources?: Array<Source>
   /** Complete kerning when its values or interpolation basis changed. */
   kerning?: KerningSnapshot
+  /** Complete colour data as JSON when palettes or colour glyphs changed; absent otherwise. */
+  color?: string
 }
 
 export interface FontSnapshot {
@@ -1282,6 +1285,15 @@ export interface SetKerningGroupMemberIntent {
 /** Sets or removes kerning pair values at sources as one undoable edit. */
 export interface SetKerningValuesIntent {
   edits: Array<KerningValueEdit>
+}
+
+/** Replaces the font's palettes and colour glyphs as one undoable edit. */
+export interface SetColorIntent {
+  /**
+   * The complete colour data as JSON, because the paint graph is recursive and has no flat
+   * wire struct. It has the shape `get_color_data` returns.
+   */
+  colorData: string
 }
 
 /** Replaces the font's tracked language list as one undoable edit. */
