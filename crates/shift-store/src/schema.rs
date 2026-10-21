@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS named_instances (
     order_index INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS color_palettes (
+    id TEXT PRIMARY KEY,
+    palette_json TEXT NOT NULL,
+    order_index INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS color_glyphs (
+    glyph_id TEXT PRIMARY KEY,
+    paint_json TEXT NOT NULL,
+    order_index INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sources (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -269,7 +281,7 @@ CREATE TABLE IF NOT EXISTS workspace_state (
 "#;
 
 pub const SHIFT_APPLICATION_ID: i64 = 0x5348_4654;
-pub const SHIFT_DOCUMENT_SCHEMA_VERSION: i64 = 3;
+pub const SHIFT_DOCUMENT_SCHEMA_VERSION: i64 = 4;
 
 /// The oldest schema version [`migrate`] can upgrade.
 pub(crate) const OLDEST_MIGRATABLE_SCHEMA_VERSION: i64 = 1;
@@ -395,9 +407,29 @@ ALTER TABLE glyphs ADD COLUMN category TEXT;
 ALTER TABLE glyphs ADD COLUMN sub_category TEXT;
 "#;
 
+/// Version 3 to 4: fonts gain colour palettes and colour glyph paint graphs.
+/// This SQL is frozen.
+const MIGRATE_V3_TO_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS color_palettes (
+    id TEXT PRIMARY KEY,
+    palette_json TEXT NOT NULL,
+    order_index INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS color_glyphs (
+    glyph_id TEXT PRIMARY KEY,
+    paint_json TEXT NOT NULL,
+    order_index INTEGER NOT NULL
+);
+"#;
+
 /// Steps that bring authored tables from one schema version to the next, as
 /// `(version reached, SQL)`, in ascending order.
-const MIGRATIONS: [(i64, &str); 2] = [(2, MIGRATE_V1_TO_V2), (3, MIGRATE_V2_TO_V3)];
+const MIGRATIONS: [(i64, &str); 3] = [
+    (2, MIGRATE_V1_TO_V2),
+    (3, MIGRATE_V2_TO_V3),
+    (4, MIGRATE_V3_TO_V4),
+];
 
 /// Upgrades the authored tables of a store at `version` to
 /// [`SHIFT_DOCUMENT_SCHEMA_VERSION`] in one transaction, stamping

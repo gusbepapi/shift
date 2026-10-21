@@ -187,6 +187,8 @@ pub(crate) fn replace_font_header_in_tx(
     tx.execute("DELETE FROM metric_definitions", [])?;
     tx.execute("DELETE FROM axis_mappings", [])?;
     tx.execute("DELETE FROM named_instances", [])?;
+    tx.execute("DELETE FROM color_glyphs", [])?;
+    tx.execute("DELETE FROM color_palettes", [])?;
     tx.execute("DELETE FROM axes", [])?;
 
     upsert_font_info(tx, font)?;
@@ -209,6 +211,7 @@ pub(crate) fn replace_font_header_in_tx(
     }
     replace_axis_mappings(tx, font.axis_mappings())?;
     replace_named_instances(tx, font.named_instances())?;
+    replace_color(tx, font.color())?;
     replace_metric_definitions(tx, font.metric_definitions())?;
 
     for (order_index, source) in font.sources().iter().enumerate() {
@@ -319,6 +322,7 @@ fn change_priority(change: &font::FontChange) -> usize {
         font::FontChange::AxisMappings(_) => 2,
         font::FontChange::MetricDefinitions(_) => 3,
         font::FontChange::NamedInstances(_) => 4,
+        font::FontChange::Color(_) => 8,
         font::FontChange::Sources(_) => 5,
         font::FontChange::Glyph(_) => 6,
         font::FontChange::Layer { .. } => 7,
@@ -352,6 +356,7 @@ fn apply_change(tx: &Transaction<'_>, change: &font::FontChange) -> Result<(), S
         font::FontChange::AxisMappings(value) => replace_axis_mappings(tx, &value.after),
         font::FontChange::MetricDefinitions(value) => replace_metric_definitions(tx, &value.after),
         font::FontChange::NamedInstances(value) => replace_named_instances(tx, &value.after),
+        font::FontChange::Color(value) => replace_color(tx, &value.after),
         font::FontChange::Sources(value) => replace_sources(tx, &value.after),
         font::FontChange::Glyph(value) => replace_glyph(tx, value),
         font::FontChange::Layer {
@@ -694,6 +699,36 @@ pub(crate) fn replace_named_instances(
             params![
                 instance.id(),
                 serde_json::to_string(instance)?,
+                order_index as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Replaces every palette and colour glyph row with the given colour data.
+pub(crate) fn replace_color(
+    tx: &Transaction<'_>,
+    color: &font::ColorData,
+) -> Result<(), StoreError> {
+    tx.execute("DELETE FROM color_palettes", [])?;
+    tx.execute("DELETE FROM color_glyphs", [])?;
+    for (order_index, palette) in color.palettes.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO color_palettes (id, palette_json, order_index) VALUES (?1, ?2, ?3)",
+            params![
+                order_index.to_string(),
+                serde_json::to_string(palette)?,
+                order_index as i64,
+            ],
+        )?;
+    }
+    for (order_index, entry) in color.glyphs.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO color_glyphs (glyph_id, paint_json, order_index) VALUES (?1, ?2, ?3)",
+            params![
+                entry.glyph,
+                serde_json::to_string(&entry.paint)?,
                 order_index as i64,
             ],
         )?;

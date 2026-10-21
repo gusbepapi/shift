@@ -106,6 +106,10 @@ pub(super) const AXIS_MAPPINGS: RecoveryTable =
     RecoveryTable::replace_collection("axis_mappings", None, false);
 pub(super) const NAMED_INSTANCES: RecoveryTable =
     RecoveryTable::replace_collection("named_instances", None, false);
+pub(super) const COLOR_PALETTES: RecoveryTable =
+    RecoveryTable::replace_collection("color_palettes", None, false);
+pub(super) const COLOR_GLYPHS: RecoveryTable =
+    RecoveryTable::replace_collection("color_glyphs", None, false);
 pub(super) const SOURCES: RecoveryTable =
     RecoveryTable::overlay_rows("sources", Some("source"), SOURCE_BASE_FALLBACK_COLUMNS);
 pub(super) const GLYPHS: RecoveryTable =
@@ -148,6 +152,8 @@ const RECOVERY_TABLES: &[RecoveryTable] = &[
     AXES,
     AXIS_MAPPINGS,
     NAMED_INSTANCES,
+    COLOR_PALETTES,
+    COLOR_GLYPHS,
     SOURCES,
     GLYPHS,
     GLYPH_UNICODES,

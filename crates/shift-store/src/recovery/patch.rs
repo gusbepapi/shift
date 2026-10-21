@@ -7,16 +7,16 @@ use shift_font as font;
 use super::{
     RecoveryOverlay, RecoveryState,
     catalog::{
-        AXES, AXIS_MAPPINGS, FONT_LIB, GLYPH_COMPONENTS, GLYPH_LAYERS, GLYPH_LIB, GLYPH_UNICODES,
-        GLYPHS, KERNING_GROUP_MEMBERS, KERNING_GROUPS, KERNING_PAIRS, METRIC_DEFINITIONS,
-        NAMED_INSTANCES, RecoveryTable, SOURCE_LIB, SOURCE_LOCATIONS, SOURCE_METRIC_VALUES,
-        SOURCES,
+        AXES, AXIS_MAPPINGS, COLOR_GLYPHS, COLOR_PALETTES, FONT_LIB, GLYPH_COMPONENTS,
+        GLYPH_LAYERS, GLYPH_LIB, GLYPH_UNICODES, GLYPHS, KERNING_GROUP_MEMBERS, KERNING_GROUPS,
+        KERNING_PAIRS, METRIC_DEFINITIONS, NAMED_INSTANCES, RecoveryTable, SOURCE_LIB,
+        SOURCE_LOCATIONS, SOURCE_METRIC_VALUES, SOURCES,
     },
 };
 use crate::{
     FontInfo, StoreError,
     change_set::{
-        replace_axis_mappings, replace_kerning_groups, replace_lib_data,
+        replace_axis_mappings, replace_color, replace_kerning_groups, replace_lib_data,
         replace_metric_definitions, replace_named_instances, replace_source_kerning,
         upsert_axis_with_order, upsert_font_info, write_glyph_directory_in_tx,
         write_source_snapshot_in_tx,
@@ -55,6 +55,7 @@ impl RecoveryOverlay {
         let mappings_changed = impact.contains(font::FontChangeImpact::AXIS_MAPPINGS);
         let definitions_changed = impact.contains(font::FontChangeImpact::METRIC_DEFINITIONS);
         let instances_changed = impact.contains(font::FontChangeImpact::NAMED_INSTANCES);
+        let color_changed = impact.contains(font::FontChangeImpact::COLOR);
         let mut axis_ids = HashSet::new();
         let mut source_ids = HashSet::new();
         let mut glyph_ids = HashSet::new();
@@ -144,6 +145,11 @@ impl RecoveryOverlay {
         if instances_changed {
             replace_named_instances(&tx, post_font.named_instances())?;
             mark_replaced(&tx, NAMED_INSTANCES, GLOBAL_OWNER)?;
+        }
+        if color_changed {
+            replace_color(&tx, post_font.color())?;
+            mark_replaced(&tx, COLOR_PALETTES, GLOBAL_OWNER)?;
+            mark_replaced(&tx, COLOR_GLYPHS, GLOBAL_OWNER)?;
         }
 
         for axis_id in axis_ids {

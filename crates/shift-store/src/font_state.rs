@@ -58,6 +58,7 @@ impl ShiftStore {
             font.insert_glyph(glyph).map_err(StoreError::from)?;
         }
 
+        font.set_color(load_color(&self.conn)?)?;
         *font.kerning_mut() = load_kerning(&self.conn)?;
 
         Ok(font)
@@ -207,6 +208,29 @@ fn load_named_instances(
     })?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(StoreError::from)
+}
+
+fn load_color(conn: &rusqlite::Connection) -> Result<font::ColorData, StoreError> {
+    let mut stmt = conn.prepare("SELECT palette_json FROM color_palettes ORDER BY order_index")?;
+    let palettes = stmt
+        .query_map([], |row| {
+            let json = row.get::<_, String>(0)?;
+            serde_json::from_str(&json).map_err(json_column_error)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut stmt = conn
+        .prepare("SELECT glyph_id, paint_json FROM color_glyphs ORDER BY order_index, glyph_id")?;
+    let glyphs = stmt
+        .query_map([], |row| {
+            let glyph = row.get::<_, font::GlyphId>(0)?;
+            let json = row.get::<_, String>(1)?;
+            let paint = serde_json::from_str(&json).map_err(json_column_error)?;
+            Ok(font::ColorGlyph { glyph, paint })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(font::ColorData { palettes, glyphs })
 }
 
 fn json_column_error(error: serde_json::Error) -> rusqlite::Error {
