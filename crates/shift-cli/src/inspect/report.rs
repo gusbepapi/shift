@@ -80,21 +80,21 @@ pub(crate) struct AxisLabelSummary {
 /// Palettes and colour glyphs, with colours as `#RRGGBBAA` and layers by glyph name.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ColorSummary {
+pub(crate) struct ColorSummary {
     pub palettes: Vec<PaletteSummary>,
     pub glyphs: Vec<ColorGlyphSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PaletteSummary {
+pub(crate) struct PaletteSummary {
     pub name: Option<String>,
     pub colors: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ColorGlyphSummary {
+pub(crate) struct ColorGlyphSummary {
     pub id: String,
     pub name: String,
     pub layers: Vec<ColorLayerSummary>,
@@ -102,7 +102,7 @@ pub struct ColorGlyphSummary {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ColorLayerSummary {
+pub(crate) struct ColorLayerSummary {
     pub glyph: String,
     pub fill: String,
 }

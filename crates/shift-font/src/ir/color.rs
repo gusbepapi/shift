@@ -343,7 +343,7 @@ mod tests {
         ColorPalette {
             name: None,
             colors: (0..count)
-                .map(|index| Rgba::new(index as u8, 0, 0, 255))
+                .map(|index| Rgba::new(u8::try_from(index).unwrap(), 0, 0, 255))
                 .collect(),
         }
     }

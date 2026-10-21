@@ -78,7 +78,7 @@ fn gid(bytes: &[u8], name: &str) -> u16 {
     font.glyph_names()
         .iter()
         .find(|(_, glyph)| glyph.as_str() == name)
-        .map(|(glyph, _)| glyph.to_u32() as u16)
+        .map(|(glyph, _)| u16::try_from(glyph.to_u32()).unwrap())
         .unwrap()
 }
 
@@ -527,13 +527,23 @@ struct Bitmap {
     ppem: u16,
 }
 
+/// Floors a pixel coordinate; a negative one saturates to 0 and fails the bounds assertion below.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float-to-integer `as` saturates, which is the wanted clamp"
+)]
+fn pixel_index(value: f64) -> usize {
+    value.floor() as usize
+}
+
 impl Bitmap {
     /// Returns the pixel under a point in font units.
     fn pixel_at(&self, bytes: &[u8], x: f64, y: f64) -> [u8; 4] {
         let upem = f64::from(FontRef::new(bytes).unwrap().head().unwrap().units_per_em());
         let scale = f64::from(self.ppem) / upem;
-        let column = (x * scale - f64::from(self.origin_x)).floor() as usize;
-        let row = (f64::from(self.origin_y) + self.height as f64 - y * scale).floor() as usize;
+        let column = pixel_index(x * scale - f64::from(self.origin_x));
+        let row = pixel_index(f64::from(self.origin_y) + self.height as f64 - y * scale);
         assert!(column < self.width && row < self.height, "{column},{row}");
         let at = (row * self.width + column) * 4;
         self.rgba[at..at + 4].try_into().unwrap()

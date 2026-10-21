@@ -8,6 +8,7 @@
 //! Only static fonts are converted. A variable font needs `CFF2`, which this module does
 //! not write.
 
+use crate::numeric::{clamped_i16, clamped_u8, lossy_f32, rounded_i32};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::string::StringId;
@@ -67,7 +68,7 @@ const OP_RMOVETO: u8 = 21;
 /// # Errors
 ///
 /// Returns [`CffError`] when the font is variable, cannot be read, or cannot be rebuilt.
-pub fn ttf_to_otf(ttf: &[u8]) -> Result<Vec<u8>, CffError> {
+pub(crate) fn ttf_to_otf(ttf: &[u8]) -> Result<Vec<u8>, CffError> {
     let font = FontRef::new(ttf).map_err(|error| read_error(&error))?;
     if font.table_data(Tag::new(b"fvar")).is_some() {
         return Err(CffError::VariableFont);
@@ -294,17 +295,17 @@ fn index(items: &[Vec<u8>]) -> Result<Vec<u8>, CffError> {
 /// A DICT integer in the shortest form.
 fn dict_int(value: i32) -> Vec<u8> {
     match value {
-        -107..=107 => vec![(value + 139) as u8],
+        -107..=107 => vec![clamped_u8(value + 139)],
         108..=1131 => {
             let value = value - 108;
-            vec![(value / 256 + 247) as u8, (value % 256) as u8]
+            vec![clamped_u8(value / 256 + 247), clamped_u8(value % 256)]
         }
         -1131..=-108 => {
             let value = -value - 108;
-            vec![(value / 256 + 251) as u8, (value % 256) as u8]
+            vec![clamped_u8(value / 256 + 251), clamped_u8(value % 256)]
         }
         -32768..=32767 => {
-            let bytes = (value as i16).to_be_bytes();
+            let bytes = clamped_i16(value).to_be_bytes();
             vec![28, bytes[0], bytes[1]]
         }
         _ => {
@@ -332,7 +333,10 @@ fn dict_real(value: f64) -> Vec<u8> {
         .map(|character| match character {
             '.' => 0xa,
             '-' => 0xe,
-            digit => digit.to_digit(10).map_or(0, |digit| digit as u8),
+            digit => digit
+                .to_digit(10)
+                .and_then(|digit| u8::try_from(digit).ok())
+                .unwrap_or(0),
         })
         .collect();
     nibbles.push(0xf);
@@ -349,19 +353,19 @@ fn dict_real(value: f64) -> Vec<u8> {
 fn charstring_number(value: f64) -> Vec<u8> {
     let whole = value.round();
     if (value - whole).abs() < f64::EPSILON {
-        let whole = whole as i32;
+        let whole = rounded_i32(whole);
         return match whole {
-            -107..=107 => vec![(whole + 139) as u8],
+            -107..=107 => vec![clamped_u8(whole + 139)],
             108..=1131 => {
                 let value = whole - 108;
-                vec![(value / 256 + 247) as u8, (value % 256) as u8]
+                vec![clamped_u8(value / 256 + 247), clamped_u8(value % 256)]
             }
             -1131..=-108 => {
                 let value = -whole - 108;
-                vec![(value / 256 + 251) as u8, (value % 256) as u8]
+                vec![clamped_u8(value / 256 + 251), clamped_u8(value % 256)]
             }
             _ => {
-                let bytes = (whole as i16).to_be_bytes();
+                let bytes = clamped_i16(whole).to_be_bytes();
                 vec![28, bytes[0], bytes[1]]
             }
         };
@@ -369,7 +373,7 @@ fn charstring_number(value: f64) -> Vec<u8> {
 
     // Anything fractional is written as a 16.16 fixed point number
     let mut out = vec![255];
-    out.extend(((value * 65536.0).round() as i32).to_be_bytes());
+    out.extend(rounded_i32(value * 65536.0).to_be_bytes());
     out
 }
 
@@ -438,10 +442,10 @@ impl OutlinePen for CharstringPen {
             end.1 + 2.0 / 3.0 * (control.1 - end.1),
         );
         self.curve_to(
-            first.0 as f32,
-            first.1 as f32,
-            second.0 as f32,
-            second.1 as f32,
+            lossy_f32(first.0),
+            lossy_f32(first.1),
+            lossy_f32(second.0),
+            lossy_f32(second.1),
             x,
             y,
         );

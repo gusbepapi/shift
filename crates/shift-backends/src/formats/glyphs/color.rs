@@ -428,11 +428,13 @@ impl<'a> Planner<'a> {
             });
         }
         let length = self.palettes[0].colors.len();
-        if length >= MAX_PALETTE_ENTRIES {
+        let Some(index) = u16::try_from(length)
+            .ok()
+            .filter(|_| length < MAX_PALETTE_ENTRIES)
+        else {
             self.overflowed_colours += 1;
             return PaintColor::Foreground;
-        }
-        let index = length as u16;
+        };
         for palette in &mut self.palettes {
             palette.colors.push(rgba);
         }
@@ -549,7 +551,7 @@ fn declared_palettes(source: &GlyphsFont) -> (Vec<ColorPalette>, bool) {
 }
 
 fn rgba(color: Color) -> Rgba {
-    let channel = |value: i64| value.clamp(0, 255) as u8;
+    let channel = |value: i64| u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX);
     Rgba::new(
         channel(color.r),
         channel(color.g),

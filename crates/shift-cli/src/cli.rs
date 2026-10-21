@@ -8,7 +8,7 @@ use crate::glyph_inspect::GlyphInspectView;
 use crate::inspect::InspectView;
 
 mod color;
-pub use color::{
+pub(crate) use color::{
     ColorCommand, ColorGlyphCommand, PaletteCommand, RemoveColorGlyphArgs, SetColorGlyphArgs,
     SetPalettesArgs,
 };
@@ -421,7 +421,7 @@ pub(crate) struct CompileArgs {
 
 /// Colour tables accepted by `shift compile --color-tables`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum CompileColorTable {
+pub(crate) enum CompileColorTable {
     /// Vector paint graphs and palettes.
     Colr,
     /// SVG documents.
@@ -434,7 +434,7 @@ pub enum CompileColorTable {
 
 /// Output formats accepted by `shift compile --format`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum CompileFormat {
+pub(crate) enum CompileFormat {
     Ttf,
     Otf,
     Woff,

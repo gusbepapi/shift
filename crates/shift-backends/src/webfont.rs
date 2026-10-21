@@ -18,6 +18,18 @@ pub enum WebFontError {
 
     #[error("cannot compress the font: {message}")]
     Compress { message: String },
+
+    #[error("the font is too large for the container: {value} {what}s do not fit")]
+    TooLarge { value: usize, what: &'static str },
+}
+
+/// Converts a length to the integer type a container field stores.
+///
+/// # Errors
+///
+/// Returns [`WebFontError::TooLarge`] when `value` does not fit `T`.
+fn narrow<T: TryFrom<usize>>(value: usize, what: &'static str) -> Result<T, WebFontError> {
+    T::try_from(value).map_err(|_| WebFontError::TooLarge { value, what })
 }
 
 fn read_error(error: &impl std::fmt::Display) -> WebFontError {
@@ -75,20 +87,30 @@ impl<'a> Source<'a> {
         Ok(Self {
             flavor: font.table_directory.sfnt_version(),
             // The font revision is 16.16 fixed point; its halves give the container version
-            version: ((raw >> 16) as u16, (raw & 0xffff) as u16),
+            version: {
+                let [high_a, high_b, low_a, low_b] = raw.to_be_bytes();
+                (
+                    u16::from_be_bytes([high_a, high_b]),
+                    u16::from_be_bytes([low_a, low_b]),
+                )
+            },
             tables,
         })
     }
 
     /// The size of the SFNT these tables came from, with every table padded to four bytes.
-    fn sfnt_size(&self) -> u32 {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebFontError::TooLarge`] when the size exceeds `u32::MAX`.
+    fn sfnt_size(&self) -> Result<u32, WebFontError> {
         let directory = 12 + 16 * self.tables.len();
         let data: usize = self
             .tables
             .iter()
             .map(|table| padded(table.data.len()))
             .sum();
-        (directory + data) as u32
+        narrow(directory + data, "byte")
     }
 }
 
@@ -119,7 +141,7 @@ fn pad_to_four(out: &mut Vec<u8>) {
 /// # Errors
 ///
 /// Returns [`WebFontError`] when the binary cannot be read or a table cannot be compressed.
-pub fn to_woff(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
+pub(crate) fn to_woff(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
     const HEADER: usize = 44;
     const ENTRY: usize = 20;
 
@@ -144,9 +166,9 @@ pub fn to_woff(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
     let mut directory = Vec::new();
     for (table, data) in source.tables.iter().zip(&stored) {
         directory.extend_from_slice(&table.tag);
-        push_u32(&mut directory, offset as u32);
-        push_u32(&mut directory, data.len() as u32);
-        push_u32(&mut directory, table.data.len() as u32);
+        push_u32(&mut directory, narrow(offset, "byte")?);
+        push_u32(&mut directory, narrow(data.len(), "byte")?);
+        push_u32(&mut directory, narrow(table.data.len(), "byte")?);
         push_u32(&mut directory, table.checksum);
         offset += padded(data.len());
     }
@@ -154,10 +176,10 @@ pub fn to_woff(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
     let mut out = Vec::with_capacity(offset);
     out.extend_from_slice(b"wOFF");
     push_u32(&mut out, source.flavor);
-    push_u32(&mut out, offset as u32);
-    push_u16(&mut out, source.tables.len() as u16);
+    push_u32(&mut out, narrow(offset, "byte")?);
+    push_u16(&mut out, narrow(source.tables.len(), "table")?);
     push_u16(&mut out, 0);
-    push_u32(&mut out, source.sfnt_size());
+    push_u32(&mut out, source.sfnt_size()?);
     push_u16(&mut out, source.version.0);
     push_u16(&mut out, source.version.1);
     // No metadata block and no private data
@@ -203,7 +225,7 @@ fn push_base128(out: &mut Vec<u8>, value: u32) {
 /// # Errors
 ///
 /// Returns [`WebFontError`] when the binary cannot be read or compressed.
-pub fn to_woff2(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
+pub(crate) fn to_woff2(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
     const HEADER: usize = 48;
 
     let mut source = Source::read(sfnt)?;
@@ -222,16 +244,16 @@ pub fn to_woff2(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
         let index = KNOWN_TAGS.iter().position(|known| **known == table.tag);
         let flags = match (index, table.tag) {
             (Some(index), tag) if tag == *b"glyf" || tag == *b"loca" => {
-                index as u8 | NULL_TRANSFORM_GLYF_LOCA
+                narrow::<u8>(index, "table")? | NULL_TRANSFORM_GLYF_LOCA
             }
-            (Some(index), _) => index as u8,
+            (Some(index), _) => narrow(index, "table")?,
             (None, _) => USER_TAG,
         };
         directory.push(flags);
         if index.is_none() {
             directory.extend_from_slice(&table.tag);
         }
-        push_base128(&mut directory, table.data.len() as u32);
+        push_base128(&mut directory, narrow(table.data.len(), "byte")?);
         stream.extend_from_slice(table.data);
     }
 
@@ -251,11 +273,11 @@ pub fn to_woff2(sfnt: &[u8]) -> Result<Vec<u8>, WebFontError> {
     let mut out = Vec::with_capacity(length);
     out.extend_from_slice(b"wOF2");
     push_u32(&mut out, source.flavor);
-    push_u32(&mut out, length as u32);
-    push_u16(&mut out, source.tables.len() as u16);
+    push_u32(&mut out, narrow(length, "byte")?);
+    push_u16(&mut out, narrow(source.tables.len(), "table")?);
     push_u16(&mut out, 0);
-    push_u32(&mut out, source.sfnt_size());
-    push_u32(&mut out, compressed.len() as u32);
+    push_u32(&mut out, source.sfnt_size()?);
+    push_u32(&mut out, narrow(compressed.len(), "byte")?);
     push_u16(&mut out, source.version.0);
     push_u16(&mut out, source.version.1);
     for _ in 0..5 {
@@ -318,7 +340,7 @@ mod tests {
         let source = Source::read(&sfnt).unwrap();
         let count = u16_at(&woff, 12) as usize;
         assert_eq!(count, source.tables.len());
-        assert_eq!(u32_at(&woff, 16), source.sfnt_size());
+        assert_eq!(u32_at(&woff, 16), source.sfnt_size().unwrap());
 
         for (index, table) in source.tables.iter().enumerate() {
             let entry = 44 + 20 * index;

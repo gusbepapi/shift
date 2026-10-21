@@ -670,7 +670,7 @@ pub(crate) fn replace_color(
             params![
                 order_index.to_string(),
                 serde_json::to_string(palette)?,
-                order_index as i64,
+                sql_int(order_index),
             ],
         )?;
     }
@@ -680,7 +680,7 @@ pub(crate) fn replace_color(
             params![
                 entry.glyph,
                 serde_json::to_string(&entry.paint)?,
-                order_index as i64,
+                sql_int(order_index),
             ],
         )?;
     }

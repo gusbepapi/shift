@@ -5,7 +5,7 @@ use clap::{Args, Subcommand, ValueHint};
 use super::MutationArgs;
 
 #[derive(Debug, Subcommand)]
-pub enum ColorCommand {
+pub(crate) enum ColorCommand {
     /// Author the colour palettes shared by every colour glyph.
     Palette {
         #[command(subcommand)]
@@ -19,13 +19,13 @@ pub enum ColorCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum PaletteCommand {
+pub(crate) enum PaletteCommand {
     /// Replace every palette. All palettes need the same number of colours.
     Set(SetPalettesArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct SetPalettesArgs {
+pub(crate) struct SetPalettesArgs {
     /// Path to the canonical SQLite .shift document.
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
@@ -43,7 +43,7 @@ pub struct SetPalettesArgs {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum ColorGlyphCommand {
+pub(crate) enum ColorGlyphCommand {
     /// Create or replace the layers that paint one base glyph.
     Set(SetColorGlyphArgs),
     /// Remove the colour of one base glyph, leaving its outline.
@@ -51,7 +51,7 @@ pub enum ColorGlyphCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct SetColorGlyphArgs {
+pub(crate) struct SetColorGlyphArgs {
     /// Path to the canonical SQLite .shift document.
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
@@ -72,7 +72,7 @@ pub struct SetColorGlyphArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct RemoveColorGlyphArgs {
+pub(crate) struct RemoveColorGlyphArgs {
     /// Path to the canonical SQLite .shift document.
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,

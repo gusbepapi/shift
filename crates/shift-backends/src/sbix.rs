@@ -6,6 +6,7 @@
 //! radial gradient is drawn from its focal point to its outer circle, so an
 //! inner radius is not reproduced.
 
+use crate::numeric::{lossy_f32, rounded_i32};
 use shift_font::{ColorData, GlyphId, Paint, PaintColor, Rgba};
 use skrifa::{
     FontRef as SkrifaFont, MetadataProvider,
@@ -200,10 +201,10 @@ impl Renderer<'_, '_> {
     /// Draws the layers of a glyph, or returns `None` when it has no pixels.
     fn render(&self, glyph: &BitmapGlyph<'_>, ppem: u16) -> Result<Option<Bitmap>, ColorError> {
         let [x_min, y_min, x_max, y_max] = glyph.bounds.map(|value| f64::from(value) * self.scale);
-        let left = x_min.floor() as i32 - PADDING;
-        let bottom = y_min.floor() as i32 - PADDING;
-        let right = x_max.ceil() as i32 + PADDING;
-        let top = y_max.ceil() as i32 + PADDING;
+        let left = rounded_i32(x_min.floor()) - PADDING;
+        let bottom = rounded_i32(y_min.floor()) - PADDING;
+        let right = rounded_i32(x_max.ceil()) + PADDING;
+        let top = rounded_i32(y_max.ceil()) + PADDING;
         let (Ok(width), Ok(height)) = (u32::try_from(right - left), u32::try_from(top - bottom))
         else {
             return Ok(None);
@@ -218,7 +219,7 @@ impl Renderer<'_, '_> {
         };
 
         // Font units to pixels, with the y axis flipped
-        let scale = self.scale as f32;
+        let scale = lossy_f32(self.scale);
         let transform = Transform::from_row(scale, 0.0, 0.0, -scale, -left as f32, top as f32);
         for layer in &glyph.layers {
             self.draw_layer(&mut pixmap, layer, transform)?;
@@ -290,7 +291,7 @@ impl Renderer<'_, '_> {
                 RadialGradient::new(
                     point(c0.x, c0.y),
                     point(c1.x, c1.y),
-                    outer as f32,
+                    lossy_f32(outer),
                     self.stops(stops)?,
                     SpreadMode::Pad,
                     Transform::identity(),
@@ -305,7 +306,7 @@ impl Renderer<'_, '_> {
             .iter()
             .map(|stop| {
                 Some(GradientStop::new(
-                    stop.offset as f32,
+                    lossy_f32(stop.offset),
                     self.colour(stop.color, stop.alpha)?,
                 ))
             })
@@ -327,13 +328,13 @@ impl Renderer<'_, '_> {
             f32::from(rgba.r) / 255.0,
             f32::from(rgba.g) / 255.0,
             f32::from(rgba.b) / 255.0,
-            opacity as f32,
+            lossy_f32(opacity),
         )
     }
 }
 
 fn point(x: f64, y: f64) -> Point {
-    Point::from_xy(x as f32, y as f32)
+    Point::from_xy(lossy_f32(x), lossy_f32(y))
 }
 
 /// Collects outline commands as a `tiny-skia` path.

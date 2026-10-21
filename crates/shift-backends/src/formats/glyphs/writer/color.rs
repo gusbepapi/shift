@@ -29,6 +29,7 @@ use shift_font::{
 };
 
 use super::{Dict, Master, Value, format_number, parameter, path_dict};
+use crate::numeric::saturating_u32;
 use crate::svg::linear_end;
 use crate::traits::FontView;
 
@@ -313,7 +314,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
             base.r,
             base.g,
             base.b,
-            opacity.round().clamp(0.0, 255.0) as u8,
+            u8::try_from(saturating_u32(opacity.round())).unwrap_or(u8::MAX),
         )
     }
 

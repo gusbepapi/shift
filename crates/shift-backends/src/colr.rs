@@ -13,6 +13,7 @@
 //! version 0 record, which the oldest colour renderers read. Every other
 //! colour glyph becomes a version 1 paint graph with a clip box.
 
+use crate::numeric::{clamped_i16, lossy_f32, rounded_i32, saturating_u32};
 use std::collections::HashMap;
 
 use crate::color_tables::{ColorTable, ColorTables};
@@ -83,7 +84,7 @@ fn read_error(error: &impl std::fmt::Display) -> ColorError {
 ///
 /// Returns [`ColorError`] when a paint names a glyph missing from the compiled
 /// font, a table overflows its format, or the font cannot be read or rebuilt.
-pub fn add_color_tables(
+pub(crate) fn add_color_tables(
     ttf: &[u8],
     color: &ColorData,
     names: &HashMap<GlyphId, String>,
@@ -407,7 +408,7 @@ fn colr(
                 };
                 v0_layers.push(Layer::new(layer.glyph, palette_index(*color)));
             }
-            v0_glyphs.push(BaseGlyph::new(base, first, layers.len() as u16));
+            v0_glyphs.push(BaseGlyph::new(base, first, narrow(layers.len(), "layer")?));
             continue;
         }
 
@@ -455,12 +456,13 @@ fn colr(
         v0_layer_count,
     );
     if !v1_glyphs.is_empty() {
-        table.base_glyph_list = BaseGlyphList::new(v1_glyphs.len() as u32, v1_glyphs).into();
-        v1_layers.num_layers = v1_layers.paints.len() as u32;
+        table.base_glyph_list =
+            BaseGlyphList::new(narrow(v1_glyphs.len(), "base glyph")?, v1_glyphs).into();
+        v1_layers.num_layers = narrow(v1_layers.paints.len(), "paint layer")?;
         table.layer_list = v1_layers.into();
     }
     if !clips.is_empty() {
-        table.clip_list = ClipList::new(1, clips.len() as u32, clips).into();
+        table.clip_list = ClipList::new(1, narrow(clips.len(), "clip")?, clips).into();
     }
     Ok(table)
 }
@@ -497,21 +499,17 @@ fn push_clip(clips: &mut Vec<Clip>, glyph: GlyphId16, bounds: [i16; 4]) {
 }
 
 fn f2dot14(value: f64) -> F2Dot14 {
-    F2Dot14::from_f32(value.clamp(0.0, 1.0) as f32)
+    F2Dot14::from_f32(lossy_f32(value.clamp(0.0, 1.0)))
 }
 
 fn fword(value: f64) -> FWord {
-    FWord::new(
-        value
-            .round()
-            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16,
-    )
+    FWord::new(clamped_i16(rounded_i32(value)))
 }
 
-fn color_line(stops: &[shift_font::ColorStop]) -> ColorLine {
-    ColorLine::new(
+fn color_line(stops: &[shift_font::ColorStop]) -> Result<ColorLine, ColorError> {
+    Ok(ColorLine::new(
         Extend::Pad,
-        stops.len() as u16,
+        narrow(stops.len(), "colour stop")?,
         stops
             .iter()
             .map(|stop| {
@@ -522,7 +520,18 @@ fn color_line(stops: &[shift_font::ColorStop]) -> ColorLine {
                 )
             })
             .collect(),
-    )
+    ))
+}
+
+/// Converts a count to the integer type a colour table field stores.
+///
+/// # Errors
+///
+/// Returns [`ColorError::TooLarge`] when `value` does not fit `T`.
+fn narrow<T: TryFrom<usize>>(value: usize, what: &str) -> Result<T, ColorError> {
+    T::try_from(value).map_err(|_| ColorError::TooLarge {
+        message: format!("{value} {what}s do not fit the table"),
+    })
 }
 
 fn to_colr_fill(fill: &Paint, layer_bounds: Option<[i16; 4]>) -> Result<ColrPaint, ColorError> {
@@ -535,7 +544,7 @@ fn to_colr_fill(fill: &Paint, layer_bounds: Option<[i16; 4]>) -> Result<ColrPain
             // Without a rotation point, the gradient runs perpendicular to p0-p1
             let (x2, y2) = p2.map_or((p0.x + (p1.y - p0.y), p0.y - (p1.x - p0.x)), |p| (p.x, p.y));
             ColrPaint::LinearGradient(PaintLinearGradient::new(
-                color_line(stops),
+                color_line(stops)?,
                 fword(p0.x),
                 fword(p0.y),
                 fword(p1.x),
@@ -553,7 +562,7 @@ fn to_colr_fill(fill: &Paint, layer_bounds: Option<[i16; 4]>) -> Result<ColrPain
         } => {
             let outer = r1.unwrap_or_else(|| farthest_corner(*c1, layer_bounds));
             ColrPaint::RadialGradient(PaintRadialGradient::new(
-                color_line(stops),
+                color_line(stops)?,
                 fword(c0.x),
                 fword(c0.y),
                 radius(r0.unwrap_or(0.0)),
@@ -571,7 +580,9 @@ fn to_colr_fill(fill: &Paint, layer_bounds: Option<[i16; 4]>) -> Result<ColrPain
 }
 
 fn radius(value: f64) -> write_fonts::types::UfWord {
-    write_fonts::types::UfWord::new(value.round().clamp(0.0, f64::from(u16::MAX)) as u16)
+    write_fonts::types::UfWord::new(
+        u16::try_from(saturating_u32(value.round())).unwrap_or(u16::MAX),
+    )
 }
 
 /// Distance from `center` to the farthest corner of the layer's bounds.

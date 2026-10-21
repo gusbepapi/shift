@@ -17,7 +17,7 @@ use super::{AuthoringReport, apply_mutation, glyph::load_font, glyph::resolve_gl
 /// Returns an error for malformed colours, palettes of unequal length, a
 /// palette that would leave a paint pointing at a missing entry, or a
 /// document/persistence failure.
-pub fn set_palettes(args: &SetPalettesArgs) -> Result<AuthoringReport> {
+pub(crate) fn set_palettes(args: &SetPalettesArgs) -> Result<AuthoringReport> {
     if args.palettes.is_empty() && !args.clear {
         bail!("color palette set requires --palette or --clear");
     }
@@ -41,7 +41,7 @@ pub fn set_palettes(args: &SetPalettesArgs) -> Result<AuthoringReport> {
 ///
 /// Returns an error for unknown glyphs, malformed fills, paints that use
 /// palette entries that do not exist, or a document/persistence failure.
-pub fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringReport> {
+pub(crate) fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringReport> {
     let font = load_font(&args.path)?;
     let glyph = resolve_glyph_id(&font, &args.glyph)?;
     let layers = args
@@ -77,7 +77,7 @@ pub fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringReport> {
 ///
 /// Returns an error for an unknown glyph, a glyph without colour, or a
 /// document/persistence failure.
-pub fn remove_color_glyph(args: &RemoveColorGlyphArgs) -> Result<AuthoringReport> {
+pub(crate) fn remove_color_glyph(args: &RemoveColorGlyphArgs) -> Result<AuthoringReport> {
     let font = load_font(&args.path)?;
     let glyph_id = resolve_glyph_id(&font, &args.glyph)?;
     apply_mutation(
