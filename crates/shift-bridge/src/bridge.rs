@@ -983,6 +983,10 @@ impl FontView for FontSaveSnapshot {
   fn images(&self) -> &shift_font::BinaryData {
     self.font.images()
   }
+
+  fn color(&self) -> &shift_font::ColorData {
+    self.font.color()
+  }
 }
 
 pub struct ExportFontTask {

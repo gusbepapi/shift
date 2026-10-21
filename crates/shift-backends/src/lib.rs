@@ -4,6 +4,7 @@
 
 mod atomic;
 mod cff;
+mod colr;
 pub mod errors;
 pub mod export;
 mod feature_includes;

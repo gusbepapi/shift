@@ -14,6 +14,7 @@ use write_fonts::types::NameId;
 
 use crate::atomic::write_file_atomic;
 use crate::cff::{CffError, ttf_to_otf};
+use crate::colr::{ColorError, add_color_tables};
 use crate::errors::FormatBackendError;
 use crate::formats::glyphs::GlyphsWriter;
 use crate::shift2fontir::{PropagatedGlyphAnchors, ShiftIrSource, ShiftIrSourceError};
@@ -102,6 +103,9 @@ pub enum ExportError {
     #[error("failed to build the OpenType font: {0}")]
     BuildOtf(#[from] CffError),
 
+    #[error("failed to add colour tables: {0}")]
+    BuildColor(#[from] ColorError),
+
     #[error("failed to pack the web font: {0}")]
     PackWebFont(#[from] WebFontError),
 
@@ -160,7 +164,13 @@ impl FontExporter {
     /// supported compiler model or compilation fails.
     pub fn compile_ttf(&self, font: &impl FontView) -> Result<Vec<u8>, ExportError> {
         let source = ShiftIrSource::from_font_view(font).map_err(map_source_error)?;
-        compile_ttf(source)
+        let bytes = compile_ttf(source)?;
+        let names = font
+            .glyphs()
+            .iter()
+            .map(|glyph| (glyph.id(), glyph.name().to_string()))
+            .collect();
+        Ok(add_color_tables(&bytes, font.color(), &names)?)
     }
 
     /// Compiles the font into the bytes of the requested format without
