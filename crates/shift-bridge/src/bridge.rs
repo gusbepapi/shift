@@ -3407,7 +3407,8 @@ mod tests {
     NapiGlyphSnapshotRequest, NapiGlyphState, NapiLocation, NapiMoveAnchorsIntent,
     NapiMovePointsIntent, NapiNamedInstance, NapiPointSeed, NapiPointType, NapiRemoveAnchorsIntent,
     NapiRemovePointsIntent, NapiReverseContourIntent, NapiSetContourClosedIntent,
-    NapiSetKerningValuesIntent, NapiSetLanguagesIntent, NapiSetPointSmoothIntent,
+    NapiSetColorIntent, NapiSetKerningValuesIntent, NapiSetLanguagesIntent,
+    NapiSetPointSmoothIntent,
     NapiSetXAdvanceIntent, NapiTransformLayerIntent, NapiTranslatePointsIntent,
     NapiUpdateNamedInstanceIntent,
   };
@@ -4745,6 +4746,64 @@ mod tests {
       .expect("undo must echo languages");
     assert_eq!(languages.language_ids, None);
     assert_eq!(bridge.get_language_ids().unwrap(), None);
+  }
+
+  #[test]
+  fn set_color_echoes_the_colour_data_and_undo_restores_the_empty_document() {
+    let mut bridge = bridge_with_workspace();
+    let color_data = serde_json::json!({
+      "palettes": [{ "name": "Light", "colors": [{ "r": 255, "g": 0, "b": 0, "a": 255 }] }],
+      "glyphs": []
+    });
+
+    let applied = bridge
+      .apply(
+        vec![NapiFontIntent {
+          set_color: Some(NapiSetColorIntent {
+            color_data: color_data.to_string(),
+          }),
+          ..skeleton_intent("setColor")
+        }],
+        None,
+      )
+      .unwrap();
+
+    let next = applied.next.expect("setColor must echo font replacements");
+    let echoed: serde_json::Value =
+      serde_json::from_str(&next.color.expect("setColor must echo colour data")).unwrap();
+    assert_eq!(echoed["palettes"][0]["name"], "Light");
+    assert_eq!(echoed["palettes"][0]["colors"][0]["r"], 255);
+    assert!(next.metadata.is_none());
+    assert!(next.sources.is_none());
+
+    let undone = bridge.undo().unwrap().expect("setColor should undo");
+    let echoed: serde_json::Value = serde_json::from_str(
+      &undone
+        .next
+        .and_then(|next| next.color)
+        .expect("undo must echo colour data"),
+    )
+    .unwrap();
+    assert_eq!(echoed, serde_json::json!({ "palettes": [], "glyphs": [] }));
+  }
+
+  #[test]
+  fn set_color_refuses_malformed_colour_data() {
+    let mut bridge = bridge_with_workspace();
+
+    let refused = bridge.apply(
+      vec![NapiFontIntent {
+        set_color: Some(NapiSetColorIntent {
+          color_data: "not json".to_string(),
+        }),
+        ..skeleton_intent("setColor")
+      }],
+      None,
+    );
+
+    assert!(refused.is_err());
+    let json: serde_json::Value = serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
+    assert_eq!(json, serde_json::json!({ "palettes": [], "glyphs": [] }));
   }
 
   #[test]
