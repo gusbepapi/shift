@@ -234,15 +234,34 @@ fn compile(args: CompileArgs) -> miette::Result<FontExportResult> {
     let font = ShiftStore::open_document(&args.path)
         .and_then(|store| store.load_font_state())
         .into_diagnostic()?;
+    let format = compile_format(&args);
     FontExporter::new()
         .export(
             &font,
             FontExportRequest {
                 path: args.output,
-                format: ExportFormat::Ttf,
+                format,
             },
         )
         .into_diagnostic()
+}
+
+/// Resolves the export format from `--format`, then the output extension, then TTF.
+fn compile_format(args: &CompileArgs) -> ExportFormat {
+    if let Some(format) = args.format {
+        return match format {
+            cli::CompileFormat::Ttf => ExportFormat::Ttf,
+            cli::CompileFormat::Otf => ExportFormat::Otf,
+            cli::CompileFormat::Woff => ExportFormat::Woff,
+            cli::CompileFormat::Woff2 => ExportFormat::Woff2,
+            cli::CompileFormat::Glyphs => ExportFormat::Glyphs,
+        };
+    }
+    args.output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(|extension| ExportFormat::try_from(extension).ok())
+        .unwrap_or(ExportFormat::Ttf)
 }
 
 fn inspect(args: &cli::InspectArgs) -> miette::Result<()> {
@@ -328,6 +347,7 @@ mod tests {
         let result = compile(CompileArgs {
             path: source_path,
             output: output_path.clone(),
+            format: None,
         })
         .unwrap();
 
@@ -340,5 +360,36 @@ mod tests {
         );
         let bytes = std::fs::read(result.path).unwrap();
         assert_eq!(&bytes[..4], &[0x00, 0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn compile_command_infers_format_from_output_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("Dogfood.shift");
+        drop(ShiftStore::create_document(&source_path, &sample_variable_font()).unwrap());
+
+        let glyphs_path = temp.path().join("Dogfood.glyphs");
+        let result = compile(CompileArgs {
+            path: source_path.clone(),
+            output: glyphs_path.clone(),
+            format: None,
+        })
+        .unwrap();
+        assert_eq!(result.format, ExportFormat::Glyphs);
+        assert!(
+            std::fs::read_to_string(glyphs_path)
+                .unwrap()
+                .starts_with("{")
+        );
+
+        let woff2_path = temp.path().join("Dogfood.woff2");
+        let result = compile(CompileArgs {
+            path: source_path,
+            output: woff2_path.clone(),
+            format: Some(cli::CompileFormat::Woff2),
+        })
+        .unwrap();
+        assert_eq!(result.format, ExportFormat::Woff2);
+        assert_eq!(&std::fs::read(woff2_path).unwrap()[..4], b"wOF2");
     }
 }

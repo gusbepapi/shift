@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anstyle::{AnsiColor, Effects};
 use clap::builder::styling::Styles;
-use clap::{Args, ColorChoice, Parser, Subcommand, ValueHint};
+use clap::{Args, ColorChoice, Parser, Subcommand, ValueEnum, ValueHint};
 
 use crate::glyph_inspect::GlyphInspectView;
 use crate::inspect::InspectView;
@@ -52,7 +52,7 @@ pub enum Command {
     /// Inspect a SQLite .shift document without modifying it.
     Inspect(InspectArgs),
 
-    /// Compile a SQLite .shift document to a TrueType font.
+    /// Compile a SQLite .shift document to a font (TTF, OTF, WOFF, WOFF2) or export it as Glyphs.
     Compile(CompileArgs),
 
     /// Check a font source for problems in its masters, axes, and kerning.
@@ -393,9 +393,23 @@ pub struct CompileArgs {
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
 
-    /// Path for the compiled .ttf output.
+    /// Path for the compiled output. The extension must match the format.
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: PathBuf,
+
+    /// Output format. When omitted, it is inferred from the output extension, defaulting to ttf.
+    #[arg(short, long, value_enum)]
+    pub format: Option<CompileFormat>,
+}
+
+/// Output formats accepted by `shift compile --format`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CompileFormat {
+    Ttf,
+    Otf,
+    Woff,
+    Woff2,
+    Glyphs,
 }
 
 #[derive(Debug, Parser)]
