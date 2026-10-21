@@ -410,13 +410,25 @@ fn multi_ufo_designspace_round_trips_file_structure_and_sources() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn failed_save_leaves_existing_designspace_xml_intact() {
-    use std::os::unix::fs::PermissionsExt;
-
     let fixture_dir = tempfile::tempdir().unwrap();
     let ds_path = multi_ufo_designspace(fixture_dir.path());
+    // Move one UFO into a folder, so that the project names it as `parts/...`
+    let parts = fixture_dir.path().join("parts");
+    std::fs::create_dir(&parts).unwrap();
+    std::fs::rename(
+        fixture_dir.path().join("Grouped-Light.ufo"),
+        parts.join("Grouped-Light.ufo"),
+    )
+    .unwrap();
+    let xml = std::fs::read_to_string(&ds_path).unwrap();
+    assert!(xml.contains("filename=\"Grouped-Light.ufo\""));
+    std::fs::write(
+        &ds_path,
+        xml.replace("Grouped-Light.ufo", "parts/Grouped-Light.ufo"),
+    )
+    .unwrap();
     let font = load_font(&ds_path);
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -424,18 +436,22 @@ fn failed_save_leaves_existing_designspace_xml_intact() {
     save_font(&font, &out_path);
     let saved_xml = std::fs::read(&out_path).unwrap();
 
-    // A read-only project directory makes every staged write fail before
-    // any existing file is touched.
-    std::fs::set_permissions(out_dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A file where that folder belongs makes writing its UFO fail, for every
+    // user including root. The UFOs are written before the XML that names
+    // them, so the failure comes before the XML is touched.
+    let blocked = out_dir.path().join("parts");
+    std::fs::remove_dir_all(&blocked).unwrap();
+    std::fs::write(&blocked, b"not a folder").unwrap();
     let result = FontLoader::new().write_font(&font, out_path.to_str().unwrap());
-    std::fs::set_permissions(out_dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    result.expect_err("saving into a read-only directory should fail");
+    let error = result.expect_err("saving a UFO into a blocked folder should fail");
+    assert!(error.to_string().contains("parts"), "{error}");
     assert_eq!(
         std::fs::read(&out_path).unwrap(),
         saved_xml,
         "a failed save must leave the existing designspace XML intact"
     );
+    assert_eq!(std::fs::read(&blocked).unwrap(), b"not a folder");
 }
 
 fn background_layer_ufo(dir: &Path) -> PathBuf {

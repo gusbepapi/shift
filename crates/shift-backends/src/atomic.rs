@@ -60,22 +60,38 @@ mod tests {
         assert_eq!(entries, vec!["file.xml"], "no staging leftovers");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn failed_write_leaves_existing_file_intact() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn failed_rename_leaves_the_existing_target_intact() {
         let temp = tempfile::tempdir().unwrap();
+        // A directory cannot be replaced by a file, so staging succeeds and the
+        // rename fails, for every user including root
         let target = temp.path().join("file.xml");
-        std::fs::write(&target, b"original").unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("inside.txt"), b"original").unwrap();
 
-        // A read-only directory makes staging the temp file fail before the
-        // target is ever touched.
-        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = write_file_atomic(&target, b"replacement");
-        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_file_atomic(&target, b"replacement").expect_err("a file cannot replace a directory");
 
-        result.expect_err("write into a read-only directory should fail");
-        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert_eq!(
+            std::fs::read(target.join("inside.txt")).unwrap(),
+            b"original"
+        );
+        let entries: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec!["file.xml"], "the staged file is cleaned up");
+    }
+
+    #[test]
+    fn failed_staging_creates_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        // A file where the parent directory should be makes staging fail
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"original").unwrap();
+
+        write_file_atomic(&blocker.join("file.xml"), b"replacement")
+            .expect_err("the parent is not a directory");
+
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"original");
     }
 }
