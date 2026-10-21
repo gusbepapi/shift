@@ -6,9 +6,9 @@ use crate::collection::Identified;
 use crate::error::{CoreError, CoreResult};
 
 use crate::{
-    Axis, AxisMapping, FontMetadata, Glyph, GlyphId, GlyphLayer, KerningGroup, KerningGroupId,
-    KerningPair, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition, NamedInstance, Source,
-    SourceId,
+    Axis, AxisMapping, ColorData, FontMetadata, Glyph, GlyphId, GlyphLayer, KerningGroup,
+    KerningGroupId, KerningPair, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition,
+    NamedInstance, Source, SourceId,
 };
 
 bitflags! {
@@ -28,6 +28,8 @@ bitflags! {
         /// Kerning values or the sources, axes, and mappings its
         /// interpolation basis is built from.
         const KERNING = 1 << 10;
+        /// Palettes or colour glyph paint graphs.
+        const COLOR = 1 << 11;
     }
 }
 
@@ -127,6 +129,8 @@ pub enum FontChange {
     AxisMappings(Replacement<Vec<AxisMapping>>),
     MetricDefinitions(Replacement<Vec<MetricDefinition>>),
     NamedInstances(Replacement<Vec<NamedInstance>>),
+    /// Palettes and colour glyph paint graphs as one document.
+    Color(Replacement<ColorData>),
     Sources(Replacement<SourceCollection>),
     Glyph(Box<Replacement<Option<Glyph>>>),
     Layer {
@@ -171,6 +175,7 @@ impl FontChange {
                 FontChangeImpact::METRIC_DEFINITIONS | FontChangeImpact::SOURCE_METRICS
             }
             Self::NamedInstances(_) => FontChangeImpact::NAMED_INSTANCES,
+            Self::Color(_) => FontChangeImpact::COLOR,
             Self::Sources(_) => {
                 FontChangeImpact::SOURCES
                     | FontChangeImpact::SOURCE_METRICS
@@ -206,6 +211,9 @@ impl FontChange {
             }
             Self::NamedInstances(value) => {
                 Self::NamedInstances(Replacement::new(value.after.clone(), value.before.clone()))
+            }
+            Self::Color(value) => {
+                Self::Color(Replacement::new(value.after.clone(), value.before.clone()))
             }
             Self::Sources(value) => {
                 Self::Sources(Replacement::new(value.after.clone(), value.before.clone()))
@@ -319,6 +327,8 @@ impl FontChangeSet {
                 FontChange::NamedInstances(value) => {
                     entities.extend(value.entity_changes().map(FontEntityChange::NamedInstance));
                 }
+                // Colour data is one document without per-entity lifecycle.
+                FontChange::Color(_) => {}
                 FontChange::Sources(value) => {
                     entities.extend(value.entity_changes().map(FontEntityChange::Source));
                 }

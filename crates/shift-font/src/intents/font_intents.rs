@@ -182,6 +182,65 @@ impl FontLevelIntent for DeleteNamedInstance {
     }
 }
 
+/// Replaces every colour palette. All palettes must have the same length, and
+/// paints may only use entries that still exist.
+#[derive(Clone, Debug)]
+pub struct SetColorPalettes {
+    pub palettes: Vec<ColorPalette>,
+}
+
+impl FontLevelIntent for SetColorPalettes {
+    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
+        let mut color = font.color().clone();
+        color.palettes = self.palettes.clone();
+        font.set_color(color)?;
+        Ok((Vec::new(), None))
+    }
+}
+
+/// Creates or replaces the paint graph of one colour base glyph.
+#[derive(Clone, Debug)]
+pub struct SetColorGlyph {
+    pub color_glyph: ColorGlyph,
+}
+
+impl FontLevelIntent for SetColorGlyph {
+    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
+        let mut color = font.color().clone();
+        match color
+            .glyphs
+            .iter_mut()
+            .find(|entry| entry.glyph == self.color_glyph.glyph)
+        {
+            Some(entry) => *entry = self.color_glyph.clone(),
+            None => color.glyphs.push(self.color_glyph.clone()),
+        }
+        font.set_color(color)?;
+        Ok((Vec::new(), None))
+    }
+}
+
+/// Removes the paint graph of one colour base glyph, leaving its outline.
+#[derive(Clone, Debug)]
+pub struct RemoveColorGlyph {
+    pub glyph_id: GlyphId,
+}
+
+impl FontLevelIntent for RemoveColorGlyph {
+    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
+        let mut color = font.color().clone();
+        let before = color.glyphs.len();
+        color.glyphs.retain(|entry| entry.glyph != self.glyph_id);
+        if color.glyphs.len() == before {
+            return Err(CoreError::InvalidColor {
+                message: format!("glyph {} is not a colour glyph", self.glyph_id),
+            });
+        }
+        font.set_color(color)?;
+        Ok((Vec::new(), None))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DeleteSource {
     pub source_id: SourceId,

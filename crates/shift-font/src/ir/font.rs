@@ -2,6 +2,7 @@ use crate::Require;
 use crate::axis::{Axis, AxisKind, AxisMapping, DesignLocation};
 use crate::binary_data::BinaryData;
 use crate::collection::EntityList;
+use crate::color::ColorData;
 use crate::entity::{
     AnchorId, AxisId, ComponentId, ContourId, GlyphEntityId, GlyphId, LayerId, MetricId, PointId,
     SourceId,
@@ -113,6 +114,8 @@ struct FontData {
     axis_mappings: Vec<AxisMapping>,
     #[serde(default)]
     named_instances: Vec<NamedInstance>,
+    #[serde(default)]
+    color: ColorData,
     sources: Vec<Source>,
     #[serde(default)]
     default_source_id: Option<SourceId>,
@@ -387,6 +390,7 @@ impl Default for Font {
                     axes: Vec::new(),
                     axis_mappings: Vec::new(),
                     named_instances: Vec::new(),
+                    color: ColorData::default(),
                     sources: vec![default_source],
                     default_source_id: Some(default_source_id),
                     glyphs: EntityList::new(),
@@ -420,6 +424,7 @@ impl Font {
                     axes: Vec::new(),
                     axis_mappings: Vec::new(),
                     named_instances: Vec::new(),
+                    color: ColorData::default(),
                     sources: Vec::new(),
                     default_source_id: None,
                     glyphs: EntityList::new(),
@@ -781,6 +786,23 @@ impl Font {
         data.sources = sources;
         data.named_instances = instances;
         Ok(axis)
+    }
+
+    /// Returns the font-wide palettes and colour glyph paint graphs.
+    pub fn color(&self) -> &ColorData {
+        &self.data().color
+    }
+
+    /// Replaces the colour data after validating it against the glyphs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when palettes are inconsistent or a
+    /// paint refers to a missing glyph or palette entry.
+    pub fn set_color(&mut self, color: ColorData) -> CoreResult<()> {
+        color.validate(|id| self.glyph(id).is_some())?;
+        self.data_mut().color = color;
+        Ok(())
     }
 
     /// Returns authored product presets in stable author order.

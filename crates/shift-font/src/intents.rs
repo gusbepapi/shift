@@ -12,11 +12,11 @@ use crate::composite::anchor_aligned_offset;
 use crate::error::{CoreError, CoreResult};
 use crate::interpolation::GlyphInterpolationValues;
 use crate::ir::{
-    Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, Component, ComponentAlignment,
-    ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font, FontMetadata,
-    Glyph, GlyphId, GlyphLayer, GlyphName, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition,
-    MetricId, MetricValue, NamedInstance, NamedInstanceId, PointId, PointType, Source, SourceId,
-    Transform,
+    Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, ColorGlyph, ColorPalette, Component,
+    ComponentAlignment, ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font,
+    FontMetadata, Glyph, GlyphId, GlyphLayer, GlyphName, LANGUAGES_LIB_KEY, LayerId, LibValue,
+    MetricDefinition, MetricId, MetricValue, NamedInstance, NamedInstanceId, PointId, PointType,
+    Source, SourceId, Transform,
 };
 use crate::layer_edit::BulkNodePositionUpdates;
 use crate::source::source_locations_equal;
@@ -128,6 +128,9 @@ font_intents! {
         CreateNamedInstance,
         UpdateNamedInstance,
         DeleteNamedInstance,
+        SetColorPalettes,
+        SetColorGlyph,
+        RemoveColorGlyph,
         DeleteSource,
         CreateSource,
         UpdateSource,
@@ -390,6 +393,13 @@ impl Font {
             changes.push(FontChange::NamedInstances(Replacement::new(
                 before.named_instances().to_vec(),
                 after.named_instances().to_vec(),
+            )));
+        }
+
+        if before.color() != after.color() {
+            changes.push(FontChange::Color(Replacement::new(
+                before.color().clone(),
+                after.color().clone(),
             )));
         }
 
@@ -905,6 +915,94 @@ mod tests {
         assert!(renamed.edits_kerning_groups());
         assert!(!cloned.edits_kerning_groups());
         assert!(renamed.required_layer_ids(&font).is_empty());
+    }
+
+    #[test]
+    fn colour_intents_edit_validate_and_undo_as_one_step() {
+        use crate::ir::{Paint, PaintColor, Rgba};
+
+        let mut font = Font::new();
+        let mut ids = Vec::new();
+        for name in ["a", "a.fill"] {
+            let id = GlyphId::new();
+            font.apply_intents(&FontIntentSet {
+                intents: vec![FontIntent::CreateGlyph(CreateGlyph {
+                    glyph_id: Some(id.clone()),
+                    name: name.to_string(),
+                    unicodes: Vec::new(),
+                })],
+            })
+            .unwrap();
+            ids.push(id);
+        }
+        let original = font.clone();
+        let paint = Paint::Glyph {
+            glyph: ids[1].clone(),
+            fill: Box::new(Paint::Solid {
+                color: PaintColor::Palette { index: 0 },
+                alpha: 1.0,
+            }),
+        };
+
+        let rejected = font.apply_intents(&FontIntentSet {
+            intents: vec![FontIntent::SetColorGlyph(SetColorGlyph {
+                color_glyph: ColorGlyph {
+                    glyph: ids[0].clone(),
+                    paint: paint.clone(),
+                },
+            })],
+        });
+        assert!(matches!(rejected, Err(CoreError::InvalidColor { .. })));
+        assert_eq!(font, original);
+
+        let applied = font
+            .apply_intents(&FontIntentSet {
+                intents: vec![
+                    FontIntent::SetColorPalettes(SetColorPalettes {
+                        palettes: vec![ColorPalette {
+                            name: Some("Light".to_string()),
+                            colors: vec![Rgba::new(255, 0, 0, 255)],
+                        }],
+                    }),
+                    FontIntent::SetColorGlyph(SetColorGlyph {
+                        color_glyph: ColorGlyph {
+                            glyph: ids[0].clone(),
+                            paint,
+                        },
+                    }),
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(font.color().glyphs.len(), 1);
+        assert!(
+            applied
+                .changes
+                .impact()
+                .contains(crate::changes::FontChangeImpact::COLOR)
+        );
+        assert_eq!(
+            applied
+                .changes
+                .changes
+                .iter()
+                .filter(|change| matches!(change, FontChange::Color(_)))
+                .count(),
+            1
+        );
+
+        let removal = font
+            .apply_intents(&FontIntentSet {
+                intents: vec![FontIntent::RemoveColorGlyph(RemoveColorGlyph {
+                    glyph_id: ids[0].clone(),
+                })],
+            })
+            .unwrap();
+        assert!(font.color().glyphs.is_empty());
+        font.apply_change_set(&removal.changes.inverted()).unwrap();
+        assert_eq!(font.color().glyphs.len(), 1);
+        font.apply_change_set(&applied.changes.inverted()).unwrap();
+        assert_eq!(font, original);
     }
 
     #[test]

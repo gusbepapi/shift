@@ -3,6 +3,7 @@ pub mod axis;
 pub mod binary_data;
 pub mod boolean;
 pub mod collection;
+pub mod color;
 pub mod component;
 pub mod contour;
 pub mod entity;
@@ -28,6 +29,9 @@ pub use axis::{
 };
 pub use binary_data::BinaryData;
 pub use boolean::{BooleanOp, boolean};
+pub use color::{
+    ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Paint, PaintColor, Rgba,
+};
 pub use component::{Component, ComponentAlignment, DecomposedTransform, Transform};
 pub use contour::{Contour, Contours};
 pub use entity::{

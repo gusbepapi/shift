@@ -175,6 +175,9 @@ pub enum CoreError {
     #[error("named instance {0} not found")]
     NamedInstanceNotFound(NamedInstanceId),
 
+    #[error("invalid colour data: {message}")]
+    InvalidColor { message: String },
+
     #[error("invalid named instance {instance_id}: {message}")]
     InvalidNamedInstance {
         instance_id: NamedInstanceId,

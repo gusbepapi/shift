@@ -50,6 +50,9 @@ impl Font {
                 FontChange::NamedInstances(value) => {
                     value.require_before(self.named_instances(), "named instances")?;
                 }
+                FontChange::Color(value) => {
+                    value.require_before(self.color(), "colour data")?;
+                }
                 FontChange::Sources(value) => {
                     let current = self.source_collection();
                     value.require_before(&current, "sources")?;
@@ -121,6 +124,9 @@ impl Font {
                 }
                 FontChange::NamedInstances(value) => {
                     self.data_mut().named_instances = value.after.clone();
+                }
+                FontChange::Color(value) => {
+                    self.data_mut().color = value.after.clone();
                 }
                 FontChange::Sources(value) => {
                     let data = self.data_mut();
@@ -244,6 +250,7 @@ impl Font {
         validate_axis_mappings(self.axes(), self.axis_mappings())?;
         validate_metric_definitions(self.metric_definitions())?;
         validate_named_instances(self.named_instances(), self.axes())?;
+        self.color().validate(|id| self.glyph(id).is_some())?;
 
         let mut source_ids = HashSet::new();
         for source in self.sources() {
