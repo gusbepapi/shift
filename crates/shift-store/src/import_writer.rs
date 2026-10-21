@@ -7,7 +7,7 @@ use shift_font as font;
 
 use crate::{
     GlyphWriteBatch, LayerBatchTiming, ShiftStore, StoreError,
-    change_set::{replace_font_header_in_tx, write_glyph_directory_in_tx},
+    change_set::{replace_color, replace_font_header_in_tx, write_glyph_directory_in_tx},
     layer::{StoredLayerPayload, compress_layer, encode_layer, store_stored_layer_in_tx},
     schema::{defer_import_indexes, restore_import_indexes},
     types::{EncodedGlyphLayers, PackedGlyph},
@@ -120,6 +120,36 @@ impl FontImportWriter<'_> {
         }
         self.next_glyph_order += 1;
         Ok(())
+    }
+
+    /// Writes the palettes and colour glyphs of the imported font.
+    ///
+    /// Colour data refers to glyphs by identity, so it is written after the
+    /// last glyph batch and validated against the glyphs that the stream
+    /// stored. Replaces any colour data already in the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Font`] when the palettes are inconsistent or a
+    /// paint refers to a glyph that the stream did not write.
+    pub fn write_color(&mut self, color: &font::ColorData) -> Result<(), StoreError> {
+        let failure = std::cell::RefCell::new(None);
+        let validated = color.validate(|id| {
+            let found = self.tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM glyphs WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            );
+            found.unwrap_or_else(|error| {
+                failure.borrow_mut().get_or_insert(error);
+                false
+            })
+        });
+        if let Some(error) = failure.into_inner() {
+            return Err(error.into());
+        }
+        validated?;
+        replace_color(&self.tx, color)
     }
 
     /// Atomically publishes every glyph and layer written by this stream.

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use rayon::prelude::*;
-use shift_font::{Font, Glyph, GlyphId, GlyphName, LayerId, SourceId};
+use shift_font::{ColorData, Font, Glyph, GlyphId, GlyphName, LayerId, SourceId};
 
 use crate::{BackendError, BackendResult, FontFormat, FormatBackendResult, ImportReport};
 
@@ -146,6 +146,15 @@ pub(crate) trait GlyphStream: Send {
     fn directory(&self) -> Vec<GlyphDirectoryEntry>;
     fn glyph_count(&self) -> usize;
     fn next_batch(&mut self, limit: ImportBatchLimit) -> FormatBackendResult<Vec<Glyph>>;
+
+    /// Palettes and colour glyphs of the source.
+    ///
+    /// Colour data refers to glyphs by identity, so every glyph it names is in
+    /// [`Self::directory`] and arrives in a batch. Sources without colour keep
+    /// the empty default.
+    fn color(&self) -> ColorData {
+        ColorData::default()
+    }
 }
 
 pub(crate) fn collect_streamed_font(
@@ -163,6 +172,10 @@ pub(crate) fn collect_streamed_font(
         }
     }
     debug_assert_eq!(header.glyph_count(), expected_glyph_count);
+    let color = stream.color();
+    if !color.is_empty() {
+        header.set_color(color)?;
+    }
     Ok(header)
 }
 
@@ -209,6 +222,14 @@ impl FontImport {
 
     pub fn glyph_count(&self) -> usize {
         self.stream.glyph_count()
+    }
+
+    /// Returns the palettes and colour glyphs of the source.
+    ///
+    /// The data names glyphs that exist only once every batch has been read,
+    /// so a consumer that streams into a store writes it after the last batch.
+    pub fn color(&self) -> ColorData {
+        self.stream.color()
     }
 
     pub fn next_batch(&mut self, limit: ImportBatchLimit) -> BackendResult<Vec<Glyph>> {

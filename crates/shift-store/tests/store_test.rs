@@ -1475,6 +1475,67 @@ fn completed_import_store_restores_durable_wal_mode() {
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 
+/// Colour data that fills the second glyph of the sample font with palette entry 0.
+fn sample_color(font: &shift_font::Font) -> shift_font::ColorData {
+    let glyphs: Vec<_> = font.glyphs().map(shift_font::Glyph::id).collect();
+    shift_font::ColorData {
+        palettes: vec![shift_font::ColorPalette {
+            name: None,
+            colors: vec![shift_font::Rgba::new(9, 8, 7, 255)],
+        }],
+        glyphs: vec![shift_font::ColorGlyph {
+            glyph: glyphs[0].clone(),
+            paint: shift_font::Paint::Layers {
+                layers: vec![shift_font::Paint::Glyph {
+                    glyph: glyphs[1].clone(),
+                    fill: Box::new(shift_font::Paint::Solid {
+                        color: shift_font::PaintColor::Palette { index: 0 },
+                        alpha: 1.0,
+                    }),
+                }],
+            },
+        }],
+    }
+}
+
+#[test]
+fn imported_colour_data_is_stored_after_the_glyph_batches() {
+    let path = temp_store_path("import-colour");
+    let font = sample_font();
+    let color = sample_color(&font);
+    let mut store = ShiftStore::open_for_import(&path).expect("open import store");
+    let mut writer = store.begin_import(&font).expect("begin import");
+    for glyph in font.glyphs() {
+        writer.write_glyph(glyph).expect("write glyph");
+    }
+    writer.write_color(&color).expect("write colour");
+    writer.finish().expect("commit import");
+    store.finish_import().expect("finish import");
+
+    let loaded = store.load_font_directory().expect("load font");
+
+    assert_eq!(loaded.color(), &color);
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+#[test]
+fn imported_colour_data_naming_an_unwritten_glyph_is_refused() {
+    let path = temp_store_path("import-colour-missing");
+    let font = sample_font();
+    let color = sample_color(&font);
+    let mut store = ShiftStore::open_for_import(&path).expect("open import store");
+    let mut writer = store.begin_import(&font).expect("begin import");
+    // Only the first glyph is written, so the paint layer glyph is absent
+    writer
+        .write_glyph(font.glyphs().next().expect("a glyph"))
+        .expect("write glyph");
+
+    let error = writer.write_color(&color).expect_err("missing layer glyph");
+
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
 #[test]
 fn import_mode_refuses_a_published_workspace_destination() {
     let path = temp_store_path("occupied-import");

@@ -354,6 +354,11 @@ pub(super) struct GlyphsLayerSources {
 }
 
 impl GlyphsLayerSources {
+    /// Returns the source that a master's layers belong to.
+    pub(super) fn master_source(&self, master_id: &str) -> Option<SourceId> {
+        self.masters.get(master_id).cloned()
+    }
+
     fn source_id(&self, layer: &GlyphsLayer) -> Option<SourceId> {
         if layer.is_master() {
             return self.masters.get(layer.master_id()).cloned();
@@ -471,41 +476,7 @@ pub(super) fn convert_glyph(
         let mut result_layer =
             GlyphLayer::with_width(LayerId::new(), source_id, layer.width.into_inner());
         for shape in &layer.shapes {
-            match shape {
-                Shape::Path(path) => {
-                    let mut contour = Contour::new();
-                    for node in &path.nodes {
-                        let (point_type, smooth) = convert_node_type(node.node_type);
-                        contour.add_point(node.pt.x, node.pt.y, point_type, smooth);
-                    }
-                    if path.closed {
-                        contour.close();
-                        contour.start_at_first_on_curve();
-                    }
-                    result_layer.add_contour(contour);
-                }
-                Shape::Component(component) => {
-                    let base_glyph_id =
-                        glyph_ids.get(component.name.as_str()).ok_or_else(|| {
-                            FormatBackendError::Glyphs(missing_component_details(
-                                component.name.as_str(),
-                            ))
-                        })?;
-                    let coeffs = component_transform(component);
-                    result_layer.add_component(Component::with_matrix(
-                        base_glyph_id.clone(),
-                        component.name.to_string(),
-                        &Transform {
-                            xx: coeffs[0],
-                            xy: coeffs[1],
-                            yx: coeffs[2],
-                            yy: coeffs[3],
-                            dx: coeffs[4],
-                            dy: coeffs[5],
-                        },
-                    ));
-                }
-            }
+            add_shape(&mut result_layer, shape, glyph_ids)?;
         }
 
         for anchor in &layer.anchors {
@@ -517,6 +488,51 @@ pub(super) fn convert_glyph(
     }
 
     Ok(result)
+}
+
+/// Adds the outline or component of a Glyphs shape to a Shift layer.
+///
+/// # Errors
+///
+/// Returns an error when a component names a glyph that the font does not have.
+pub(super) fn add_shape(
+    layer: &mut GlyphLayer,
+    shape: &Shape,
+    glyph_ids: &HashMap<String, GlyphId>,
+) -> FormatBackendResult<()> {
+    match shape {
+        Shape::Path(path) => {
+            let mut contour = Contour::new();
+            for node in &path.nodes {
+                let (point_type, smooth) = convert_node_type(node.node_type);
+                contour.add_point(node.pt.x, node.pt.y, point_type, smooth);
+            }
+            if path.closed {
+                contour.close();
+                contour.start_at_first_on_curve();
+            }
+            layer.add_contour(contour);
+        }
+        Shape::Component(component) => {
+            let base_glyph_id = glyph_ids.get(component.name.as_str()).ok_or_else(|| {
+                FormatBackendError::Glyphs(missing_component_details(component.name.as_str()))
+            })?;
+            let coeffs = component_transform(component);
+            layer.add_component(Component::with_matrix(
+                base_glyph_id.clone(),
+                component.name.to_string(),
+                &Transform {
+                    xx: coeffs[0],
+                    xy: coeffs[1],
+                    yx: coeffs[2],
+                    yy: coeffs[3],
+                    dx: coeffs[4],
+                    dy: coeffs[5],
+                },
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn convert_node_type(node_type: NodeType) -> (shift_font::PointType, bool) {

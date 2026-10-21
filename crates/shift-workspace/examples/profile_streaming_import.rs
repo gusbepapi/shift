@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut store = ShiftStore::open_for_import(&store_path)?;
     let mut writer = store.begin_import(import.header())?;
+    let color = import.color();
     println!("store_setup_ms={:.3}", ms(started.elapsed()));
 
     let pipeline_started = Instant::now();
@@ -94,6 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("streamed_layer_count={layer_count}");
 
     let started = Instant::now();
+    writer.write_color(&color)?;
     writer.finish()?;
     println!("commit_ms={:.3}", ms(started.elapsed()));
     let started = Instant::now();
