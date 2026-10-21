@@ -11,13 +11,13 @@ use shift_font::{
 
 use crate::variable::ROOT_COMPONENT;
 use crate::{
-    AuthoredAtlasProfile, Bounds, VariableAtlasBuilder, VariableComponent, VariableComponentPart,
-    VariableComponentSource,
+    AuthoredAtlasProfile, Bounds, GlyphIndex, VariableAtlasBuilder, VariableComponent,
+    VariableComponentPart, VariableComponentSource,
 };
 
 use super::{
     AuthoredDefaultGlyphs, AuthoredDefaultKey, AuthoredGlyph, AuthoredGlyphCompilation,
-    AuthoredSlugError, AuthoredSourceGlyph, ResolvedCurveTopology, add_default_projection_glyph,
+    AuthoredSlugError, AuthoredSourceGlyph, CurveTopology, add_default_projection_glyph,
     add_resolved_sources_glyph, authored_advance, curves_from_resolved_contours, source_location,
 };
 
@@ -29,6 +29,12 @@ pub struct AuthoredWeightSet {
 }
 
 impl AuthoredWeightSet {
+    /// Pairs an interpolation basis with the atlas weight slot of each of its sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthoredSlugError::WeightCountMismatch`] when `source_weight_indices` does not
+    /// have one entry per basis source.
     pub fn new(
         basis: InterpolationBasis,
         source_weight_indices: Vec<u32>,
@@ -57,6 +63,13 @@ impl AuthoredWeightSet {
 ///
 /// Rust owns topology, occurrence order, cycle pruning, and anchor matching. This adapter only
 /// turns those relationships and their canonical source samples into the resident GPU program.
+///
+/// # Errors
+///
+/// Returns [`AuthoredSlugError::Core`] when the glyph or a component cannot be projected,
+/// [`AuthoredSlugError::MissingWeightBasis`] when no weight set matches a glyph's basis, a topology
+/// or finiteness error when a source does not match its default, and [`AuthoredSlugError::Slug`]
+/// when the atlas outgrows its limits. The builder is rolled back on failure.
 pub fn add_authored_glyph_with_weight_sets(
     builder: &mut VariableAtlasBuilder,
     font: &Font,
@@ -134,11 +147,10 @@ pub(super) fn add_authored_glyph_with_weight_sets_cached(
             projection,
             &source_id,
         )?;
-        let topology = ResolvedCurveTopology::from_contours(resolved.contours());
+        let topology = CurveTopology::from_contours(resolved.contours());
         let advance = authored_advance(resolved.x_advance(), 0)?;
-        let glyph_index = builder.add_curve_glyph_with_sources_and_lines(
-            topology.curves_from_contours(resolved.contours())?,
-            topology.line_flags(),
+        let glyph_index = builder.add_outline_glyph(
+            topology.outline_from_contours(resolved.contours())?,
             compilation.constant_weight_index,
             [],
         )?;
@@ -163,7 +175,7 @@ pub(super) fn add_default_component_projection_glyph(
     compilation: &mut AuthoredGlyphCompilation<'_, '_>,
     projection: &GlyphProjection,
     resolved_sources: &mut HashMap<SourceId, ResolvedGlyph>,
-) -> Result<u32, AuthoredSlugError> {
+) -> Result<GlyphIndex, AuthoredSlugError> {
     let component_started = Instant::now();
     if let Some(glyph_index) =
         add_decomposed_component_glyph(builder, compilation, projection, resolved_sources)?
@@ -171,7 +183,7 @@ pub(super) fn add_default_component_projection_glyph(
         compilation.profile.component_preparation += component_started.elapsed();
         return Ok(glyph_index);
     }
-    let mut direct_glyphs = HashMap::<GlyphId, u32>::new();
+    let mut direct_glyphs = HashMap::<GlyphId, GlyphIndex>::new();
     for glyph_id in std::iter::once(projection.glyph_id()).chain(
         projection
             .components()
@@ -286,7 +298,7 @@ fn add_decomposed_component_glyph(
     compilation: &mut AuthoredGlyphCompilation<'_, '_>,
     projection: &GlyphProjection,
     resolved_sources: &mut HashMap<SourceId, ResolvedGlyph>,
-) -> Result<Option<u32>, AuthoredSlugError> {
+) -> Result<Option<GlyphIndex>, AuthoredSlugError> {
     let glyph_id = projection.glyph_id();
     if projection.decomposition().is_none() {
         return Ok(None);
@@ -524,7 +536,7 @@ fn component_index_for_path(
 fn append_part(
     builder: &VariableAtlasBuilder,
     parts: &mut Vec<VariableComponentPart>,
-    glyph_index: u32,
+    glyph_index: GlyphIndex,
     component_index: u32,
     output_curve_start: &mut u32,
 ) -> Result<(), AuthoredSlugError> {
@@ -555,19 +567,7 @@ fn fallback_bounds(
         &projection.fallback().source_id(),
     )?;
     let curves = curves_from_resolved_contours(resolved.contours())?;
-    let mut curves = curves.into_iter();
-    let Some(first) = curves.next() else {
-        return Ok(Bounds::default());
-    };
-    let mut bounds = first.bounds();
-    for curve in curves {
-        let curve_bounds = curve.bounds();
-        bounds.min_x = bounds.min_x.min(curve_bounds.min_x);
-        bounds.min_y = bounds.min_y.min(curve_bounds.min_y);
-        bounds.max_x = bounds.max_x.max(curve_bounds.max_x);
-        bounds.max_y = bounds.max_y.max(curve_bounds.max_y);
-    }
-    Ok(bounds)
+    Ok(Bounds::of_curves(&curves))
 }
 
 fn exact_source_ids(

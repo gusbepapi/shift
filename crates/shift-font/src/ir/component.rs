@@ -31,7 +31,7 @@ impl Identified for Component {
     type Id = ComponentId;
 
     fn id(&self) -> Self::Id {
-        Component::id(self)
+        Self::id(self)
     }
 }
 
@@ -86,6 +86,16 @@ impl Default for DecomposedTransform {
 }
 
 impl DecomposedTransform {
+    /// Returns whether the placement only moves the component, as anchor
+    /// alignment places it.
+    pub fn is_translation(&self) -> bool {
+        self.rotation == 0.0
+            && self.scale_x == 1.0
+            && self.scale_y == 1.0
+            && self.skew_x == 0.0
+            && self.skew_y == 0.0
+    }
+
     /// Number of values in one transform's numeric encoding.
     pub const VALUE_COUNT: usize = 9;
 
@@ -248,6 +258,12 @@ impl DecomposedTransform {
 }
 
 impl Transform {
+    /// Returns whether this transform mirrors, so a decomposed placement
+    /// reverses closed contours.
+    pub fn mirrors(&self) -> bool {
+        self.xx * self.yy - self.xy * self.yx < 0.0
+    }
+
     /// Number of values in one matrix's numeric encoding.
     pub const VALUE_COUNT: usize = 6;
 
@@ -262,6 +278,18 @@ impl Transform {
     /// Encodes the matrix in [`Self::VALUE_FIELDS`] order.
     pub fn to_values(self) -> [f64; Self::VALUE_COUNT] {
         [self.xx, self.xy, self.yx, self.yy, self.dx, self.dy]
+    }
+
+    /// Decodes a matrix from [`Self::VALUE_FIELDS`] order.
+    pub fn from_values([xx, xy, yx, yy, dx, dy]: [f64; Self::VALUE_COUNT]) -> Self {
+        Self {
+            xx,
+            xy,
+            yx,
+            yy,
+            dx,
+            dy,
+        }
     }
 
     pub fn identity() -> Self {
@@ -570,5 +598,12 @@ mod tests {
         c.translate(10.0, 20.0);
         assert!((c.transform().translate_x - 10.0).abs() < 1e-10);
         assert!((c.transform().translate_y - 20.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn only_a_negative_determinant_mirrors() {
+        assert!(!Transform::identity().mirrors());
+        assert!(Transform::scale(-1.0, 1.0).mirrors());
+        assert!(!Transform::scale(-1.0, -1.0).mirrors());
     }
 }

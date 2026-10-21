@@ -98,8 +98,8 @@ impl FontView for UfoFileView<'_> {
         self.default_source_id.clone()
     }
 
-    fn glyphs(&self) -> Vec<&Glyph> {
-        self.font.glyphs().collect()
+    fn glyphs(&self) -> impl Iterator<Item = &Glyph> {
+        self.font.glyphs()
     }
 
     fn glyph(&self, name: &str) -> Option<&Glyph> {
@@ -160,8 +160,7 @@ impl DesignspaceWriter {
         let default_filename = font
             .default_source()
             .and_then(|source| source.filename())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{stem}.ufo"));
+            .map_or_else(|| format!("{stem}.ufo"), str::to_string);
 
         let mut used: HashSet<String> = font
             .sources()
@@ -196,7 +195,7 @@ impl DesignspaceWriter {
         }
 
         for group in &mut groups {
-            group.file_default = Self::file_default(&group.sources, &font_default);
+            group.file_default = Self::file_default(&group.sources, font_default.as_ref());
         }
 
         groups
@@ -228,7 +227,7 @@ impl DesignspaceWriter {
     /// lives in this file, otherwise the file's master without a layer
     /// binding. `None` means the file has only named layers and its default
     /// layer is written empty.
-    fn file_default(sources: &[Source], font_default: &Option<SourceId>) -> Option<SourceId> {
+    fn file_default(sources: &[Source], font_default: Option<&SourceId>) -> Option<SourceId> {
         if let Some(id) = font_default
             && sources.iter().any(|source| source.id() == *id)
         {
@@ -243,8 +242,8 @@ impl DesignspaceWriter {
 
     /// The `layer` attribute for a master's `<source>` entry: absent for the
     /// file's default layer, otherwise the UFO layer holding its data.
-    fn ds_layer_attr<'a>(source: &'a Source, file_default: &Option<SourceId>) -> Option<&'a str> {
-        if Some(source.id()) == *file_default {
+    fn ds_layer_attr<'a>(source: &'a Source, file_default: Option<&SourceId>) -> Option<&'a str> {
+        if file_default == Some(&source.id()) {
             None
         } else {
             Some(source.layer_name().unwrap_or_else(|| source.name()))
@@ -440,7 +439,7 @@ impl DesignspaceWriter {
                     font,
                     &group.filename,
                     source.name(),
-                    Self::ds_layer_attr(source, &group.file_default),
+                    Self::ds_layer_attr(source, group.file_default.as_ref()),
                 )?;
                 wrote_source = true;
             }
@@ -502,7 +501,7 @@ impl DesignspaceWriter {
             })
     }
 
-    fn save_designspace(&self, font: &Font, path: &Path) -> DesignspaceResult<()> {
+    fn save_designspace(font: &Font, path: &Path) -> DesignspaceResult<()> {
         let parent = path
             .parent()
             .ok_or_else(|| DesignspaceError::MissingParent {
@@ -546,7 +545,7 @@ impl DesignspaceWriter {
                     source,
                     font,
                     &group.filename,
-                    Self::ds_layer_attr(source, &group.file_default),
+                    Self::ds_layer_attr(source, group.file_default.as_ref()),
                     axes,
                 ));
             }
@@ -594,7 +593,6 @@ impl Default for DesignspaceWriter {
 
 impl FontWriter for DesignspaceWriter {
     fn save(&self, font: &Font, path: &str) -> FormatBackendResult<()> {
-        self.save_designspace(font, Path::new(path))
-            .map_err(FormatBackendError::from)
+        Self::save_designspace(font, Path::new(path)).map_err(FormatBackendError::from)
     }
 }

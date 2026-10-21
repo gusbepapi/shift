@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use crate::{FontChange, FontChangeSet, Require, SourceCollection};
@@ -93,7 +93,7 @@ impl Font {
         // most of each undo and redo on a large font. Every touched glyph leaves the
         // index before any data changes and is validated against the rest when it
         // returns, so duplicates are caught exactly as a full rebuild would.
-        let touched_glyph_ids = touched_glyph_ids(change_set);
+        let touched_glyph_ids = change_set.touched_glyph_ids();
         let state = self.state_mut();
         for glyph_id in &touched_glyph_ids {
             if let Some(glyph) = state.data.glyphs.get(glyph_id) {
@@ -200,11 +200,11 @@ impl Font {
                 continue;
             };
             let glyph = self.data_mut().glyphs.get_mut(glyph_id).require(glyph_id)?;
-            Arc::make_mut(glyph).set_layer(layer.clone());
+            Arc::make_mut(glyph).set_layer(Arc::clone(layer));
         }
 
         let state = self.state_mut();
-        let mut touched_unicodes = HashSet::new();
+        let mut touched_unicodes = BTreeSet::new();
         for glyph_id in &touched_glyph_ids {
             let Some(glyph) = state.data.glyphs.get(glyph_id) else {
                 continue;
@@ -278,30 +278,11 @@ impl Font {
     }
 }
 
-/// Glyphs whose own record or any layer `change_set` replaces, in first-touched order.
-fn touched_glyph_ids(change_set: &FontChangeSet) -> Vec<GlyphId> {
-    let mut seen = HashSet::new();
-    change_set
-        .changes
-        .iter()
-        .flat_map(|change| match change {
-            FontChange::Glyph(value) => [value.before.as_ref(), value.after.as_ref()]
-                .into_iter()
-                .flatten()
-                .map(Glyph::id)
-                .collect::<Vec<_>>(),
-            FontChange::Layer { glyph_id, .. } => vec![glyph_id.clone()],
-            _ => Vec::new(),
-        })
-        .filter(|glyph_id| seen.insert(glyph_id.clone()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
-        CreateGlyph, CreateGlyphLayer, DeleteAxis, EntityChange, FontEntityChange, FontIntent,
-        FontIntentSet, Replacement, UpdateFontMetadata,
+        CreateGlyph, CreateGlyphLayer, DeleteAxis, EntityChange, FontEntityChange, FontIntentSet,
+        Replacement, UpdateFontMetadata,
     };
 
     use super::*;
@@ -331,7 +312,7 @@ mod tests {
         let mut renamed_second = second.clone();
         renamed_second.set_name(first.glyph_name().clone());
         renamed_second.set_unicodes(first.unicodes().to_vec());
-        let layer = first.layers().values().next().unwrap().clone();
+        let layer = Arc::clone(first.layers().values().next().unwrap());
         let mut moved_layer = (*layer).clone();
         moved_layer.set_width(moved_layer.width() + 10.0);
         renamed_first.set_layer(moved_layer.clone());
@@ -367,9 +348,7 @@ mod tests {
         let axis_id = original.axes()[0].id();
         let mut font = original.clone();
         let outcome = font
-            .apply_intents(&FontIntentSet {
-                intents: vec![FontIntent::DeleteAxis(DeleteAxis { axis_id })],
-            })
+            .apply_intents(&FontIntentSet::from(DeleteAxis { axis_id }))
             .unwrap();
         let edited = font.clone();
 
@@ -387,11 +366,7 @@ mod tests {
         let mut metadata = edited.metadata().clone();
         metadata.family_name = Some("Edited".to_string());
         let changes = edited
-            .apply_intents(&FontIntentSet {
-                intents: vec![FontIntent::UpdateFontMetadata(UpdateFontMetadata {
-                    metadata,
-                })],
-            })
+            .apply_intents(&FontIntentSet::from(UpdateFontMetadata { metadata }))
             .unwrap()
             .changes;
 
@@ -426,16 +401,18 @@ mod tests {
         let outcome = font
             .apply_intents(&FontIntentSet {
                 intents: vec![
-                    FontIntent::CreateGlyph(CreateGlyph {
+                    CreateGlyph {
                         glyph_id: Some(glyph_id.clone()),
                         name: "created".to_string(),
                         unicodes: vec![0x63],
-                    }),
-                    FontIntent::CreateGlyphLayer(CreateGlyphLayer {
+                    }
+                    .into(),
+                    CreateGlyphLayer {
                         layer_id: layer_id.clone(),
                         glyph_id,
                         source_id,
-                    }),
+                    }
+                    .into(),
                 ],
             })
             .unwrap();

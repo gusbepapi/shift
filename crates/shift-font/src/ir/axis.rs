@@ -161,6 +161,17 @@ impl AxisList for [Axis] {
 }
 
 impl Axis {
+    /// Returns whether `value` is a position this axis allows: finite and
+    /// inside its range, or one of its discrete values.
+    pub fn accepts(&self, value: f64) -> bool {
+        match self.kind() {
+            AxisKind::Continuous {
+                minimum, maximum, ..
+            } => value.is_finite() && value >= *minimum && value <= *maximum,
+            AxisKind::Discrete { values, .. } => values.contains(&value),
+        }
+    }
+
     pub fn new(tag: String, name: String, minimum: f64, default: f64, maximum: f64) -> Self {
         Self::with_id(AxisId::new(), tag, name, minimum, default, maximum)
     }
@@ -301,6 +312,14 @@ impl Axis {
         self.hidden = hidden;
     }
 
+    /// Checks the axis's name, tag, range or values, role, and labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidAxis`] when the name is blank, the tag is not four ASCII
+    /// characters, the range or values are not finite and ordered around the default, or an
+    /// internal axis owns labels; [`CoreError::DuplicateAxisLabelId`] or
+    /// [`CoreError::InvalidAxisLabel`] when a label repeats an id or is itself invalid.
     pub fn validate(&self) -> CoreResult<()> {
         if self.name.trim().is_empty() {
             return Err(self.invalid("name must not be blank"));
@@ -516,6 +535,13 @@ impl AxisMapping {
         self.description = description;
     }
 
+    /// Checks the mapping against `axes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidAxisMapping`] when the name is blank, an input, output or point
+    /// list is empty or repeats an axis, it references an unknown axis or an input of the wrong
+    /// role, or its points do not fit its axes.
     pub fn validate(&self, axes: &[Axis]) -> CoreResult<()> {
         if self.name.trim().is_empty() {
             return Err(self.invalid("name must not be blank"));
@@ -627,7 +653,7 @@ impl Location {
     /// Returns this location's value on `axis`, or the axis default when the
     /// location has none.
     pub fn value_on(&self, axis: &Axis) -> f64 {
-        self.get(&axis.id()).unwrap_or(axis.default())
+        self.get(&axis.id()).unwrap_or_else(|| axis.default())
     }
 
     pub fn set(&mut self, axis_id: AxisId, value: f64) {
@@ -646,7 +672,7 @@ impl Location {
         self.values.iter()
     }
 
-    pub fn normalize(&self, axes: &[Axis]) -> Location {
+    pub fn normalize(&self, axes: &[Axis]) -> Self {
         axes.iter()
             .filter_map(|axis| {
                 let value = self.values.get(&axis.id())?;
@@ -1013,5 +1039,24 @@ mod tests {
         assert_eq!(axes.axis(&weight.id()), Some(&weight));
         assert!(axes.contains_axis(&weight.id()));
         assert!(!axes.contains_axis(&Axis::width().id()));
+    }
+
+    #[test]
+    fn accepts_values_inside_the_range_or_among_discrete_values() {
+        let weight = Axis::weight();
+        let italic = Axis::discrete_with_id(
+            AxisId::from_raw("ital"),
+            "ital".to_string(),
+            "Italic".to_string(),
+            vec![0.0, 1.0],
+            0.0,
+        );
+
+        assert!(weight.accepts(weight.minimum()));
+        assert!(weight.accepts(weight.maximum()));
+        assert!(!weight.accepts(weight.maximum() + 1.0));
+        assert!(!weight.accepts(f64::NAN));
+        assert!(italic.accepts(1.0));
+        assert!(!italic.accepts(0.5));
     }
 }

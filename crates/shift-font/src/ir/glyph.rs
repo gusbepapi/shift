@@ -2,10 +2,13 @@ use crate::anchor::Anchor;
 use crate::collection::{EntityList, Identified};
 use crate::component::Component;
 use crate::contour::Contour;
-use crate::entity::{AnchorId, ComponentId, ContourId, GlyphId, GuidelineId, LayerId, SourceId};
+use crate::entity::{
+    AnchorId, ComponentId, ContourId, GlyphEntityId, GlyphId, GuidelineId, LayerId, SourceId,
+};
 use crate::glyph_category::{GlyphCategory, GlyphSubcategory};
 use crate::guideline::Guideline;
 use crate::lib_data::LibData;
+use crate::point::Point;
 use crate::{CoreError, CoreResult, GlyphName};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -30,7 +33,7 @@ impl Identified for Glyph {
     type Id = GlyphId;
 
     fn id(&self) -> Self::Id {
-        Glyph::id(self)
+        Self::id(self)
     }
 }
 
@@ -48,6 +51,27 @@ pub struct GlyphLayer {
 }
 
 impl GlyphLayer {
+    /// Returns the id of every contour, point, component, anchor, and guideline
+    /// in the layer.
+    pub(crate) fn entity_ids(&self) -> impl Iterator<Item = GlyphEntityId> + '_ {
+        let contours = self.contours_iter().map(GlyphEntityId::from);
+        let points = self.points().map(GlyphEntityId::from);
+        let components = self.components_iter().map(GlyphEntityId::from);
+        let anchors = self.anchors_iter().map(GlyphEntityId::from);
+        let guidelines = self.guidelines().iter().map(GlyphEntityId::from);
+        contours
+            .chain(points)
+            .chain(components)
+            .chain(anchors)
+            .chain(guidelines)
+    }
+
+    /// Returns every point of every contour, in contour order.
+    pub fn points(&self) -> impl Iterator<Item = &Point> {
+        self.contours_iter()
+            .flat_map(|contour| contour.points().iter())
+    }
+
     pub fn new(id: LayerId, source_id: SourceId) -> Self {
         Self {
             id,
@@ -299,6 +323,11 @@ impl GlyphLayer {
         self.anchors.iter()
     }
 
+    /// Returns each anchor's name, in anchor order; `None` for an unnamed anchor.
+    pub fn anchor_names(&self) -> impl Iterator<Item = Option<&str>> {
+        self.anchors.iter().map(Anchor::name)
+    }
+
     pub fn anchors_iter_mut(&mut self) -> impl Iterator<Item = &mut Anchor> {
         self.anchors.iter_mut()
     }
@@ -463,6 +492,21 @@ impl Glyph {
         &self.layers
     }
 
+    /// Whether any layer draws something: a contour or a component.
+    pub fn has_outline(&self) -> bool {
+        self.layers
+            .values()
+            .any(|layer| !layer.contours().is_empty() || !layer.components().is_empty())
+    }
+
+    /// Whether any layer has an anchor that marks attach to.
+    pub fn has_attaching_anchor(&self) -> bool {
+        self.layers
+            .values()
+            .flat_map(|layer| layer.anchors())
+            .any(Anchor::attaches_marks)
+    }
+
     /// Returns the ids of the glyph's layers.
     pub fn layer_ids(&self) -> impl Iterator<Item = LayerId> + '_ {
         self.layers.keys().cloned()
@@ -543,6 +587,32 @@ mod tests {
     use super::*;
     use crate::Anchor;
     use std::sync::Arc;
+
+    #[test]
+    fn a_glyph_has_an_outline_when_a_layer_draws_a_contour() {
+        let mut glyph = Glyph::new("A".to_string());
+        let layer = glyph.ensure_layer_for_source(SourceId::new());
+        layer.add_anchor(Anchor::new(Some("top".to_string()), 0.0, 0.0));
+        assert!(!glyph.has_outline());
+
+        let layer = glyph.ensure_layer_for_source(SourceId::new());
+        layer.add_empty_contour();
+
+        assert!(glyph.has_outline());
+    }
+
+    #[test]
+    fn only_anchors_without_a_leading_underscore_attach_marks() {
+        let mut glyph = Glyph::new("acutecomb".to_string());
+        let layer = glyph.ensure_layer_for_source(SourceId::new());
+        layer.add_anchor(Anchor::new(Some("_top".to_string()), 0.0, 0.0));
+        assert!(!glyph.has_attaching_anchor());
+
+        let layer = glyph.ensure_layer_for_source(SourceId::new());
+        layer.add_anchor(Anchor::new(None, 0.0, 0.0));
+
+        assert!(glyph.has_attaching_anchor());
+    }
 
     #[test]
     fn glyph_creation() {

@@ -47,6 +47,11 @@ enum ProjectionEvaluation<'a> {
 /// A root the source cannot project (for example a Glyphs smart-component
 /// glyph) compiles as an empty outline so it cannot fail the rest of the page;
 /// reading that glyph directly still reports the projection error.
+///
+/// # Errors
+///
+/// Returns [`SourceAtlasError::Read`] when a root is out of range or the font's axes cannot be
+/// read, and [`SourceAtlasError::Slug`] when the inputs outgrow the atlas limits.
 pub fn variable_glyph_inputs<S: FontSource + ?Sized>(
     source: &S,
     roots: &[GlyphIndex],
@@ -405,17 +410,11 @@ fn flatten_shape(
     }
     cursor = cursor.checked_add(shape.anchors.len() * 2).or_overflow()?;
     for component in &shape.components {
-        let transform_values = values
+        let local = values
             .get(cursor..cursor + 6)
+            .and_then(|transform_values| transform_values.try_into().ok())
+            .map(AffineTransform::from_values)
             .ok_or_else(|| invalid("source atlas component transform is missing"))?;
-        let local = AffineTransform {
-            xx: transform_values[0],
-            xy: transform_values[1],
-            yx: transform_values[2],
-            yy: transform_values[3],
-            dx: transform_values[4],
-            dy: transform_values[5],
-        };
         let child = projections
             .get(&component.glyph)
             .ok_or_else(|| invalid("source atlas component projection is missing"))?;
@@ -451,8 +450,7 @@ fn selected_shape<'a>(
         .exact_shapes
         .iter()
         .find(|shape| shape.source == source)
-        .map(|shape| &shape.shape)
-        .unwrap_or(&projection.fallback)
+        .map_or(&projection.fallback, |shape| &shape.shape)
 }
 
 fn projection_values(
@@ -660,7 +658,7 @@ unitsPerEm = 1000;
                 .unwrap()
                 .index
         };
-        let (bar, smart) = (glyph("bar"), glyph("_smart.dash"));
+        let [bar, smart] = [glyph("bar"), glyph("_smart.dash")];
         font.glyph(smart).unwrap_err();
 
         let page = compile_page(&font, &[bar, smart]).unwrap();
@@ -767,8 +765,7 @@ unitsPerEm = 1000;
                     .find(|(root, exact_source, _)| {
                         root == glyph && *exact_source == source.index.to_u32()
                     })
-                    .map(|(_, _, glyph)| *glyph)
-                    .unwrap_or(*default_glyph);
+                    .map_or(*default_glyph, |(_, _, glyph)| *glyph);
                 let curves = page
                     .atlas()
                     .resolve_glyph_with_weights(atlas_glyph, &weights)
@@ -809,8 +806,7 @@ unitsPerEm = 1000;
                     .iter()
                     .find(|shape| shape.source == source)
             })
-            .map(|shape| &shape.shape)
-            .unwrap_or(&projection.fallback)
+            .map_or(&projection.fallback, |shape| &shape.shape)
     }
 
     fn shape_has_outline(

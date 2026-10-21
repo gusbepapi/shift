@@ -24,7 +24,7 @@ use crate::{
 };
 
 use super::FontProjection;
-use crate::placed_blend::{ContourShape, mirrors, placed_point_index};
+use crate::placed_blend::{ContourShape, placed_point_index};
 
 /// A glyph's flattened outline split by where each contour comes from: the
 /// glyph's own contours first, then one part per component occurrence in
@@ -284,7 +284,7 @@ impl Font {
             .map(|(source_id, _)| source_id.clone())
             .collect::<Vec<_>>();
         if let Some(basis) = interpolation_bases.get(&key) {
-            return Ok(Some(basis.clone()));
+            return Ok(Some(Arc::clone(basis)));
         }
         let Some(basis) = InterpolationBasis::from_source_locations(
             &locations,
@@ -294,7 +294,7 @@ impl Font {
             return Ok(None);
         };
         let basis = Arc::new(basis);
-        interpolation_bases.insert(key, basis.clone());
+        interpolation_bases.insert(key, Arc::clone(&basis));
         Ok(Some(basis))
     }
 }
@@ -410,7 +410,7 @@ fn placed(
         point_count: contour.points.len(),
         closed: contour.closed,
     };
-    let reversing = placement == Placement::Decomposed && mirrors(&transform);
+    let reversing = placement == Placement::Decomposed && transform.mirrors();
     let points = (0..shape.point_count)
         .filter_map(|index| {
             contour

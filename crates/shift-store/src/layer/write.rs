@@ -4,9 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use shift_font as font;
 
 use super::{
-    GLYPH_LAYER_FORMAT, MAX_LAYER_PAYLOAD_BYTES,
-    format::encode_layer,
-    payload::{StoredLayerPayload, compress_layer},
+    GLYPH_LAYER_FORMAT, MAX_LAYER_PAYLOAD_BYTES, format::encode_layer, payload::StoredLayerPayload,
 };
 use crate::{
     ShiftStore, StoreError, workspace_state::mark_workspace_dirty_in_tx, write_mode::WriteMode,
@@ -16,6 +14,12 @@ impl ShiftStore {
     /// Replaces one independently-addressed layer and its earned reference
     /// rows in one transaction. The workspace revision advances only after
     /// encoding and index derivation have succeeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::MissingEntity`] when no glyph owns the layer,
+    /// [`StoreError::DocumentRequiresRecoveryOverlay`] in a document opened without one, and
+    /// [`StoreError::Sqlite`] or a layer-encoding error when the write fails.
     pub fn replace_glyph_layer(&mut self, layer: &font::GlyphLayer) -> Result<(), StoreError> {
         let owner = layer_owner(&self.conn, &layer.id())?
             .or_missing(StoreEntity::GlyphLayer, &layer.id())?;
@@ -43,7 +47,7 @@ pub(crate) fn write_layer_in_tx(
     layer: &font::GlyphLayer,
 ) -> Result<(), StoreError> {
     let encoded = encode_layer(layer)?;
-    let stored = compress_layer(&encoded)?;
+    let stored = StoredLayerPayload::compress(&encoded)?;
     store_stored_layer_in_tx(tx, glyph_id, layer, &stored, WriteMode::Upsert)
 }
 

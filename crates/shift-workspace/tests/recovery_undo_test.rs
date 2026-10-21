@@ -10,14 +10,7 @@ use shift_workspace::{AcquireScope, FontWorkspace};
 use tempfile::TempDir;
 
 fn apply(workspace: &mut FontWorkspace, intent: FontIntent) {
-    workspace
-        .apply(
-            &FontIntentSet {
-                intents: vec![intent],
-            },
-            None,
-        )
-        .unwrap();
+    workspace.apply(&FontIntentSet::from(intent), None).unwrap();
 }
 
 /// A saved document opened with a recovery overlay.
@@ -51,7 +44,7 @@ fn undo_source_edits_after_an_anchor(evict_before_undo: bool) -> (usize, usize, 
 
     apply(
         &mut workspace,
-        FontIntent::AddAnchors(AddAnchors {
+        AddAnchors {
             layer_id: layer_id.clone(),
             anchors: vec![AnchorSeed {
                 id: AnchorId::new(),
@@ -59,12 +52,13 @@ fn undo_source_edits_after_an_anchor(evict_before_undo: bool) -> (usize, usize, 
                 x: 10.0,
                 y: 700.0,
             }],
-        }),
+        }
+        .into(),
     );
     let source = workspace.font().sources()[0].clone();
     apply(
         &mut workspace,
-        FontIntent::UpdateSource(UpdateSource {
+        UpdateSource {
             source_id: source.id(),
             name: "Renamed".into(),
             location: source.location().clone(),
@@ -73,7 +67,8 @@ fn undo_source_edits_after_an_anchor(evict_before_undo: bool) -> (usize, usize, 
             line_gap: source.line_gap(),
             underline_position: Some(-111.0),
             underline_thickness: source.underline_thickness(),
-        }),
+        }
+        .into(),
     );
     let mut location = DesignLocation::new();
     if let Some(axis) = workspace.font().axes().first() {
@@ -81,11 +76,12 @@ fn undo_source_edits_after_an_anchor(evict_before_undo: bool) -> (usize, usize, 
     }
     apply(
         &mut workspace,
-        FontIntent::CreateSource(CreateSource {
+        CreateSource {
             source_id: SourceId::new(),
             name: "Added".into(),
             location,
-        }),
+        }
+        .into(),
     );
 
     if evict_before_undo {
