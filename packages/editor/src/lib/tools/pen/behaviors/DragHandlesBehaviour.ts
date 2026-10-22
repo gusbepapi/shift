@@ -1,13 +1,16 @@
 import { Vec2 } from "@shift/geo";
 import type { PointId } from "@shift/types";
-import { DirectionSnap, PositionReference, type MoveEdit } from "../../../model/positions/index";
+import {
+  DirectionSnap,
+  PositionReference,
+  PositionTargets,
+  type MoveEdit,
+} from "../../../model/positions/index";
 import type { ToolContext } from "../../core/Behavior";
 import type { DragEvent, KeyDownEvent, ToolEvent } from "../../core/GestureDetector";
 import type { PenCurve, PenState, PenBehavior } from "../types";
 import type { Pen } from "../Pen";
 import { PenStroke } from "../PenStroke";
-
-const DRAG_THRESHOLD = 3;
 
 export class HandleBehavior implements PenBehavior {
   #move: MoveEdit | null = null;
@@ -95,7 +98,9 @@ export class HandleBehavior implements PenBehavior {
     if (!stroke || !start) return null;
 
     const handlePosition = pen.editor.toLocal(stroke.node, event.coords.scene);
-    if (Vec2.dist(state.anchorPosition, handlePosition) <= DRAG_THRESHOLD) return null;
+    if (Vec2.dist(state.anchorPosition, handlePosition) <= pen.editor.camera.handleDragThreshold) {
+      return null;
+    }
 
     const curve = {
       start,
@@ -110,7 +115,7 @@ export class HandleBehavior implements PenBehavior {
     try {
       this.#move = stroke.layer.positions
         .within(edit)
-        .move({ points: [controlEndId] })
+        .move(PositionTargets.points([controlEndId]))
         .from(PositionReference.point(controlEndId))
         .directionSnappedBy(
           DirectionSnap.everyDegrees(15, {

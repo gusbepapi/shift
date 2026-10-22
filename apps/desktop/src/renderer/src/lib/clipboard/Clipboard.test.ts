@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { Clipboard } from "@shift/editor/clipboard";
-import { payloadJsonFromSvg } from "@shift/editor/clipboard";
+import { Clipboard, payloadJsonFromSvg } from "@shift/editor/clipboard";
 import type { ShiftContent, SystemClipboard } from "@shift/editor/clipboard";
 
 class MemoryClipboard implements SystemClipboard {

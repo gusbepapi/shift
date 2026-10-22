@@ -212,7 +212,7 @@ export class GlyphInfo {
     return searchIndex;
   }
 
-  // --- Glyph Data (Map lookups) ---
+  // Glyph Data (Map lookups)
 
   /** Look up the full metadata record for a codepoint, or `null` if unknown. */
   getGlyph(cp: number): Glyph | null {
@@ -330,7 +330,7 @@ export class GlyphInfo {
     return catalog.filter(filter);
   }
 
-  // --- Decomposition (Map lookups) ---
+  // Decomposition (Map lookups)
 
   /**
    * Return the codepoints that `cp` decomposes into (e.g. an accented letter
@@ -348,7 +348,7 @@ export class GlyphInfo {
     return this.#usedBy.get(cp) ?? [];
   }
 
-  // --- Charsets (in-memory arrays) ---
+  // Charsets (in-memory arrays)
 
   /** Return a summary (id, name, source, count) for every loaded charset. */
   listCharsets(): CharsetSummary[] {
@@ -366,7 +366,7 @@ export class GlyphInfo {
     return charset?.codepoints ?? [];
   }
 
-  // --- Languages ---
+  // Languages
 
   /**
    * Identifiers a font tracks until it chooses its own: every group of the
@@ -455,9 +455,10 @@ export class GlyphInfo {
       });
     }
 
-    const sortedScripts = [...scripts.values()].sort((left, right) =>
-      left.script.localeCompare(right.script),
-    );
+    const sortedScripts = scripts
+      .values()
+      .toArray()
+      .sort((left, right) => left.script.localeCompare(right.script));
     for (const script of sortedScripts) {
       script.languages.sort(
         (left, right) =>
@@ -503,7 +504,7 @@ export class GlyphInfo {
     };
   }
 
-  // --- Search (MiniSearch) ---
+  // Search (MiniSearch)
 
   /**
    * Full-text prefix search across glyph names, Unicode names, and categories.

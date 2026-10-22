@@ -1,3 +1,4 @@
+import { EntityMap } from "@shift/types";
 import type { CommandId, RendererCommandId } from "../../shared/commands";
 import type { FontExportFormat } from "../../shared/workspace/protocol";
 import type { Window } from "../windows/Window";
@@ -11,7 +12,7 @@ import type { Window } from "../windows/Window";
  * runs so commands resolve the current window at execution time.
  */
 export class CommandRegistry {
-  #commands = new Map<CommandId, Command>();
+  #commands = new EntityMap<CommandId, Command>("command");
 
   /**
    * Adds one command to the registry.
@@ -34,7 +35,7 @@ export class CommandRegistry {
    * @returns the registered command, or `null` when the ID is not registered.
    */
   get(id: CommandId): Command | null {
-    return this.#commands.get(id) ?? null;
+    return this.#commands.get(id);
   }
 
   /**

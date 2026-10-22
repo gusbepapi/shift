@@ -8,6 +8,7 @@ import type {
   PointId,
   SourceId,
 } from "@shift/types";
+import type { ExternalAxisLocation } from "../../types/variation";
 import type { Font } from "../model/Font";
 import type { Glyph, GlyphLayer } from "../model/Glyph";
 import { effect, signal, track, type Effect, type Signal } from "../signals";
@@ -16,13 +17,12 @@ import type {
   ComponentTransformSelectionLayer,
 } from "../../types/componentTransform";
 import type { ComponentLayerTargets, ComponentTargets } from "../../types/componentTargets";
-import type {
-  PositionSelection,
-  PositionSelectionLayer,
-  PositionTargets,
-} from "../../types/positionEdit";
+import type { PositionSelection, PositionSelectionLayer } from "../../types/positionEdit";
+import type { SourceRenderInputs } from "../../types/glyphRender";
+import { externalAxisLocationsEqual } from "../variation/location";
 import { LatestRequest } from "../utils/LatestRequest";
 import type { Scene } from "./Scene";
+import { PositionTargets } from "../model/positions/PositionTargets";
 
 /** Resolves and retains topology matches for the editor's selected source layers. */
 export class MultiSourceEditing {
@@ -35,6 +35,8 @@ export class MultiSourceEditing {
     name: "editor.layers.matches",
   });
   readonly #latest = new LatestRequest();
+  // non-reactive: reuses each source's render-model input cells so Glyph's cell-keyed render-model cache hits.
+  readonly #sourceRenderInputs = new Map<SourceId, SourceRenderInputs>();
   readonly #effect: Effect;
 
   #inputs: readonly unknown[] = [];
@@ -283,7 +285,8 @@ export class MultiSourceEditing {
     const location = this.#font.externalLocationForSource(sourceId);
     if (!location) return null;
 
-    const view = glyph.renderModelAt(signal(location), signal<SourceId | null>(sourceId));
+    const inputs = this.#renderInputsFor(sourceId, location);
+    const view = glyph.renderModelAt(inputs.locationCell, inputs.sourceIdCell);
     // Render paths keep projection-stable identities even when exact-source authored IDs differ.
     // Resolve the authored target IDs to their Rust-matched direct-component slots.
     const directComponents = view.components.filter(
@@ -296,6 +299,20 @@ export class MultiSourceEditing {
       }),
     );
     return bounds ? Bounds.toRect(bounds) : null;
+  }
+
+  /** Returns this source's render-model cells, new only when its location changed. */
+  #renderInputsFor(sourceId: SourceId, location: ExternalAxisLocation): SourceRenderInputs {
+    const cached = this.#sourceRenderInputs.get(sourceId);
+    if (cached && externalAxisLocationsEqual(cached.location, location)) return cached;
+
+    const inputs: SourceRenderInputs = {
+      location,
+      locationCell: signal(location),
+      sourceIdCell: signal<SourceId | null>(sourceId),
+    };
+    this.#sourceRenderInputs.set(sourceId, inputs);
+    return inputs;
   }
 
   #glyphForLayer(layer: GlyphLayer): Glyph | null {
@@ -329,17 +346,17 @@ function mapTargets(reference: PositionSelectionLayer, match: LayerMatch): Posit
     match.anchors.map((anchorMatch) => [anchorMatch.referenceId, anchorMatch.targetId]),
   );
   const points: PointId[] = [];
-  for (const pointId of reference.targets.points ?? []) {
+  for (const pointId of reference.targets.points) {
     const targetPointId = pointMatches.get(pointId);
     if (!targetPointId) return null;
     points.push(targetPointId);
   }
   const anchors: AnchorId[] = [];
-  for (const anchorId of reference.targets.anchors ?? []) {
+  for (const anchorId of reference.targets.anchors) {
     const targetAnchorId = anchorMatches.get(anchorId);
     if (!targetAnchorId) return null;
     anchors.push(targetAnchorId);
   }
 
-  return { points, anchors };
+  return new PositionTargets(points, anchors);
 }

@@ -3,13 +3,16 @@ import { Vec2 } from "@shift/geo";
 import { Point } from "@shift/glyph-state";
 import type { PointId } from "@shift/types";
 import { TestEditor } from "@/testing/TestEditor";
-import { AngleSnap } from "@shift/editor/model";
-import { DirectionSnap } from "@shift/editor/model";
-import { MetricSnap } from "@shift/editor/model";
-import { PointAlignmentSnap } from "@shift/editor/model";
-import { SnapSet } from "@shift/editor/model";
-import { PointRuleConstraint } from "@shift/editor/model";
-import { PositionReference } from "@shift/editor/model";
+import {
+  AngleSnap,
+  DirectionSnap,
+  MetricSnap,
+  PointAlignmentSnap,
+  SnapSet,
+  PointRuleConstraint,
+  PositionReference,
+  PositionTargets,
+} from "@shift/editor/model";
 
 // These tests exercise the model surface directly; SelectMove.test.ts covers its tool integration.
 describe("fluent position edits preserve one frozen interaction base", () => {
@@ -25,7 +28,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   });
 
   it("recomputes movement previews from the original position and discards them", () => {
-    const edit = editor.requireGlyphLayer().positions.move({ points: [pointId] });
+    const edit = editor.requireGlyphLayer().positions.move(PositionTargets.points([pointId]));
 
     edit.preview({ x: 10, y: 0 });
     edit.preview({ x: 25, y: 0 });
@@ -36,7 +39,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   });
 
   it("commits one preview through the workspace ledger and undoes it", async () => {
-    const edit = editor.requireGlyphLayer().positions.move({ points: [pointId] });
+    const edit = editor.requireGlyphLayer().positions.move(PositionTargets.points([pointId]));
 
     edit.preview({ x: 25, y: -10 });
     edit.commit();
@@ -53,7 +56,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
     const contourId = layerEdit.addContour(false);
     const [addedPointId] = layerEdit.addPoints(contourId, [Point.onCurve({ x: 200, y: 100 })]);
     if (!addedPointId) throw new Error("Expected added point");
-    const move = layer.positions.within(layerEdit).move({ points: [addedPointId] });
+    const move = layer.positions.within(layerEdit).move(PositionTargets.points([addedPointId]));
 
     move.preview({ x: 25, y: -10 });
     expect(editor.pointPosition(addedPointId)).toEqual({ x: 225, y: 90 });
@@ -67,7 +70,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
     const contourId = layerEdit.addContour(false);
     const [addedPointId] = layerEdit.addPoints(contourId, [Point.onCurve({ x: 200, y: 100 })]);
     if (!addedPointId) throw new Error("Expected added point");
-    const move = layer.positions.within(layerEdit).move({ points: [addedPointId] });
+    const move = layer.positions.within(layerEdit).move(PositionTargets.points([addedPointId]));
 
     move.preview({ x: 25, y: -10 });
     move.commit();
@@ -81,7 +84,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   it("applies direction snapping before point rules", () => {
     const layer = editor.requireGlyphLayer();
     const edit = layer.positions
-      .move({ points: [pointId] })
+      .move(PositionTargets.points([pointId]))
       .from(PositionReference.point(pointId))
       .directionSnappedBy(DirectionSnap.everyDegrees(45))
       .constrainedBy(PointRuleConstraint.forSelection(layer.geometry, [pointId]));
@@ -99,7 +102,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
     const layer = editor.requireGlyphLayer();
     const metrics = { ...editor.font.metricsForSource(layer.sourceId), xHeight: 500 };
     const edit = layer.positions
-      .move({ points: [pointId] })
+      .move(PositionTargets.points([pointId]))
       .from(PositionReference.point(pointId))
       .snappedBy(MetricSnap.standard(metrics, 8));
 
@@ -126,7 +129,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
     const metrics = { ...editor.font.metricsForSource(layer.sourceId), capHeight: 700 };
     const edit = layer.positions
       .within(layerEdit)
-      .move({ points: [topLeft, topRight] })
+      .move(PositionTargets.points([topLeft, topRight]))
       .snappedBy(MetricSnap.standard(metrics, 8), [
         PositionReference.point(topLeft),
         PositionReference.point(topRight),
@@ -146,7 +149,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
     const layer = editor.requireGlyphLayer();
     const metrics = { ...editor.font.metricsForSource(layer.sourceId), xHeight: 500 };
     const edit = layer.positions
-      .move({ points: [pointId] })
+      .move(PositionTargets.points([pointId]))
       .from(PositionReference.point(pointId))
       .snappedBy(
         SnapSet.nearest([
@@ -166,7 +169,9 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   });
 
   it("scales from one frozen layer-local origin and discards the preview", () => {
-    const edit = editor.requireGlyphLayer().positions.scale({ points: [pointId] }, { x: 0, y: 0 });
+    const edit = editor
+      .requireGlyphLayer()
+      .positions.scale(PositionTargets.points([pointId]), { x: 0, y: 0 });
 
     edit.preview({ x: 2, y: 0.5 });
     expect(editor.pointPosition(pointId)).toEqual({ x: 200, y: 50 });
@@ -176,7 +181,9 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   });
 
   it("changes the scale pivot per preview without accumulating or replacing the default origin", () => {
-    const edit = editor.requireGlyphLayer().positions.scale({ points: [pointId] }, { x: 0, y: 0 });
+    const edit = editor
+      .requireGlyphLayer()
+      .positions.scale(PositionTargets.points([pointId]), { x: 0, y: 0 });
 
     edit.preview({ x: 2, y: 2 }, { x: 50, y: 50 });
     expect(editor.pointPosition(pointId)).toEqual({ x: 150, y: 150 });
@@ -191,7 +198,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   it("quantizes rotation independently from movement modifiers", () => {
     const edit = editor
       .requireGlyphLayer()
-      .positions.rotate({ points: [pointId] }, { x: 0, y: 0 })
+      .positions.rotate(PositionTargets.points([pointId]), { x: 0, y: 0 })
       .angleSnappedBy(AngleSnap.everyDegrees(15));
 
     const angle = edit.preview((44 * Math.PI) / 180);
@@ -203,7 +210,7 @@ describe("fluent position edits preserve one frozen interaction base", () => {
   });
 
   it("rejects configuration after preview and preview after completion", () => {
-    const edit = editor.requireGlyphLayer().positions.move({ points: [pointId] });
+    const edit = editor.requireGlyphLayer().positions.move(PositionTargets.points([pointId]));
 
     edit.preview({ x: 10, y: 0 });
     expect(() => edit.from(PositionReference.point(pointId))).toThrow(/before the first preview/);

@@ -5,6 +5,7 @@ import { TextBuffer } from "../text/TextBuffer";
 import type { LocalBounds, LocalPoint } from "../../types/coordinates";
 import { localBounds } from "../editor/spaces";
 import type { GlyphNode, ShiftNode, TextRunNode } from "../../types/node";
+import type { TextItem } from "../text/layout/types";
 import type { NodeReference } from "../../types/records";
 import type { RenderContext, RenderPass } from "../../types/rendering";
 import type { PointerTarget } from "../../types/target";
@@ -71,6 +72,11 @@ export class TextRunNodeDefinition extends NodeDefinition<TextRunNode> {
   /** A run node depends on its run record. */
   override references(node: TextRunNode): readonly NodeReference[] {
     return [node.runId];
+  }
+
+  /** A run node lays out its run record's items. */
+  override textItems(node: TextRunNode): readonly TextItem[] {
+    return this.editor.text.run(node.runId)?.items ?? [];
   }
 
   /**
@@ -231,7 +237,7 @@ export class TextRunNodeDefinition extends NodeDefinition<TextRunNode> {
       if (!isTextItemId(id)) return null;
       const placed = layout.placedGlyphForItem(id);
       const glyphId = placed?.glyph.glyphId;
-      const layer = glyphId ? this.editor.glyphForId(glyphId)?.layerForSource(sourceId) : null;
+      const layer = glyphId ? this.editor.layerForGlyph(glyphId, sourceId) : null;
       const itemBounds = this.itemBounds(node, id);
       if (!placed || !glyphId || !layer || !itemBounds) return null;
 
@@ -255,7 +261,7 @@ export class TextRunNodeDefinition extends NodeDefinition<TextRunNode> {
     if (this.editor.editing.hasScope()) return [];
 
     const ids: SelectableId[] = [];
-    for (const item of this.editor.text.run(node.runId)?.items ?? []) {
+    for (const item of this.textItems(node)) {
       const bounds = this.itemBounds(node, item.id);
       if (bounds && Bounds.overlaps(bounds, rect)) ids.push(item.id);
     }
@@ -441,7 +447,7 @@ export class TextRunNodeDefinition extends NodeDefinition<TextRunNode> {
     return nearEmptyOrigin ? 0 : null;
   }
 
-  draw(node: TextRunNode, ctx: RenderContext, pass: RenderPass): void {
+  override draw(node: TextRunNode, ctx: RenderContext, pass: RenderPass): void {
     const layout = this.editor.text.layoutCell(node.runId).peek();
     if (!layout) return;
 
