@@ -1,3 +1,4 @@
+import { EntityMap } from "@shift/types";
 import {
   Bounds,
   Mat,
@@ -50,7 +51,7 @@ export class LayerBuffers {
   readonly components: readonly ComponentBuffer[];
 
   // non-reactive: routes imperative point edits; render readers track contour/structure cells.
-  readonly #pointContours = new Map<PointId, ContourBuffer>();
+  readonly #pointContours = new EntityMap<PointId, ContourBuffer>("point contour");
 
   readonly structureCell: ComputedSignal<GlyphStructure>;
   readonly snapshotCell: ComputedSignal<Float64Array>;
@@ -321,9 +322,7 @@ export class LayerBuffers {
       for (const [contour, ids] of contours) contour.removePoints(ids);
       for (const pointId of removed) this.#pointContours.delete(pointId);
 
-      const emptyContours = new Set(
-        [...contours.keys()].filter((contour) => contour.pointCount === 0),
-      );
+      const emptyContours = new Set(contours.keys().filter((contour) => contour.pointCount === 0));
       if (emptyContours.size > 0) {
         this.contoursCell.set(this.contours.filter((contour) => !emptyContours.has(contour)));
       }
@@ -460,7 +459,7 @@ export class LayerBuffers {
   }
 
   #contourForPoint(pointId: PointId): ContourBuffer | null {
-    return this.#pointContours.get(pointId) ?? null;
+    return this.#pointContours.get(pointId);
   }
 
   static #snapshot(

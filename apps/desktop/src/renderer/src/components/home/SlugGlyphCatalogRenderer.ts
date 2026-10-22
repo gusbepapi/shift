@@ -1,11 +1,10 @@
+import { EntityMap } from "@shift/types";
 import type { Point2D } from "@shift/geo";
 import type { GlyphId } from "@shift/types";
 import { GlyphPreviewLayout } from "./GlyphPreviewLayout";
 import { GlyphCatalogLayout } from "./glyphCatalogLayout";
 import { GlyphCatalogOverlay } from "./GlyphCatalogOverlay";
-import { CanvasSurface } from "@shift/editor/rendering";
-import { FrameHandler } from "@shift/editor/rendering";
-import { parseCssColor } from "@shift/editor/rendering";
+import { CanvasSurface, FrameHandler, parseCssColor } from "@shift/editor/rendering";
 import { ResidentGlyphLayer } from "@/lib/graphics/backends/ResidentGlyphLayer";
 import type {
   GlyphCatalogControllerFrame,
@@ -38,7 +37,7 @@ export class SlugGlyphCatalogRenderer implements GlyphCatalogRenderer {
   readonly #unobserveAtlas: () => void;
   readonly #invalidGlyphIds = new Set<GlyphId>();
   readonly #replacementPageIndices = new Set<number>();
-  readonly #pageIndexByGlyph = new Map<GlyphId, number>();
+  readonly #pageIndexByGlyph = new EntityMap<GlyphId, number>("glyph page");
 
   #targetFrame: GlyphCatalogControllerFrame | null = null;
   #activeFrame: GlyphCatalogControllerFrame | null = null;
@@ -402,13 +401,16 @@ export class SlugGlyphCatalogRenderer implements GlyphCatalogRenderer {
       glyphIds: this.#fontGlyphIds.slice(start, start + ATLAS_PAGE_ROOT_COUNT),
       pageIndex,
       pageCount: this.#pageCount(),
-      replacementPageIndices: [...this.#replacementPageIndices].sort((left, right) => left - right),
+      replacementPageIndices: this.#replacementPageIndices
+        .values()
+        .toArray()
+        .sort((left, right) => left - right),
       coordinates: this.#targetFrame?.location ?? [],
     };
   }
 
   #pageIndex(glyphId: GlyphId): number | null {
-    return this.#pageIndexByGlyph.get(glyphId) ?? null;
+    return this.#pageIndexByGlyph.get(glyphId);
   }
 
   #pageCount(): number {
