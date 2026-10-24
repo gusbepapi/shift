@@ -12,6 +12,7 @@ use super::{
         imported_layer_count,
     },
     families::InstanceFamilies,
+    format4::load_source,
     report::{discarded_colour_layer_losses, import_report},
 };
 use crate::{
@@ -107,11 +108,11 @@ impl GlyphStream for GlyphsGlyphStream {
 pub(crate) fn stream_font(
     path: &str,
 ) -> FormatBackendResult<(Font, GlyphsGlyphStream, ImportReport)> {
-    let source = Arc::new(
-        GlyphsFont::load(Path::new(path))
-            .map_err(|error| FormatBackendError::Glyphs(error.to_string()))?,
-    );
-    stream_retained(Path::new(path), source)
+    let loaded = load_source(Path::new(path)).map_err(FormatBackendError::Glyphs)?;
+    let (font, stream, mut report) = stream_retained(Path::new(path), Arc::new(loaded.font))?;
+    report.losses.extend(loaded.losses);
+
+    Ok((font, stream, report))
 }
 
 pub(crate) fn stream_retained(

@@ -1,0 +1,516 @@
+{
+.appVersion = "4108";
+.formatVersion = 4;
+axes = (
+{
+name = Color;
+tag = COLR;
+},
+);
+customParameters = (
+{
+name = "Enforce Compatibility Check";
+value = 0;
+},
+);
+date = "2026-10-21 22:31:39 +0000";
+fontMaster = (
+{
+axesValues = (
+2,
+);
+customParameters = (
+{
+name = "Master Color";
+value = (1,1);
+},
+);
+id = "CD49264D-2C91-4050-80F0-077B0065FD94";
+metricValues = (
+{
+over = 16;
+pos = 800;
+},
+{
+over = -16;
+},
+{
+over = -16;
+pos = -200;
+},
+{
+over = 16;
+pos = 700;
+},
+{
+over = 16;
+pos = 500;
+},
+{
+},
+);
+name = Side;
+visible = 1;
+},
+{
+axesValues = (
+1,
+);
+customParameters = (
+{
+name = "Master Color";
+value = (1,0.149,0,1);
+},
+);
+id = "34AED5AA-88F8-4993-89CA-1668215D94B2";
+metricValues = (
+{
+over = 16;
+pos = 800;
+},
+{
+over = -16;
+},
+{
+over = -16;
+pos = -200;
+},
+{
+},
+{
+},
+{
+},
+);
+name = Front;
+userData = {
+GSCornerRadius = 360;
+};
+visible = 1;
+},
+{
+axesValues = (
+3,
+);
+customParameters = (
+{
+name = "Master Color";
+value = (0.582,0.216,1,1);
+},
+);
+id = "A7AD2741-D5DC-41A7-A1D2-455A0F680C7B";
+metricValues = (
+{
+over = 16;
+pos = 800;
+},
+{
+over = -16;
+},
+{
+over = -16;
+pos = -200;
+},
+{
+over = 16;
+pos = 700;
+},
+{
+over = 16;
+pos = 500;
+},
+{
+},
+);
+name = Bottom;
+visible = 1;
+},
+);
+glyphs = (
+{
+glyphname = space;
+lastChange = "2026-10-21 23:21:20 +0000";
+layers = (
+{
+layerId = "34AED5AA-88F8-4993-89CA-1668215D94B2";
+width = 200;
+},
+{
+layerId = "CD49264D-2C91-4050-80F0-077B0065FD94";
+width = 600;
+},
+{
+layerId = "A7AD2741-D5DC-41A7-A1D2-455A0F680C7B";
+width = 600;
+},
+);
+unicode = 32;
+},
+{
+glyphname = balloon;
+lastChange = "2026-10-22 00:28:23 +0000";
+layers = (
+{
+layerId = "34AED5AA-88F8-4993-89CA-1668215D94B2";
+shapes = (
+{
+closed = 1;
+nodes = (
+(690,690,o),
+(810,545,o),
+(810,380,cs),
+(810,215,o),
+(680,95,o),
+(525,65,cs),
+(515,63,o),
+(485,63,o),
+(475,65,cs),
+(320,95,o),
+(190,215,o),
+(190,380,cs),
+(190,545,o),
+(310,690,o),
+(500,690,cs),
+);
+},
+{
+attr = {
+fillColor = (0.545,0.071,0.157,1);
+};
+closed = 1;
+nodes = (
+(545,0,l),
+(455,0,l),
+(500,65,l),
+);
+},
+);
+width = 1000;
+},
+{
+layerId = "CD49264D-2C91-4050-80F0-077B0065FD94";
+shapes = (
+{
+attr = {
+fillColor = (1,1);
+};
+closed = 1;
+nodes = (
+(380,630,o),
+(450,640,o),
+(470,615,c),
+(440,600,o),
+(380,560,o),
+(350,500,cs),
+(330,460,o),
+(300,500,o),
+(330,570,c),
+);
+},
+);
+width = 600;
+},
+{
+layerId = "A7AD2741-D5DC-41A7-A1D2-455A0F680C7B";
+shapes = (
+{
+attr = {
+fillColor = (0.333,1);
+};
+closed = 1;
+nodes = (
+(470,-60,o),
+(530,-100,o),
+(500,-160,c),
+(512,-162,l),
+(546,-100,o),
+(486,-60,o),
+(504,0,c),
+(492,0,l),
+);
+},
+);
+width = 600;
+},
+);
+unicode = 127880;
+},
+{
+glyphname = love;
+lastChange = "2026-10-22 00:30:31 +0000";
+layers = (
+{
+layerId = "34AED5AA-88F8-4993-89CA-1668215D94B2";
+shapes = (
+{
+attr = {
+fillColor = (0.431,0.043,0.161,1);
+};
+closed = 1;
+nodes = (
+(900,380,o),
+(850,160,o),
+(500,-80,c),
+(700,100,o),
+(790,280,o),
+(810,510,c),
+);
+},
+);
+width = 1000;
+},
+{
+layerId = "CD49264D-2C91-4050-80F0-077B0065FD94";
+shapes = (
+{
+attr = {
+fillColor = (1,1);
+};
+closed = 1;
+nodes = (
+(270,520,o),
+(330,550,o),
+(380,545,c),
+(330,520,o),
+(300,480,o),
+(290,420,c),
+(270,420,o),
+(245,440,o),
+(250,470,c),
+);
+},
+);
+width = 600;
+},
+{
+layerId = "A7AD2741-D5DC-41A7-A1D2-455A0F680C7B";
+shapes = (
+{
+closed = 1;
+nodes = (
+(150,160,o),
+(100,380,o),
+(190,510,cs),
+(270,625,o),
+(430,615,o),
+(500,500,c),
+(570,615,o),
+(730,625,o),
+(810,510,cs),
+(900,380,o),
+(850,160,o),
+(500,-80,c),
+);
+},
+);
+width = 600;
+},
+);
+unicode = 128140;
+},
+{
+glyphname = alarmClock;
+lastChange = "2026-10-22 01:12:26 +0000";
+layers = (
+{
+layerId = "34AED5AA-88F8-4993-89CA-1668215D94B2";
+shapes = (
+{
+closed = 1;
+nodes = (
+(740,540,ls),
+(793,540,o),
+(820,513,o),
+(820,460,cs),
+(820,160,ls),
+(820,107,o),
+(793,80,o),
+(740,80,cs),
+(260,80,ls),
+(207,80,o),
+(180,107,o),
+(180,160,cs),
+(180,460,ls),
+(180,513,o),
+(207,540,o),
+(260,540,cs),
+);
+},
+);
+width = 600;
+},
+{
+layerId = "CD49264D-2C91-4050-80F0-077B0065FD94";
+shapes = (
+{
+attr = {
+fillColor = (1,0.969,0.878,1);
+};
+closed = 1;
+nodes = (
+(300,421,o),
+(390,510,o),
+(500,510,cs),
+(611,510,o),
+(700,421,o),
+(700,310,cs),
+(700,200,o),
+(611,110,o),
+(500,110,cs),
+(390,110,o),
+(300,200,o),
+(300,310,cs),
+);
+},
+);
+width = 1000;
+},
+{
+layerId = "A7AD2741-D5DC-41A7-A1D2-455A0F680C7B";
+shapes = (
+{
+attr = {
+fillColor = (0.118,0.227,0.541,1);
+};
+closed = 1;
+nodes = (
+(310,80,l),
+(290,10,l),
+(210,10,l),
+(230,80,l),
+);
+},
+{
+attr = {
+fillColor = (0.118,0.227,0.541,1);
+};
+closed = 1;
+nodes = (
+(690,80,l),
+(710,10,l),
+(790,10,l),
+(770,80,l),
+);
+},
+{
+attr = {
+fillColor = (0.118,0.227,0.541,1);
+};
+closed = 1;
+nodes = (
+(560,580,ls),
+(570,580,o),
+(575,575,o),
+(575,565,cs),
+(575,535,l),
+(425,535,l),
+(425,565,ls),
+(425,575,o),
+(430,580,o),
+(440,580,cs),
+);
+},
+);
+width = 600;
+},
+);
+unicode = 9200;
+},
+);
+instances = (
+{
+axesValues = (
+2,
+);
+id = "DA4C0059-DE46-4E37-B8A7-4638292C9AEC";
+instanceInterpolations = {
+"CD49264D-2C91-4050-80F0-077B0065FD94" = 1;
+};
+properties = (
+{
+key = styleNames;
+values = (
+{
+language = dflt;
+value = Side;
+},
+);
+},
+);
+},
+{
+axesValues = (
+1,
+);
+id = "1C60AAEE-7645-4392-90CB-749EDC337623";
+instanceInterpolations = {
+"34AED5AA-88F8-4993-89CA-1668215D94B2" = 1;
+};
+properties = (
+{
+key = styleNames;
+values = (
+{
+language = dflt;
+value = Front;
+},
+);
+},
+);
+},
+{
+axesValues = (
+3,
+);
+id = "E8E4F3A8-253C-4525-9135-54FA3D081197";
+instanceInterpolations = {
+"A7AD2741-D5DC-41A7-A1D2-455A0F680C7B" = 1;
+};
+properties = (
+{
+key = styleNames;
+values = (
+{
+language = dflt;
+value = Bottom;
+},
+);
+},
+);
+},
+);
+metrics = (
+{
+type = ascender;
+},
+{
+type = baseline;
+},
+{
+type = descender;
+},
+{
+type = "cap height";
+},
+{
+type = "x-height";
+},
+{
+type = "italic angle";
+},
+);
+properties = (
+{
+key = familyNames;
+values = (
+{
+language = dflt;
+value = "Sample Gustavo Layered Colour";
+},
+);
+},
+);
+unitsPerEm = 1000;
+versionMajor = 1;
+versionMinor = 0;
+}

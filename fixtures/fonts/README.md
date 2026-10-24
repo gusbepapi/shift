@@ -99,3 +99,11 @@ decomposed contour reverses there. `wedgenest` places `wedgeflip` and mirrors it
 Bold, so Bold's wedge is mirrored twice and keeps its order. Compilers decompose such glyphs and interpolate the
 placed outlines, so the instances cover component interpolation matching
 export.
+
+## Glyphs4ColorPalettes.glyphs and Glyphs4LayeredColor.glyphs
+
+Saved by Glyphs 4 (`.formatVersion = 4`) from a one-glyph balloon. `Glyphs4ColorPalettes`
+holds a six-entry named colour palette with channels from 0 to 1 and palette layers
+that use it. `Glyphs4LayeredColor` has a `COLR` axis with four masters and instances
+that name themselves through `properties`. They cover the format 4 rewrite that lets
+`glyphs-reader`, which accepts format 3 only, load them.

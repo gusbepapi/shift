@@ -1,0 +1,225 @@
+{
+.appVersion = "4108";
+.formatVersion = 4;
+DisplayStrings = (
+"🎈",
+);
+customParameters = (
+{
+name = "Color Palettes";
+value = {
+names = {
+0 = Red;
+1 = Whitesmoke;
+2 = "Dark Red";
+3 = Purple;
+4 = Black;
+5 = Blue;
+};
+palettes = (
+{
+colors = (
+(1,0.21961,0.23529,1),
+(1,1),
+(0.57875,0.32152,0,1),
+(0.58106,0.12855,0.57453,1),
+(0.12985,1),
+(0.47684,0.50481,1,1),
+);
+},
+);
+};
+},
+);
+date = "2026-10-22 01:15:33 +0000";
+fontMaster = (
+{
+id = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+metricValues = (
+{
+over = 16;
+pos = 800;
+},
+{
+over = -16;
+},
+{
+over = -16;
+pos = -200;
+},
+);
+name = Regular;
+visible = 1;
+},
+);
+glyphs = (
+{
+glyphname = space;
+layers = (
+{
+layerId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+width = 200;
+},
+);
+unicode = 32;
+},
+{
+glyphname = balloon;
+lastChange = "2026-10-22 01:37:58 +0000";
+layers = (
+{
+associatedMasterId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+attr = {
+colorPalette = 1;
+};
+layerId = "BB08FFEA-A1CE-437B-9FEA-75942BFB65BC";
+name = "Oct 21, 26 at 21:37";
+visible = 1;
+width = 600;
+},
+{
+associatedMasterId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+attr = {
+colorPalette = 0;
+};
+layerId = "B9B72366-B39A-40FE-B654-A8052D2321DB";
+name = "Oct 21, 26 at 21:31 Oct 21, 26 at 21:31";
+shapes = (
+{
+closed = 1;
+nodes = (
+(690,690,o),
+(810,545,o),
+(810,380,cs),
+(810,215,o),
+(680,95,o),
+(525,65,cs),
+(515,63,o),
+(485,63,o),
+(475,65,cs),
+(320,95,o),
+(190,215,o),
+(190,380,cs),
+(190,545,o),
+(310,690,o),
+(500,690,cs),
+);
+},
+{
+attr = {
+fillColor = (0.545,0.071,0.157,1);
+};
+closed = 1;
+nodes = (
+(545,0,l),
+(455,0,l),
+(500,65,l),
+);
+},
+);
+visible = 1;
+width = 600;
+},
+{
+associatedMasterId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+attr = {
+colorPalette = 4;
+};
+layerId = "23FA578E-22E8-4D25-A078-CD9FA5AA7B25";
+name = "Oct 21, 26 at 21:31 Oct 21, 26 at 21:31 Oct 21, 26 at 21:31";
+shapes = (
+{
+attr = {
+fillColor = (0.333,1);
+};
+closed = 1;
+nodes = (
+(470,-60,o),
+(530,-100,o),
+(500,-160,c),
+(512,-162,l),
+(546,-100,o),
+(486,-60,o),
+(504,0,c),
+(492,0,l),
+);
+},
+);
+visible = 1;
+width = 600;
+},
+{
+layerId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+name = Regular;
+shapes = (
+{
+attr = {
+fillColor = (1,1);
+};
+closed = 1;
+nodes = (
+(360,637,o),
+(458,636,o),
+(478,611,c),
+(448,596,o),
+(380,553,o),
+(350,493,cs),
+(330,453,o),
+(279,505,o),
+(319,570,cs),
+);
+},
+);
+visible = 1;
+width = 600;
+},
+);
+unicode = 127880;
+},
+{
+glyphname = gemStone;
+layers = (
+{
+layerId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+width = 600;
+},
+);
+unicode = 128142;
+},
+{
+glyphname = alarmClock;
+layers = (
+{
+layerId = "F824858F-9C97-4D0F-84D5-6356D835E6FE";
+width = 600;
+},
+);
+unicode = 9200;
+},
+);
+metrics = (
+{
+type = ascender;
+},
+{
+type = baseline;
+},
+{
+type = descender;
+},
+);
+properties = (
+{
+key = familyNames;
+values = (
+{
+language = dflt;
+value = "Sample Gustavo COLR Colour";
+},
+);
+},
+);
+unitsPerEm = 1000;
+versionMajor = 1;
+versionMinor = 0;
+}

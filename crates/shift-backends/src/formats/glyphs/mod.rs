@@ -1,6 +1,7 @@
 mod color;
 mod conversion;
 mod families;
+mod format4;
 mod import;
 mod reader;
 mod report;

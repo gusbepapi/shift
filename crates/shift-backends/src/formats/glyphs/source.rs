@@ -6,7 +6,7 @@ use glyphs_reader::{Font as ParsedGlyphsFont, Glyph as ParsedGlyph, Layer, Node,
 
 use super::{
     GlyphsAnchorExt, GlyphsFontExt, GlyphsMasterExt, InstanceFamilies, font_header,
-    missing_component_details,
+    format4::load_source, missing_component_details,
 };
 use crate::font_source::geometry::{
     ContourPoint, SourceComponent, SourceContour, SourceGeometry, control_point_kind,
@@ -42,8 +42,9 @@ impl GlyphsFont {
     /// not form a valid directory.
     pub fn open(path: &Path) -> Result<Self, FontReadError> {
         let source = Arc::new(
-            ParsedGlyphsFont::load(path)
-                .map_err(|error| malformed(path, format!("failed to parse source: {error}")))?,
+            load_source(path)
+                .map_err(|error| malformed(path, format!("failed to parse source: {error}")))?
+                .font,
         );
         let interpolation_axes = source
             .axes
