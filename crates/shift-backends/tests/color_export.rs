@@ -366,9 +366,7 @@ fn count_elements(document: &str, name: &str) -> usize {
     let mut count = 0;
     loop {
         match reader.read_event().expect("well-formed SVG") {
-            Event::Start(element) | Event::Empty(element)
-                if element.name().as_ref() == name =>
-            {
+            Event::Start(element) | Event::Empty(element) if element.name().as_ref() == name => {
                 count += 1;
             }
             Event::Eof => return count,

@@ -12,7 +12,7 @@ use super::{
         imported_layer_count,
     },
     families::InstanceFamilies,
-    report::import_report,
+    report::{discarded_colour_layer_losses, import_report},
 };
 use crate::{
     FormatBackendError, FormatBackendResult, ImportReport,
@@ -119,6 +119,7 @@ pub(crate) fn stream_retained(
     source: Arc<GlyphsFont>,
 ) -> FormatBackendResult<(Font, GlyphsGlyphStream, ImportReport)> {
     let mut report = import_report(&source);
+    report.losses.extend(discarded_colour_layer_losses(path));
     let families = InstanceFamilies::read(path, &source);
     report.losses.extend(families.loss());
     let (mut header, source_ids_by_master_id) =
