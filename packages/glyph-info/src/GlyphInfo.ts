@@ -1,4 +1,5 @@
 import MiniSearch from "minisearch";
+import { alphabetical, ascending, comparing, orderBy } from "@shift/types";
 import { isEuropeanLanguageId } from "./europeanLanguages.js";
 import { isConstructedLanguage } from "./languageKinds.js";
 import { DEFAULT_SCRIPTS } from "./types.js";
@@ -9,6 +10,7 @@ import type {
   GlyphCategory,
   GlyphCategoryCatalog,
   GlyphCategorySummary,
+  GlyphSubCategorySummary,
   GlyphCodepointFilter,
   GlyphCategoryOptions,
   GlyphCodepointCategory,
@@ -18,6 +20,7 @@ import type {
   GlyphInfoResources,
   Language,
   LanguageCatalog,
+  LanguageCoverage,
   LanguageGroup,
   LanguageScript,
   SearchResult,
@@ -29,6 +32,14 @@ const DEFAULT_GLYPH_CATEGORY_OPTIONS: Required<GlyphCategoryOptions> = {
   nullSubCategoryKey: "__null_subcategory__",
   nullSubCategoryLabel: "General",
 };
+
+const byLabel = comparing((summary: GlyphSubCategorySummary) => summary.label, alphabetical);
+const byCategory = comparing((summary: GlyphCategorySummary) => summary.category, alphabetical);
+const byScript = comparing((script: LanguageScript) => script.script, alphabetical);
+const byLanguageName = orderBy<LanguageCoverage>(
+  comparing((coverage) => coverage.language.name, alphabetical),
+  comparing((coverage) => coverage.language.id, alphabetical),
+);
 
 interface GlyphSearchHit {
   id: number;
@@ -113,7 +124,7 @@ function toSortedCategorySummaries(
         count: subCategory.count,
       });
     }
-    subCategories.sort((a, b) => a.label.localeCompare(b.label));
+    subCategories.sort(byLabel);
 
     summaries.push({
       category,
@@ -122,7 +133,7 @@ function toSortedCategorySummaries(
     });
   }
 
-  summaries.sort((a, b) => a.category.localeCompare(b.category));
+  summaries.sort(byCategory);
   return summaries;
 }
 
@@ -455,17 +466,8 @@ export class GlyphInfo {
       });
     }
 
-    const sortedScripts = scripts
-      .values()
-      .toArray()
-      .sort((left, right) => left.script.localeCompare(right.script));
-    for (const script of sortedScripts) {
-      script.languages.sort(
-        (left, right) =>
-          left.language.name.localeCompare(right.language.name) ||
-          left.language.id.localeCompare(right.language.id),
-      );
-    }
+    const sortedScripts = scripts.values().toArray().sort(byScript);
+    for (const script of sortedScripts) script.languages.sort(byLanguageName);
 
     const coverageById = new Map(
       sortedScripts.flatMap((script) =>
@@ -488,8 +490,7 @@ export class GlyphInfo {
       },
       coverage: (languageId) => coverageById.get(languageId) ?? null,
       groupCoverage: (groupId) => groupCoverageById.get(groupId) ?? null,
-      required: (languageId) =>
-        [...(requiredById.get(languageId) ?? [])].sort((left, right) => left - right),
+      required: (languageId) => [...(requiredById.get(languageId) ?? [])].sort(ascending),
       scriptsFor: (languageIds) => {
         const tracked = new Set(languageIds);
 

@@ -7,10 +7,11 @@ use napi_derive::napi;
 use shift_backends::shaper_font::{LiveShaper, ShaperFontRequest, ShaperFontState};
 use shift_backends::{
   AxisIndex as SourceAxisIndex, ColorTable, ColorTables, DirectoryGlyph, DirectoryInstance,
-  DirectorySource, ExportFormat, FontDirectory, FontExportRequest, FontExportResult, FontExporter, FontSource, FontView,
-  GlyphIndex, GlyphPointKind as SourceGlyphPointKind, GlyphProjection as SourceGlyphProjection,
-  GlyphShape as SourceGlyphShape, OpenedFont, SourceAtlasDescriptor, SourceGlyphIds,
-  VariationAxisKind, build_binary_atlas_page, font_loader::FontLoader, variable_glyph_inputs,
+  DirectorySource, ExportFormat, FontDirectory, FontExportRequest, FontExportResult, FontExporter,
+  FontSource, FontView, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
+  GlyphProjection as SourceGlyphProjection, GlyphShape as SourceGlyphShape, OpenedFont,
+  SourceAtlasDescriptor, SourceGlyphIds, VariationAxisKind, build_binary_atlas_page,
+  font_loader::FontLoader, variable_glyph_inputs,
 };
 use shift_font::composite::resolved_contours_to_svg_path;
 use shift_font::{
@@ -18,10 +19,10 @@ use shift_font::{
   CreateGlyph, CreateGlyphLayer, CreateKerningGroup, CreateNamedInstance, CreateSource,
   DecomposeComponents, DeleteAxis, DeleteKerningGroup, DeleteNamedInstance, DeleteSource,
   MaterializeGlyphLayer, MoveAnchors, MovePoints, RemoveAnchors, RemoveComponents, RemovePoints,
-  RenameAnchors, RenameKerningGroup, ReverseContour, SetAxisMappings, SetColor, SetComponentAlignment,
-  SetComponentTransforms, SetContourClosed, SetContourStart, SetKerningGroupMember,
-  SetKerningValues, SetLanguages, SetMetricDefinitions, SetPointSmooth, SetXAdvance,
-  TransformLayer, TranslatePoints, UpdateAxis, UpdateFontMetadata, UpdateGlyph,
+  RenameAnchors, RenameKerningGroup, ReverseContour, SetAxisMappings, SetColor,
+  SetComponentAlignment, SetComponentTransforms, SetContourClosed, SetContourStart,
+  SetKerningGroupMember, SetKerningValues, SetLanguages, SetMetricDefinitions, SetPointSmooth,
+  SetXAdvance, TransformLayer, TranslatePoints, UpdateAxis, UpdateFontMetadata, UpdateGlyph,
   UpdateNamedInstance, UpdateSource,
 };
 use shift_font::{
@@ -49,12 +50,13 @@ use shift_wire::bridges::napi::{
   NapiMaterializeGlyphLayerIntent, NapiMoveAnchorsIntent, NapiMovePointsIntent,
   NapiRemoveAnchorsIntent, NapiRemoveComponentsIntent, NapiRemovePointsIntent,
   NapiRenameAnchorsIntent, NapiRenameKerningGroupIntent, NapiReverseContourIntent,
-  NapiSetAxisMappingsIntent, NapiSetComponentAlignmentIntent, NapiSetComponentTransformsIntent,
-  NapiSetContourClosedIntent, NapiSetContourStartIntent, NapiSetKerningGroupMemberIntent,
-  NapiSetColorIntent, NapiSetKerningValuesIntent, NapiSetLanguagesIntent, NapiSetMetricDefinitionsIntent,
-  NapiSetPointSmoothIntent, NapiSetXAdvanceIntent, NapiTransformLayerIntent,
-  NapiTranslatePointsIntent, NapiUpdateAxisIntent, NapiUpdateFontMetadataIntent,
-  NapiUpdateGlyphIntent, NapiUpdateNamedInstanceIntent, NapiUpdateSourceIntent,
+  NapiSetAxisMappingsIntent, NapiSetColorIntent, NapiSetComponentAlignmentIntent,
+  NapiSetComponentTransformsIntent, NapiSetContourClosedIntent, NapiSetContourStartIntent,
+  NapiSetKerningGroupMemberIntent, NapiSetKerningValuesIntent, NapiSetLanguagesIntent,
+  NapiSetMetricDefinitionsIntent, NapiSetPointSmoothIntent, NapiSetXAdvanceIntent,
+  NapiTransformLayerIntent, NapiTranslatePointsIntent, NapiUpdateAxisIntent,
+  NapiUpdateFontMetadataIntent, NapiUpdateGlyphIntent, NapiUpdateNamedInstanceIntent,
+  NapiUpdateSourceIntent,
 };
 use shift_wire::{
   AnchorData, Axis, AxisMapping, AxisMappingBasis, ComponentData, ComponentGlyph,
@@ -3406,11 +3408,10 @@ mod tests {
     NapiDeleteAxisIntent, NapiDeleteNamedInstanceIntent, NapiDeleteSourceIntent,
     NapiGlyphSnapshotRequest, NapiGlyphState, NapiLocation, NapiMoveAnchorsIntent,
     NapiMovePointsIntent, NapiNamedInstance, NapiPointSeed, NapiPointType, NapiRemoveAnchorsIntent,
-    NapiRemovePointsIntent, NapiReverseContourIntent, NapiSetContourClosedIntent,
-    NapiSetColorIntent, NapiSetKerningValuesIntent, NapiSetLanguagesIntent,
-    NapiSetPointSmoothIntent,
-    NapiSetXAdvanceIntent, NapiTransformLayerIntent, NapiTranslatePointsIntent,
-    NapiUpdateNamedInstanceIntent,
+    NapiRemovePointsIntent, NapiReverseContourIntent, NapiSetColorIntent,
+    NapiSetContourClosedIntent, NapiSetKerningValuesIntent, NapiSetLanguagesIntent,
+    NapiSetPointSmoothIntent, NapiSetXAdvanceIntent, NapiTransformLayerIntent,
+    NapiTranslatePointsIntent, NapiUpdateNamedInstanceIntent,
   };
   use std::sync::atomic::{AtomicUsize, Ordering};
 

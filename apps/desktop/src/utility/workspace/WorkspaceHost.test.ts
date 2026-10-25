@@ -11,6 +11,7 @@ import {
   mintContourId,
   mintGlyphId,
   mintLayerId,
+  ascending,
   mintPointId,
   type FontIntent,
   type GlyphId,
@@ -1184,7 +1185,10 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(structure?.contours[0].id).toBe(contourId);
     expect(structure?.contours[0].closed).toBe(true);
     expect(structure?.contours[0].points.map((point) => point.id)).toEqual([p1, p2]);
-    expect(applied.next?.glyphs).toEqual([
+    // Drawing changes no glyph record (its layers and component bases stay the
+    // same), so the echo does not resend the directory.
+    expect(applied.next?.glyphs).toBeUndefined();
+    expect(created.next?.glyphs).toEqual([
       {
         id: glyphId,
         name: "A",
@@ -1333,7 +1337,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       samples.push(performance.now() - start);
     }
 
-    samples.sort((a, b) => a - b);
+    samples.sort(ascending);
     const p50 = samples[49];
     const p99 = samples[98];
     console.info(

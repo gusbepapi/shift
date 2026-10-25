@@ -246,6 +246,7 @@ export class Font {
   readonly #sourcesCell: Signal<Source[]>;
 
   readonly #axesCell: Signal<Axis[]>;
+  readonly #externalAxesCell: Signal<readonly Axis[]>;
   readonly #axisMappingsCell: Signal<AxisMapping[]>;
   readonly #axisMappingBasesCell: Signal<AxisMappingBasis[]>;
   readonly #designspace: Designspace;
@@ -303,6 +304,9 @@ export class Font {
     this.#metadataCell = computed(() => fontCell.value?.metadata ?? {});
     this.#sourcesCell = computed(() => fontCell.value?.sources ?? []);
     this.#axesCell = computed(() => fontCell.value?.axes ?? []);
+    this.#externalAxesCell = computed(() =>
+      this.#axesCell.value.filter((axis) => axis.role === "external"),
+    );
     this.#axisMappingsCell = computed(() => fontCell.value?.axisMappings ?? []);
     this.#axisMappingBasesCell = computed(() => fontCell.value?.axisMappingBases ?? []);
     this.#designspace = new Designspace({
@@ -414,6 +418,17 @@ export class Font {
   /** Reactive committed variation axes for sidebar controls. */
   get axesCell(): Signal<Axis[]> {
     return this.#axesCell;
+  }
+
+  /**
+   * Reactive axes the user sets directly, in font order.
+   *
+   * @remarks
+   * Internal axes take their values from mappings, so instance locations and
+   * axis sliders list only these.
+   */
+  get externalAxesCell(): Signal<readonly Axis[]> {
+    return this.#externalAxesCell;
   }
 
   /** Reactive font-owned independent and cross-axis mappings. */
