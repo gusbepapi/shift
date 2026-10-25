@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Axis, AxisMapping, AxisMappingPoint } from "@shift/types";
-import { mintAxisMappingId } from "@shift/types";
+import { ascending, mintAxisMappingId, removeBy } from "@shift/types";
+import { independentMappingFor, withIndependentMapping } from "@shift/editor/variation";
 import { Button, Tooltip } from "@shift/ui";
 import { message } from "@shared/messages";
 import MinusIcon from "@/assets/general/minus.svg";
@@ -8,6 +9,7 @@ import PlusIcon from "@/assets/general/plus.svg";
 import { useSignalState } from "@shift/editor/signals";
 import { useFont } from "@/workspace/WorkspaceContext";
 import { MappingGraph } from "./MappingGraph";
+import { byInput, byMappingInput } from "./mappingOrder";
 import { SettingsNumberField } from "./SettingsNumberField";
 import { useSettingsForm } from "./useSettingsForm";
 
@@ -18,23 +20,14 @@ interface AxisMappingPanelProps {
 export const AxisMappingPanel = ({ axis }: AxisMappingPanelProps) => {
   const font = useFont();
   const mappings = useSignalState(font.axisMappingsCell);
-  const stored = independentMappingForAxis(mappings, axis);
+  const stored = independentMappingFor(mappings, axis);
   const [fallback] = useState(() => identityMapping(axis));
   const form = useSettingsForm<AxisMapping>({
     canonical: stored ?? fallback,
     errorMessage: message("settings.mappingSaveFailed"),
     save: async (nextMapping) => {
-      const current = font.getAxisMappings();
-      const index = current.findIndex(
-        (mapping) =>
-          mapping.id === nextMapping.id || independentMappingForAxis([mapping], axis) !== null,
-      );
-      const next = [...current];
-      if (index === -1) next.push(nextMapping);
-      else next[index] = nextMapping;
-
-      await font.setAxisMappings(next);
-      return independentMappingForAxis(font.getAxisMappings(), axis) ?? nextMapping;
+      await font.setAxisMappings(withIndependentMapping(font.getAxisMappings(), axis, nextMapping));
+      return independentMappingFor(font.getAxisMappings(), axis) ?? nextMapping;
     },
   });
   const draft = form.draft;
@@ -65,9 +58,11 @@ export const AxisMappingPanel = ({ axis }: AxisMappingPanelProps) => {
       return;
     }
 
-    const next = font
-      .getAxisMappings()
-      .filter((mapping) => mapping.id !== form.form.getValues().id);
+    const next = removeBy(
+      font.getAxisMappings(),
+      form.form.getValues().id,
+      (mapping) => mapping.id,
+    );
     try {
       await font.setAxisMappings(next);
       form.form.reset(fallback);
@@ -169,9 +164,7 @@ export const AxisMappingPanel = ({ axis }: AxisMappingPanelProps) => {
 
               return {
                 ...current,
-                points: [...current.points, point].sort(
-                  (left, right) => mappingInput(left, axis) - mappingInput(right, axis),
-                ),
+                points: [...current.points, point].sort(byMappingInput(axis)),
               };
             });
           }}
@@ -206,28 +199,13 @@ const MappingValueCell = ({ label, value, onChange, onCommit }: MappingValueCell
   </td>
 );
 
-function independentMappingForAxis(
-  mappings: readonly AxisMapping[],
-  axis: Axis,
-): AxisMapping | null {
-  return (
-    mappings.find(
-      (mapping) =>
-        mapping.inputs.length === 1 &&
-        mapping.outputs.length === 1 &&
-        mapping.inputs[0] === axis.id &&
-        mapping.outputs[0] === axis.id,
-    ) ?? null
-  );
-}
-
 function identityMapping(axis: Axis): AxisMapping {
   const values = axis.values ?? [
     axis.minimum ?? axis.default,
     axis.default,
     axis.maximum ?? axis.default,
   ];
-  const unique = [...new Set(values)].sort((left, right) => left - right);
+  const unique = [...new Set(values)].sort(ascending);
   return {
     id: mintAxisMappingId(),
     name: `${axis.name} mapping`,
@@ -254,7 +232,7 @@ function nextMappingPoint(axis: Axis, mapping: AxisMapping): AxisMappingPoint | 
       (point): point is { input: number; output: number } =>
         point.input !== undefined && point.output !== undefined,
     )
-    .sort((left, right) => left.input - right.input);
+    .sort(byInput);
   const inputs = new Set(coordinates.map(({ input }) => input));
 
   if (axis.axisType === "discrete") {
@@ -273,7 +251,7 @@ function nextMappingPoint(axis: Axis, mapping: AxisMapping): AxisMappingPoint | 
 
   const ordered = [...inputs]
     .filter((value) => minimum <= value && value <= maximum)
-    .sort((left, right) => left - right);
+    .sort(ascending);
   let largestGap = 0;
   let input: number | null = null;
 
@@ -312,8 +290,4 @@ function interpolateMapping(
   }
 
   return input;
-}
-
-function mappingInput(point: AxisMappingPoint, axis: Axis): number {
-  return point.input.values[axis.id] ?? axis.default;
 }

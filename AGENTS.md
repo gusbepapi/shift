@@ -17,7 +17,7 @@
 ## Agent Skills
 
 - `.agents/skills/` is the canonical source for repository skills. Pi discovers this standard location automatically.
-- Load the matching skill before acting: `commit` for commits, `pr` for pull requests, `issue` for issues, `writing-tests` for test changes or reviews, `writing-e2e-tests` for desktop Playwright specs, fixtures, and visual goldens, `ui` for interface and styling work, `signals` for reactive code (`signal`, `computed`, `effect`, model and render state), `jsdoc` for JSDoc, `rust` for Rust code (error handling, lookups, checked arithmetic), and `rustdoc` for Rust documentation.
+- Load the matching skill before acting: `commit` for commits, `pr` for pull requests, `issue` for issues, `writing-tests` for test changes or reviews, `writing-e2e-tests` for desktop Playwright specs, fixtures, and visual goldens, `ui` for interface and styling work, `signals` for reactive code (`signal`, `computed`, `effect`, model and render state), `jsdoc` for JSDoc, `typescript` for TypeScript domain types, lookups, collections and extensible kinds, `rust` for Rust code (error handling, lookups, checked arithmetic), and `rustdoc` for Rust documentation.
 - `.claude/skills/` and `.codex/skills/` are generated client adapters. Never edit shared skills there directly.
 - After changing a canonical skill, run `pnpm agent-skills:sync`. CI runs `pnpm agent-skills:check` to prevent adapter drift.
 
@@ -112,7 +112,7 @@ Use these root commands instead of invoking a package's Vitest script directly. 
 
 - `pnpm build:native` - Build Rust native modules (the NAPI addon and the WebAssembly module)
 - `pnpm build:native:debug` - Build native modules in debug mode
-- `pnpm build:wasm` - Build the editor's WebAssembly module (`crates/shift-wasm`) into `packages/wasm/src/generated/` (gitignored). `build:native` and the turbo typecheck, test, and desktop build tasks build it first; see `crates/shift-wasm/docs/DOCS.md`
+- `pnpm build:wasm` - Build the editor's WebAssembly module (`crates/shift-wasm`) into `packages/wasm/src/generated/` (gitignored). `build:native` and the turbo test and desktop build tasks build it first, and typecheck builds only its declarations (`@shift/wasm#types`); see `crates/shift-wasm/docs/DOCS.md`
 - `pnpm package` - Package the application
 - `pnpm make` - Build and create distribution
 
