@@ -1,11 +1,23 @@
+import { ascending } from "@shift/types";
+
 import { codepointFromGlyphName, type GlyphNameResolver } from "./customGroups.js";
 import type { LanguageGroup } from "./types.js";
+
+/** One glyph of a row, with the code points the sidebar lists for it. */
+export interface GlyphsSidebarInfo {
+  name: string | null;
+  unicode: string | null;
+  unicodes: readonly string[];
+}
 
 /** One row of the dump that `DumpLanguagesSidebar.py` writes from Glyphs' Languages sidebar. */
 export interface GlyphsSidebarItem {
   name: string | null;
-  infos?: readonly { name: string | null; unicode: string | null; unicodes: readonly string[] }[];
+  // oxlint-disable-next-line shift/no-optional-collection-field -- the Glyphs dump omits a row's empty lists
+  infos?: readonly GlyphsSidebarInfo[];
+  // oxlint-disable-next-line shift/no-optional-collection-field -- the Glyphs dump omits a row's empty lists
   coverage?: readonly string[];
+  // oxlint-disable-next-line shift/no-optional-collection-field -- the Glyphs dump omits a row's empty lists
   subItems?: readonly GlyphsSidebarItem[];
 }
 
@@ -115,7 +127,7 @@ export function groupsFromGlyphsDump(
       name: entry.name,
       script: entry.script,
       section: entry.section,
-      baseCodepoints: [...new Set(entry.codepoints)].sort((left, right) => left - right),
+      baseCodepoints: [...new Set(entry.codepoints)].sort(ascending),
       basis: "exact",
     });
   }
@@ -123,13 +135,19 @@ export function groupsFromGlyphsDump(
   return { groups, problems };
 }
 
+function hexValuesOf(info: GlyphsSidebarInfo): readonly string[] {
+  if (info.unicodes.length > 0) return info.unicodes;
+  if (info.unicode) return [info.unicode];
+
+  return [];
+}
+
 function codepointsOf(item: GlyphsSidebarItem, resolveGlyphName: GlyphNameResolver): number[] {
   const codepoints: number[] = [];
 
   if (item.infos) {
     for (const info of item.infos) {
-      const hexValues =
-        info.unicodes.length > 0 ? info.unicodes : info.unicode ? [info.unicode] : [];
+      const hexValues = hexValuesOf(info);
       if (hexValues.length === 0 && info.name) {
         const resolved = codepointFromGlyphName(info.name) ?? resolveGlyphName(info.name);
         if (resolved !== null) codepoints.push(resolved);

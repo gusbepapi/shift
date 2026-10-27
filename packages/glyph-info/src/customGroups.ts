@@ -1,3 +1,5 @@
+import { ascending } from "@shift/types";
+
 import type { CustomCategory, LanguageGroup } from "./types.js";
 
 /** Largest Unicode scalar value. */
@@ -148,7 +150,7 @@ function pushCategory(
     target = { name: category, subCategories: [] };
     result.categories.push(target);
   }
-  target.subCategories.push({ name, codepoints: [...codepoints].sort((a, b) => a - b) });
+  target.subCategories.push({ name, codepoints: [...codepoints].sort(ascending) });
 }
 
 /**
@@ -331,7 +333,7 @@ function pushGroup(
     name,
     script,
     section,
-    baseCodepoints: [...codepoints].sort((left, right) => left - right),
+    baseCodepoints: [...codepoints].sort(ascending),
     basis: "custom",
   });
 }
@@ -411,8 +413,12 @@ export function parseCodepointPredicate(predicate: string): CodepointRange[] {
   return ranges;
 }
 
+/** Earliest range first. */
+const byRangeStart = (left: CodepointRange, right: CodepointRange): number =>
+  ascending(left[0], right[0]);
+
 function unionRanges(left: CodepointRange[], right: CodepointRange[]): CodepointRange[] {
-  const sorted = [...left, ...right].sort((a, b) => a[0] - b[0]);
+  const sorted = [...left, ...right].sort(byRangeStart);
   const merged: [number, number][] = [];
   for (const [from, to] of sorted) {
     const last = merged[merged.length - 1];
@@ -578,7 +584,7 @@ class PlistReader {
     const start = this.#position;
     while (
       this.#position < this.#text.length &&
-      /[A-Za-z0-9_.$/:@+\-]/.test(this.#text[this.#position] ?? "")
+      /[A-Za-z0-9_.$/:@+-]/.test(this.#text[this.#position] ?? "")
     ) {
       this.#position += 1;
     }

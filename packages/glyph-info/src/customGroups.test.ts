@@ -58,7 +58,7 @@ describe("parseCustomGroups", () => {
     expect(problems).toEqual(
       expect.arrayContaining([
         'Test Bad: bad codepoint "nonsense"',
-        'Test Reversed: bad range [\"U+0042\",\"U+0041\"]',
+        'Test Reversed: bad range ["U+0042","U+0041"]',
       ]),
     );
   });
