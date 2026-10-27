@@ -6,6 +6,7 @@ import { serveChannel, type ChannelServer, type Transport } from "../../shared/w
 import type {
   FontSourceAtlasPageRequest,
   FontSourceSession,
+  FontStoreLocation,
   ShellCallMap,
   ShellEventMap,
   SlugAtlasOrigin,
@@ -90,6 +91,11 @@ export class WorkspaceHost {
   #preparedSourcePages = new Map<number, number>();
   #atlasBuilds = new Map<string, CachedAtlasBuild>();
   #operations: Promise<void> = Promise.resolve();
+  /**
+   * Deletions of the stores Save As moved off, held until the window's layer
+   * reader follows, since Windows will not delete a file it holds open.
+   */
+  #retiredStores: (() => void)[] = [];
 
   constructor(options: WorkspaceHostOptions) {
     this.#bridge = createBridge();
@@ -142,6 +148,7 @@ export class WorkspaceHost {
             ? this.#snapshot(this.#state.allocation.workspaceId)
             : null,
         ),
+      "workspace.storeLocation": () => this.#serialize(() => this.#storeLocation()),
       "source.snapshot": () =>
         this.#serialize(() => (this.#state.kind === "preview" ? this.#state.preview : null)),
       "source.glyph": ({ glyphId }) =>
@@ -157,35 +164,17 @@ export class WorkspaceHost {
       "source.atlasWeights": ({ coordinates }) =>
         this.#serialize(() => this.#bridge.sourceAtlasWeights(coordinates)),
       "document.state": () => this.#serialize(() => this.#documentState()),
-      "workspace.apply": ({ intents, label }) =>
+      "workspace.persist": ({ changeSet, saveState }) =>
         this.#serialize(() => {
-          const applied = this.#bridge.apply(intents, label);
+          const applied = this.#bridge.persist(changeSet, saveState);
           this.#atlasCacheRevision = null;
           return { applied, documentState: this.#emitDocumentChanged() };
         }),
-      "workspace.undo": () =>
-        this.#serialize(() => {
-          const applied = this.#bridge.undo();
-          if (applied) this.#atlasCacheRevision = null;
-          const documentState = applied ? this.#emitDocumentChanged() : this.#documentState();
-          return { applied, documentState };
-        }),
-      "workspace.redo": () =>
-        this.#serialize(() => {
-          const applied = this.#bridge.redo();
-          if (applied) this.#atlasCacheRevision = null;
-          const documentState = applied ? this.#emitDocumentChanged() : this.#documentState();
-          return { applied, documentState };
-        }),
-      "workspace.discardRedo": () =>
-        this.#serialize(() => {
-          this.#bridge.discardRedo();
-          return null;
-        }),
       // Save rides the edit lane: the same #serialize queue orders it behind
-      // every committed apply/undo/redo, so it never writes stale state.
+      // every persisted edit, so it never writes stale state.
       "workspace.save": () => this.#serialize(() => this.#save()),
       "workspace.saveAs": ({ path }) => this.#serialize(() => this.#saveAs(path)),
+      "workspace.releaseRetiredStores": () => this.#serialize(() => this.#releaseRetiredStores()),
       "workspace.export": ({ path, format }) => this.#export(path, format),
       "workspace.glyphSnapshots": ({ requests }) =>
         this.#serialize(() => this.#bridge.getGlyphSnapshots(requests) as GlyphSnapshot[]),
@@ -757,12 +746,28 @@ export class WorkspaceHost {
         this.#documents.removeDocumentBinding(previous.binding.address);
       }
       if (previous.allocation.recoveryPath !== recoveryPath) {
-        this.#documents.deleteRecovery(previous.allocation.recoveryPath);
+        const previousRecovery = previous.allocation.recoveryPath;
+        this.#retiredStores.push(() => this.#documents.deleteRecovery(previousRecovery));
       }
     }
-    this.#documents.deleteWorkingStore(workspaceId);
+    this.#retiredStores.push(() => this.#documents.deleteWorkingStore(workspaceId));
 
     return this.#emitDocumentChanged();
+  }
+
+  #releaseRetiredStores(): null {
+    const retired = this.#retiredStores;
+    this.#retiredStores = [];
+    for (const release of retired) {
+      try {
+        release();
+      } catch (error) {
+        // Still held open: try again on the next release, or with the workspace on close.
+        console.warn("failed to delete a retired store", error);
+        this.#retiredStores.push(release);
+      }
+    }
+    return null;
   }
 
   async #export(outputPath: string, format: FontExportFormat): Promise<WorkspaceExportResult> {
@@ -824,6 +829,7 @@ export class WorkspaceHost {
       this.#documents.removeDocumentBinding(workspace.binding.address);
     }
     this.#documents.deleteWorkspace(workspaceId);
+    this.#retiredStores = [];
     this.#shell?.emit("document.changed", null);
     this.#sync?.emit("document.changed", null);
 
@@ -867,6 +873,18 @@ export class WorkspaceHost {
       () => undefined,
     );
     return run;
+  }
+
+  #storeLocation(): FontStoreLocation | null {
+    if (this.#state.kind !== "document") return null;
+    const { allocation, binding } = this.#state;
+    return binding.kind === "bound"
+      ? {
+          kind: "document",
+          documentPath: binding.address.canonicalPath,
+          recoveryPath: allocation.recoveryPath,
+        }
+      : { kind: "working", storePath: allocation.storePath };
   }
 
   #currentAtlasCacheRevision(): string {

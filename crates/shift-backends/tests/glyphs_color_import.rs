@@ -1,6 +1,7 @@
 //! Palettes and colour glyphs of `.glyphs` files import into Shift's colour data.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use shift_backends::{ExportFormat, FontExporter, ImportLossKind, font_loader::FontLoader};
 use shift_font::{
@@ -8,14 +9,18 @@ use shift_font::{
     GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba, test_support::sample_variable_font,
 };
 
+/// Numbers the scratch files, because tests of one process run in parallel and may share a name.
+static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
+
 /// A scratch file that is removed when it goes out of scope.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str, text: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "shift-colour-import-{}-{name}.glyphs",
-            std::process::id()
+            "shift-colour-import-{}-{}-{name}.glyphs",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::write(&path, text).unwrap();
         Self(path)
