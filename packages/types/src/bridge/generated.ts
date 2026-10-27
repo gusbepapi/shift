@@ -304,7 +304,7 @@ export interface FontExportRequest {
    * Tables that carry colour glyphs: any of `colr`, `svg` and `sbix`. Every
    * table is written when omitted, and an empty list writes none.
    */
-  colorTables?: Array<string> | undefined | null
+  colorTables?: Array<string>
 }
 
 export interface FontExportResult {
@@ -1354,6 +1354,15 @@ export interface SetAxisMappingsIntent {
   mappings: Array<AxisMapping>
 }
 
+/** Replaces the font's palettes and colour glyphs as one undoable edit. */
+export interface SetColorIntent {
+  /**
+   * The complete colour data as JSON, because the paint graph is recursive
+   * and has no flat wire struct. It has the shape `get_color_data` returns.
+   */
+  colorData: string
+}
+
 /**
  * Records whether components are placed by their anchors; anchoring one also
  * places it on its anchors now.
@@ -1388,15 +1397,6 @@ export interface SetKerningGroupMemberIntent {
   position: KerningPosition
   glyphId: GlyphId
   groupId?: KerningGroupId
-}
-
-/** Replaces the font's palettes and colour glyphs as one undoable edit. */
-export interface SetColorIntent {
-  /**
-   * The complete colour data as JSON, because the paint graph is recursive
-   * and has no flat wire struct. It has the shape `get_color_data` returns.
-   */
-  colorData: string
 }
 
 /** Sets or removes kerning pair values at sources as one undoable edit. */
