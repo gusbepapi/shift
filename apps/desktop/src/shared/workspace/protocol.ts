@@ -13,8 +13,6 @@ import type {
   LayerMatch,
   LayerRead,
   Location,
-  ParagraphRequest,
-  ShapedRun,
   ShaperFont,
   SlugAtlas,
   Specimen,
@@ -213,6 +211,11 @@ export type SyncCallMap = {
   "workspace.snapshot": { request: void; response: WorkspaceSnapshot | null };
   /** The open workspace's store, for the window's read-only layer reader; `null` for a preview. */
   "workspace.storeLocation": { request: void; response: FontStoreLocation | null };
+  /**
+   * The open font's directory, every layer a placeholder, as named
+   * MessagePack: what the window's engine opens with. `null` for a preview.
+   */
+  "workspace.directory": { request: void; response: Uint8Array | null };
   "source.snapshot": { request: void; response: FontSourceSnapshot | null };
   "source.glyph": {
     request: { glyphId: GlyphId };
@@ -330,11 +333,6 @@ export type SyncCallMap = {
   };
   /** Evaluates font-owned independent and cross-axis mappings in Rust. */
   "workspace.mapLocation": { request: Location; response: Location };
-  /** Shapes paragraphs with the font's feature code, each split into runs of one script. */
-  "workspace.shapeParagraphs": {
-    request: { paragraphs: ParagraphRequest[] };
-    response: ShapedRun[][];
-  };
   /**
    * Compiles the font's feature code into a shaper font for the editor to
    * shape with; null while the editor already has `knownRevision`.

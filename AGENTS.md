@@ -96,6 +96,8 @@ This project uses **pnpm** (v11) as its package manager.
 - `cargo clippy` - Lint Rust code (run after any Rust changes)
 - `cargo deny check` - Check Rust dependency licenses, advisories and sources against `deny.toml` (run after changing dependencies)
 - `cargo machete` - Find Rust dependencies no code uses
+- `pnpm scan:rust [--since <rev>]` - Report Rust structure worth a look (free functions that read as methods, method names several types share, long chains); report-only, never fails
+- `pnpm scan:ts [--since <rev>]` - Report TypeScript that computes what a same-named Rust function does, free functions that read as methods, and wrapper-named classes; report-only
 
 Use repository scripts when a matching command exists; they encode the intended tool, scope, and version. Run all TypeScript/JavaScript formatting through `pnpm format`, `pnpm format:check`, or `pnpm format:files`; never invoke Oxfmt directly and never use Prettier in this repository.
 
@@ -147,7 +149,7 @@ Use these root commands instead of invoking a package's Vitest script directly. 
 - NEVER duplicate package code in app layer
 - If you need functionality from a package, import it; don't copy it
 - Do not synthesize fake point IDs for geometry-only operations
-- Canonical glyph geometry APIs: `parseContourSegments`, `deriveGlyphTightBounds`, `deriveGlyphXBounds`
+- Canonical glyph geometry APIs: `segmentContour` (segments and bounds from shift-font through `@shift/wasm`), `Contour.bounds`, `GlyphGeometry.bounds`
 
 ### Import Conventions
 
