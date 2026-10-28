@@ -136,9 +136,9 @@ describe("SvgImporter", () => {
     });
   });
 
-  describe("orientation", () => {
-    it("mirrors y so that artwork stands upright above the viewBox bottom", () => {
-      const result = requireImport(
+  describe("orientation", async () => {
+    it("mirrors y so that artwork stands upright above the viewBox bottom", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 200"><path d="M0,0 L100,0 L100,50 Z"/></svg>',
       );
       const ys = requireValue(result.contours[0]).points.map((point) => point.y);
@@ -147,8 +147,8 @@ describe("SvgImporter", () => {
       expect(ys).toEqual([200, 200, 150]);
     });
 
-    it("mirrors about the lowest point when there is no viewBox", () => {
-      const result = requireImport("M0,0 L100,0 L100,50 Z");
+    it("mirrors about the lowest point when there is no viewBox", async () => {
+      const result = await requireImport("M0,0 L100,0 L100,50 Z");
       const ys = requireValue(result.contours[0]).points.map((point) => point.y);
 
       expect(ys).toEqual([50, 50, 0]);
@@ -168,14 +168,14 @@ describe("SvgImporter", () => {
 <circle class="st0" cx="75" cy="75" r="10"/>
 </svg>`;
 
-    it("reads the shapes although an id attribute precedes any d attribute", () => {
-      const result = requireImport(illustrator);
+    it("reads the shapes although an id attribute precedes any d attribute", async () => {
+      const result = await requireImport(illustrator);
 
       expect(result.contours).toHaveLength(3);
     });
 
-    it("converts polygons, rectangles and circles to contours", () => {
-      const [triangle, rectangle, circle] = requireImport(illustrator).contours;
+    it("converts polygons, rectangles and circles to contours", async () => {
+      const [triangle, rectangle, circle] = (await requireImport(illustrator)).contours;
 
       expect(requireValue(triangle).closed).toBe(true);
       expect(requireValue(triangle).points).toHaveLength(3);
@@ -185,16 +185,16 @@ describe("SvgImporter", () => {
       ).toHaveLength(8);
     });
 
-    it("ignores definitions, styles and comments", () => {
-      const result = requireImport(
+    it("ignores definitions, styles and comments", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 10 10"><defs><path d="M0,0 L9,9"/></defs><path d="M1,1 L2,2 L3,1 Z"/></svg>',
       );
 
       expect(result.contours).toHaveLength(1);
     });
 
-    it("applies the transform on an element", () => {
-      const result = requireImport(
+    it("applies the transform on an element", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path transform="translate(10 20)" d="M0,0 L10,0 L10,10 Z"/></svg>',
       );
       const points = requireValue(result.contours[0]).points;
@@ -204,14 +204,14 @@ describe("SvgImporter", () => {
   });
 
   describe("closing point", () => {
-    it("drops the point that repeats the start of a closed path", () => {
-      const result = requireImport("M0,0 L100,0 L100,100 L0,0 Z");
+    it("drops the point that repeats the start of a closed path", async () => {
+      const result = await requireImport("M0,0 L100,0 L100,100 L0,0 Z");
 
       expect(requireValue(result.contours[0]).points).toHaveLength(3);
     });
 
-    it("keeps off-curve points that curve back to the start", () => {
-      const result = requireImport("M0,0 L100,0 C100,50 50,100 0,0 Z");
+    it("keeps off-curve points that curve back to the start", async () => {
+      const result = await requireImport("M0,0 L100,0 C100,50 50,100 0,0 Z");
       const points = requireValue(result.contours[0]).points;
 
       expect(points).toHaveLength(4);
@@ -220,24 +220,24 @@ describe("SvgImporter", () => {
   });
 
   describe("compact numbers", () => {
-    it("splits numbers that are joined by a sign", () => {
-      const result = requireImport("M10-20c-1.5-2-3-4.5-4-6.25z");
+    it("splits numbers that are joined by a sign", async () => {
+      const result = await requireImport("M10-20c-1.5-2-3-4.5-4-6.25z");
       const points = requireValue(result.contours[0]).points;
 
       expect(points).toHaveLength(4);
       expect(requireValue(points[1])).toMatchObject({ x: 8.5, pointType: "offCurve" });
     });
 
-    it("splits numbers that are joined by a second decimal point", () => {
-      const result = requireImport("M.5.5L1.5.5L1.5 2z");
+    it("splits numbers that are joined by a second decimal point", async () => {
+      const result = await requireImport("M.5.5L1.5.5L1.5 2z");
       const points = requireValue(result.contours[0]).points;
 
       expect(points).toHaveLength(3);
       expect(requireValue(points[1])).toMatchObject({ x: 1.5 });
     });
 
-    it("reads arc flags written without separators", () => {
-      const result = requireImport("M0,0a5 5 0 011 2l3 0z");
+    it("reads arc flags written without separators", async () => {
+      const result = await requireImport("M0,0a5 5 0 011 2l3 0z");
       const points = requireValue(result.contours[0]).points;
 
       // The arc becomes one cubic of two handles and an end point, then the line adds a point
@@ -245,8 +245,8 @@ describe("SvgImporter", () => {
       expect(requireValue(points[3])).toMatchObject({ x: 1, pointType: "onCurve" });
     });
 
-    it("reflects the control point of a smooth curve only after a curve", () => {
-      const result = requireImport("M0,0 L10,0 S20,10 30,0");
+    it("reflects the control point of a smooth curve only after a curve", async () => {
+      const result = await requireImport("M0,0 L10,0 S20,10 30,0");
       const points = requireValue(result.contours[0]).points;
 
       // The first control point of the S segment is the current point, since L precedes it
@@ -261,8 +261,8 @@ describe("SvgImporter", () => {
       maxY: Math.max(...points.map((point) => point.y)),
     });
 
-    it("draws a circle written as two arcs the way Inkscape does", () => {
-      const result = requireImport(
+    it("draws a circle written as two arcs the way Inkscape does", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path d="m 90,50 a 40,40 0 0 1 -40,40 40,40 0 0 1 -40,-40 40,40 0 0 1 40,-40 40,40 0 0 1 40,40 z"/></svg>',
       );
       const contour = requireValue(result.contours[0]);
@@ -277,8 +277,8 @@ describe("SvgImporter", () => {
       expect(bounds.maxY).toBeCloseTo(90, 3);
     });
 
-    it("keeps every curve point at the radius from the centre", () => {
-      const result = requireImport(
+    it("keeps every curve point at the radius from the centre", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path d="M 90,50 A 40,40 0 1 1 10,50 A 40,40 0 1 1 90,50 Z"/></svg>',
       );
       const contour = requireValue(result.contours[0]);
@@ -288,8 +288,8 @@ describe("SvgImporter", () => {
       }
     });
 
-    it("splits a half turn into two quarter turns", () => {
-      const result = requireImport(
+    it("splits a half turn into two quarter turns", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path d="M 10,50 A 40,40 0 0 1 90,50"/></svg>',
       );
       const contour = requireValue(result.contours[0]);
@@ -298,8 +298,8 @@ describe("SvgImporter", () => {
       expect(contour.points).toHaveLength(7);
     });
 
-    it("grows radii that are too small for the end points", () => {
-      const result = requireImport(
+    it("grows radii that are too small for the end points", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path d="M 10,50 A 1,1 0 0 1 90,50"/></svg>',
       );
       const contour = requireValue(result.contours[0]);
@@ -309,8 +309,8 @@ describe("SvgImporter", () => {
       expect(extent(contour.points).maxY - extent(contour.points).minY).toBeGreaterThan(30);
     });
 
-    it("reads a zero radius as a straight line", () => {
-      const result = requireImport(
+    it("reads a zero radius as a straight line", async () => {
+      const result = await requireImport(
         '<svg viewBox="0 0 100 100"><path d="M 10,50 A 0,0 0 0 1 90,50"/></svg>',
       );
       const contour = requireValue(result.contours[0]);
