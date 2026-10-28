@@ -12,7 +12,7 @@ To give agents this skill without the app's MCP server, run `shift-cli skill ins
 
 ```sh
 shift-cli inspect Family.shift                     # summary of a .shift document
-shift-cli inspect --view glyphs Family.shift        # also: axes, mappings, instances, sources, layers, kerning
+shift-cli inspect --view glyphs Family.shift        # also: axes, mappings, instances, color, sources, layers, kerning
 shift-cli inspect --json Family.shift               # complete report for scripts
 shift-cli glyph inspect Family.ufo A --json         # one glyph from .shift, UFO, Designspace, Glyphs, TTF, or OTF
 shift-cli glyph inspect Family.designspace A --location wght=700 --view variation
@@ -46,6 +46,8 @@ shift-cli instance add Lab.shift --name Book --location wght=450
 shift-cli kerning set Lab.shift @A @V -60 --source Bold
 shift-cli kerning set Lab.shift --input kerning.json --dry-run --json
 shift-cli kerning group create Lab.shift O O Q --position first
+shift-cli color palette set Lab.shift --palette "Light:#FFD700,#C0392B"
+shift-cli color glyph set Lab.shift A.color --layer A.base=palette:0 --layer A.shadow=palette:1@0.5
 ```
 
 - **Shift assigns all identities.** Read the IDs a command returns and use them as selectors; never invent IDs.
@@ -55,6 +57,7 @@ shift-cli kerning group create Lab.shift O O Q --position first
 - **`glyph export` copies real glyphs**: it reads named glyphs from any source (`.shift`, UFO, Designspace, Glyphs, TTF, OTF) as the batch `glyph set` reads, adding every glyph their components use. `--source NAME` or `--source all` picks masters (default: the default source). Small exported files are good scratch fixtures: edit them, then `glyph set` them into a document.
 - Instances are presets, not masters: instance commands never create sources or drawings.
 - **Kerning sides**: `first` is the left glyph, and its first-position group kerns its right edge; `second` is the right glyph. A side is a glyph name or `@GROUP` for a group at that position. Values are per master and default to the default source; set every master you mean to change.
+- **Colour glyphs** paint a base glyph with layers of other glyphs, bottom to top. `color palette set` replaces every palette (all need the same number of colours); `color glyph set GLYPH --layer GLYPH=FILL` replaces one base glyph's layers, where `FILL` is `palette:INDEX[@ALPHA]`, `foreground[@ALPHA]`, `linear:X0,Y0,X1,Y1:STOPS` or `radial:X0,Y0,R0,X1,Y1,R1:STOPS` (`STOPS` is `OFFSET=COLOUR` joined by `/`); `color glyph remove` leaves the outline and drops the colour. `inspect --view color` reads it back.
 - **`kerning set --input`** applies `groups` (created if missing; `members` replaces membership) and then `pairs` (`value: null` removes) atomically, so pairs can name groups the batch creates.
 
 ## Check and proof
@@ -76,6 +79,14 @@ shift-cli proof Lab.shift --output grid.png --grid
 
 ```sh
 shift-cli compile Family.shift --output Family.ttf
+shift-cli compile Family.shift --output Family.woff2
+shift-cli compile Family.shift --output Family.glyphs
+shift-cli compile Family.shift --output Emoji.ttf --color-tables colr,svg
 ```
 
 Compile after authoring to confirm the font builds. A compile error usually names the glyph and source; incompatible masters are the most common cause in variable fonts (see [variable-fonts.md](variable-fonts.md)).
+
+- `--format ttf|otf|woff|woff2|glyphs` picks the output; when omitted, the output extension decides. The extension must match the format, so an unknown one such as `.xyz` is refused.
+- `otf` writes a static CFF font and refuses a variable font. `woff` and `woff2` wrap the compiled TrueType binary. `glyphs` exports a Glyphs 3 source instead of a font, keeping colour palettes and colour glyphs.
+- `--color-tables colr,svg,sbix` picks the tables that carry colour glyphs; all three are written by default, `sbix` is by far the largest, and `none` writes no colour data. Choose `colr` alone for a compact modern font.
+

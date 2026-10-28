@@ -2,7 +2,7 @@
 
 Command-line inspection, authoring, and compilation for canonical SQLite `.shift` documents.
 
-The crate builds the `shift-cli` binary. `inspect` opens a document, summarizes the font model, and can emit stable JSON for scripts and CI. Resource commands apply semantic Shift intents through a temporary recovery overlay and save only after the complete change validates. `compile` sends the canonical Shift model directly through fontir/fontc to produce a TrueType font.
+The crate builds the `shift-cli` binary. `inspect` opens a document, summarizes the font model, and can emit stable JSON for scripts and CI. Resource commands apply semantic Shift intents through a temporary recovery overlay and save only after the complete change validates. `compile` sends the canonical Shift model directly through fontir/fontc to produce a TrueType, OpenType (CFF), WOFF, or WOFF2 font, or exports it as a Glyphs 3 source. `color` authors colour palettes and colour glyphs.
 
 ## Install
 
@@ -46,6 +46,8 @@ cargo run -p shift-cli -- glyph inspect path/to/Family.glyphs Aacute
 cargo run -p shift-cli -- glyph inspect path/to/Family.designspace Aacute \
   --location wght=700 --view variation --json
 cargo run -p shift-cli -- compile path/to/Family.shift --output path/to/Family.ttf
+cargo run -p shift-cli -- compile path/to/Family.shift --output path/to/Family.woff2
+cargo run -p shift-cli -- inspect --view color path/to/Family.shift
 
 cargo run -p shift-cli -- font create path/to/Lab.shift
 cargo run -p shift-cli -- font create path/to/Lab.shift --from path/to/Family.glyphspackage
@@ -135,6 +137,19 @@ shift proof Lab.shift --output proof.svg --width 1200 --json
 Text is black on white. Characters the font does not map shape to `.notdef` and are drawn in red (an inkless `.notdef` becomes a hollow red box); they are listed under `missing` in the human output and in `missingCharacters`, overall and per line, in the `--json` report. A text proof of a font that maps no characters is an error and writes nothing.
 
 The `--json` report carries the image size, the shaping options, every location (`label`, user-space `axes`, font-unit `metrics`, and `guides`), and one entry per drawn row with its `line` and `location` indexes, text, size, pen origin `x`, `baseline`, `width` in pixels, `direction`, and `glyphs` in visual order: `name`, `glyphId`, `cluster` (byte offset in the line), `x` and `advance` in font units, and `missing`. A grid reports `grids`, one per location, whose `cells` carry the printed `label`, position, and the same glyph fields.
+
+## Compile
+
+```sh
+shift-cli compile Family.shift --output Family.ttf
+shift-cli compile Family.shift --output Family.woff2
+shift-cli compile Family.shift --output Family.glyphs
+shift-cli compile Family.shift --output Emoji.ttf --color-tables colr,svg
+```
+
+- `--format ttf|otf|woff|woff2|glyphs` picks the output. When it is omitted, the output extension decides. The extension must match the format, so a name such as `Family.xyz` is refused.
+- `otf` writes a static font with CFF outlines and refuses a variable font. `woff` and `woff2` wrap the compiled TrueType binary. `glyphs` exports a Glyphs 3 source file instead of a font, with its colour palettes and colour glyphs.
+- `--color-tables colr,svg,sbix` chooses which tables carry colour glyphs: `colr` writes the vector paint graphs with the `CPAL` palettes, `svg` writes OpenType SVG documents, and `sbix` rasterises PNG bitmaps at fixed sizes. All three are written when the option is omitted, and `sbix` is by far the largest; `none` writes no colour data.
 
 ## Authoring
 
@@ -345,6 +360,21 @@ existing products, names, IDs, and order, skipping occupied locations. Discrete
 axes use only authored values. Reapplying the presets is a no-op with `wrote: false`
 and no changes; this convenience option cannot be combined with individual
 name/location/PostScript flags. It does not generate outlines or static fonts.
+
+### Colour palettes and colour glyphs
+
+```sh
+shift-cli color palette set Lab.shift --palette "Light:#FFD700,#C0392B" --palette "Dark:#B8860B,#7B241C"
+shift-cli color glyph set Lab.shift A.color --layer A.base=palette:0 --layer A.shadow=palette:1@0.5
+shift-cli color glyph set Lab.shift A.color --layer A.base=linear:0,0,0,700:0=palette:0/1=palette:1
+shift-cli color glyph remove Lab.shift A.color
+shift-cli inspect --view color Lab.shift
+```
+
+- `color palette set` replaces every palette at once, and all palettes need the same number of colours. `--clear` removes them all.
+- `color glyph set` lists the layers of one base glyph from bottom to top. Each `--layer` is `GLYPH=FILL`, where `GLYPH` is the outline that is painted. `FILL` is `palette:INDEX[@ALPHA]`, `foreground[@ALPHA]`, `linear:X0,Y0,X1,Y1:STOPS` or `radial:X0,Y0,R0,X1,Y1,R1:STOPS`, with `STOPS` written as `OFFSET=COLOUR` joined by `/`.
+- `color glyph remove` removes the colour of a base glyph and leaves its outline.
+- Every command takes `--dry-run`, `--json` and `--output`, like the other authoring commands.
 
 ### Kerning
 
