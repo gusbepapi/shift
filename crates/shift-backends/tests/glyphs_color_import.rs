@@ -42,7 +42,7 @@ fn import(name: &str, text: &str) -> Font {
     FontLoader::new().read_font(file.path()).unwrap()
 }
 
-fn name_of(font: &Font, id: &GlyphId) -> String {
+fn name_of(font: &Font, id: GlyphId) -> String {
     font.glyph(id).unwrap().name().to_string()
 }
 
@@ -50,7 +50,7 @@ fn name_of(font: &Font, id: &GlyphId) -> String {
 fn layers_of(font: &Font, base: &str) -> Vec<(String, Paint)> {
     let entry = font
         .color()
-        .glyph(&font.glyph_by_name(base).unwrap().id())
+        .glyph(font.glyph_by_name(base).unwrap().id())
         .unwrap();
     let Paint::Layers { layers } = &entry.paint else {
         panic!("colour glyph {base} should be a layer stack");
@@ -58,7 +58,7 @@ fn layers_of(font: &Font, base: &str) -> Vec<(String, Paint)> {
     layers
         .iter()
         .map(|layer| match layer {
-            Paint::Glyph { glyph, fill } => (name_of(font, glyph), (**fill).clone()),
+            Paint::Glyph { glyph, fill } => (name_of(font, *glyph), (**fill).clone()),
             other => panic!("unexpected layer {other:?}"),
         })
         .collect()
@@ -206,7 +206,7 @@ fn imported_colour_data_is_valid_for_the_glyphs_that_exist() {
     let font = import("valid", &authored_file());
 
     font.color()
-        .validate(|id| font.glyph(id).is_some())
+        .validate(|id| font.glyph(*id).is_some())
         .unwrap();
     // The two outline glyphs of the file, the two palette glyphs and the two colour glyphs
     assert_eq!(font.glyph_count(), 6);

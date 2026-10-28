@@ -289,7 +289,7 @@ fn master_value(font: &impl FontView, master: &Master<'_>, rows: &[Row]) -> Valu
                         .metric_definitions()
                         .iter()
                         .find(|definition| definition.kind() == *kind)
-                        .and_then(|definition| master.source.metric_value(&definition.id()));
+                        .and_then(|definition| master.source.metric_value(definition.id()));
                     if let Some(metric) = metric {
                         let (position, overshoot) = (metric.position, metric.overshoot);
                         if overshoot != 0.0 {
@@ -345,9 +345,9 @@ fn axis_mappings_value(axes: &[Axis], mappings: &[AxisMapping]) -> Option<Value>
         let id = axis.id();
         let mut points = mappings
             .iter()
-            .filter(|mapping| mapping.inputs() == [id.clone()] && mapping.outputs() == [id.clone()])
+            .filter(|mapping| mapping.inputs() == [id] && mapping.outputs() == [id])
             .flat_map(AxisMapping::points)
-            .filter_map(|point| Some((point.input.get(&id)?, point.output.get(&id)?)))
+            .filter_map(|point| Some((point.input.get(id)?, point.output.get(id)?)))
             .collect::<Vec<_>>();
         if points.is_empty() {
             points = [axis.minimum(), axis.default(), axis.maximum()]
@@ -379,10 +379,10 @@ fn glyph_value(
         dict.put("export", Value::number(0.0));
     }
     dict.put("glyphname", Value::string(glyph.name()));
-    if let Some(group) = kerning_group(kerning, KerningPosition::Second, &glyph.id()) {
+    if let Some(group) = kerning_group(kerning, KerningPosition::Second, glyph.id()) {
         dict.put("kernLeft", Value::string(&group));
     }
-    if let Some(group) = kerning_group(kerning, KerningPosition::First, &glyph.id()) {
+    if let Some(group) = kerning_group(kerning, KerningPosition::First, glyph.id()) {
         dict.put("kernRight", Value::string(&group));
     }
 
@@ -390,7 +390,7 @@ fn glyph_value(
         .all
         .iter()
         .filter_map(|master| {
-            let layer = glyph.layer_for_source(&master.source.id())?;
+            let layer = glyph.layer_for_source(master.source.id())?;
             let mut value = Dict::new();
             let anchors: Vec<Value> = layer
                 .anchors_iter()
@@ -461,9 +461,9 @@ fn glyph_value(
     Value::Dict(dict)
 }
 
-fn kerning_group(kerning: &Kerning, position: KerningPosition, glyph: &GlyphId) -> Option<String> {
+fn kerning_group(kerning: &Kerning, position: KerningPosition, glyph: GlyphId) -> Option<String> {
     let id = kerning.group_of(position, glyph)?;
-    Some(kerning.group(id)?.name.clone())
+    Some(kerning.group(*id)?.name.clone())
 }
 
 fn path_value(contour: &Contour) -> Value {
@@ -576,13 +576,13 @@ fn kerning_value(
     let side = |side: &KerningSide, prefix: &str| match side {
         KerningSide::Glyph(id) => glyph_names.get(id).cloned(),
         KerningSide::Group(id) => kerning
-            .group(id)
+            .group(*id)
             .map(|group| format!("{prefix}{}", group.name)),
     };
 
     let mut by_master = Dict::new();
     for master in &masters.all {
-        let Some(source) = kerning.source(&master.source.id()) else {
+        let Some(source) = kerning.source(master.source.id()) else {
             continue;
         };
         let mut firsts: Vec<(String, Vec<(String, f64)>)> = Vec::new();
@@ -755,7 +755,7 @@ mod tests {
         let source = font.default_source_id().unwrap();
         font.glyph_by_name(glyph)
             .unwrap()
-            .layer_for_source(&source)
+            .layer_for_source(source)
             .unwrap()
             .contours_iter()
             .flat_map(|contour| contour.points().iter())
@@ -887,11 +887,11 @@ mod tests {
         let aacute = back
             .glyph_by_name("Aacute")
             .unwrap()
-            .layer_for_source(&source_id)
+            .layer_for_source(source_id)
             .unwrap();
         let before = original.glyph_by_name("Aacute").unwrap();
         let before = before
-            .layer_for_source(&original.default_source_id().unwrap())
+            .layer_for_source(original.default_source_id().unwrap())
             .unwrap();
         assert_eq!(aacute.components().len(), before.components().len());
         for (after, before) in aacute.components_iter().zip(before.components_iter()) {

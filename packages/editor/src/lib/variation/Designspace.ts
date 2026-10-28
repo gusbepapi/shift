@@ -8,10 +8,9 @@ import {
   designAxisLocationFromLocation,
   designAxisLocationsEqual,
   emptyExternalAxisLocation,
-  externalAxisLocationForDesignLocation,
   externalAxisLocationFromRecord,
-  mapAxisLocation,
 } from "./location";
+import { externalAxisLocationForDesignLocation, mapAxisLocation } from "../wasm/variation";
 
 /**
  * A font's axes, axis mappings, and sources, with the location operations over them.
@@ -53,6 +52,25 @@ export class Designspace {
 
   source(sourceId: SourceId): Source | null {
     return this.sources.find((source) => source.id === sourceId) ?? null;
+  }
+
+  /**
+   * The source named exactly `name`.
+   *
+   * @remarks
+   * Names are not unique: the store does not constrain them and renaming a
+   * source in Font Settings does not check, so two sources can share one.
+   * Only creating a source and importing a designspace pick unused names.
+   *
+   * @returns null when no source has the name.
+   * @throws {Error} when more than one source has it.
+   */
+  sourceNamed(name: string): Source | null {
+    const named = this.sources.filter((source) => source.name === name);
+    if (named.length > 1) {
+      throw new Error(`Source name ${name} is ambiguous: ${named.length} sources have it`);
+    }
+    return named[0] ?? null;
   }
 
   /** Maps external user coordinates once into internal design coordinates. */

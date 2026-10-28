@@ -341,11 +341,12 @@ onDragCancel(state, ctx) {
 
 ## Verification
 
-- `pnpm test:desktop src/renderer/src/lib/tools/` — real-editor tool tests.
-- `GestureDetector.test.ts` — drag threshold, double-click timing, event emission.
-- `ToolManager.test.ts` — tool activation, temporary override, rAF coalescing, modifier forwarding.
+- `pnpm test:desktop src/renderer/src/behaviour/` — real-editor tool behaviour (`pen/`, `shape/`, `canvas/pan-with-hand.test.ts`).
+- `core/GestureDetector.test.ts` — drag threshold, double-click timing, event emission.
+- `core/ToolManager.test.ts` — temporary override, runtime tool registration, drag rollback, modifier forwarding.
+- `core/BaseTool.test.ts` — state-change notification and disposal.
 - `EditorHistory.test.ts` — click, Shift-click, marquee, Shift-marquee, cancellation, compound selection/document replay, redo branching, and failed workspace apply rebasing through real tools and the real workspace.
-- Per-tool tests: `hand/Hand.test.ts`, `shape/Shape.test.ts`, `Pen.test.ts`, `Select.test.ts`, `Text.test.ts`, `spacing/Spacing.test.ts`.
+- Per-tool tests: `shape/Rectangle.test.ts`, `shape/Ellipse.test.ts`, `Text.test.ts`, `spacing/Spacing.test.ts`. Select behaviour tests live in `apps/desktop/src/renderer/src/behaviour/select/`.
 
 ## Related
 
@@ -356,4 +357,4 @@ onDragCancel(state, ctx) {
 - `Coordinates` — `{ screen, scene }` coordinate bundle on pointer events.
 - `TextTool` — Text mode: suspends glyph editing so every glyph draws filled, edits the page run through `editor.textEditing`, and places the caret with `TextRunNodeDefinition.caretAt`; it never creates runs. The hidden textarea handles native typing.
 - `KeyboardRouter` — binds tool shortcuts registered via `getToolShortcuts`.
-- `SpacingTool` — Spacing mode: suspends glyph editing, measures gaps through `TextRunNodeDefinition.spacingGapAt`, and changes sidebearings through `SidebearingEdit` (drags, previewed and committed as one whole-layer `transformLayer` plus an advance change) or `SpacingHalf.set` (typed values and nudges). Selecting a half makes its glyph the run's current glyph, so the glyph sidebar follows it.
+- `SpacingTool` — Spacing mode: suspends glyph editing, measures gaps through `TextRunNodeDefinition.spacingGapAt`, and changes sidebearings through `SidebearingEdit` (drags, previewed and committed as one `shiftSidebearing` intent) or `SpacingHalf.set` (typed values and nudges). Selecting a half makes its glyph the run's current glyph, so the glyph sidebar follows it.

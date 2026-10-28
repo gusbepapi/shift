@@ -61,11 +61,11 @@ impl GlyphsGlyphStream {
 impl GlyphStream for GlyphsGlyphStream {
     fn directory(&self) -> Vec<GlyphDirectoryEntry> {
         let named = self.glyph_names.iter().map(|name| GlyphDirectoryEntry {
-            glyph_id: self.glyph_ids[name].clone(),
+            glyph_id: self.glyph_ids[name],
             name: name.clone().into(),
         });
         let synthesized = self.synthesized.iter().map(|glyph| GlyphDirectoryEntry {
-            glyph_id: glyph.id.clone(),
+            glyph_id: glyph.id,
             name: glyph.name.clone().into(),
         });
         named.chain(synthesized).collect()

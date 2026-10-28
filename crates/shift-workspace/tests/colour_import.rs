@@ -81,7 +81,7 @@ fn imported_colour_is_kept_by_the_workspace_and_its_saved_document() {
     assert_eq!(color.palettes.len(), 1);
     assert_eq!(color.palettes[0].colors[1], Rgba::new(30, 40, 50, 255));
     let base = workspace.font().glyph_by_name("A").unwrap().id();
-    let Paint::Layers { layers } = &color.glyph(&base).unwrap().paint else {
+    let Paint::Layers { layers } = &color.glyph(base).unwrap().paint else {
         panic!("A should be a layer stack");
     };
     assert_eq!(layers.len(), 1);
@@ -96,7 +96,7 @@ fn imported_colour_is_kept_by_the_workspace_and_its_saved_document() {
         }
     );
     // The layer's own outline became a glyph that the document stores
-    assert_eq!(workspace.font().glyph(glyph).unwrap().name(), "A.color1");
+    assert_eq!(workspace.font().glyph(*glyph).unwrap().name(), "A.color1");
 
     let document = dir.path().join("Colour.shift");
     workspace

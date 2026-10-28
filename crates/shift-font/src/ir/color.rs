@@ -144,8 +144,8 @@ impl ColorData {
     }
 
     /// Returns the colour glyph for a base glyph.
-    pub fn glyph(&self, glyph: &GlyphId) -> Option<&ColorGlyph> {
-        self.glyphs.iter().find(|entry| &entry.glyph == glyph)
+    pub fn glyph(&self, glyph: GlyphId) -> Option<&ColorGlyph> {
+        self.glyphs.iter().find(|entry| entry.glyph == glyph)
     }
 
     /// Returns the number of entries every palette has.
@@ -355,9 +355,9 @@ mod tests {
         }
     }
 
-    fn layer(glyph: &GlyphId, fill: Paint) -> Paint {
+    fn layer(glyph: GlyphId, fill: Paint) -> Paint {
         Paint::Glyph {
-            glyph: glyph.clone(),
+            glyph,
             fill: Box::new(fill),
         }
     }
@@ -378,12 +378,12 @@ mod tests {
         let data = ColorData {
             palettes: vec![palette(2), palette(2)],
             glyphs: vec![ColorGlyph {
-                glyph: base.clone(),
+                glyph: base,
                 paint: Paint::Layers {
                     layers: vec![
-                        layer(&a, solid(0)),
+                        layer(a, solid(0)),
                         layer(
-                            &b,
+                            b,
                             Paint::LinearGradient {
                                 stops: vec![
                                     ColorStop {
@@ -408,7 +408,7 @@ mod tests {
         };
         assert!(data.validate(|_| true).is_ok());
         assert_eq!(data.palette_len(), 2);
-        assert!(data.glyph(&base).is_some());
+        assert!(data.glyph(base).is_some());
     }
 
     #[test]
@@ -430,7 +430,7 @@ mod tests {
             palettes: vec![palette(1)],
             glyphs: vec![ColorGlyph {
                 glyph: base,
-                paint: layer(&a, solid(1)),
+                paint: layer(a, solid(1)),
             }],
         };
         assert!(data.validate(|_| true).is_err());
@@ -442,8 +442,8 @@ mod tests {
         let data = ColorData {
             palettes: vec![palette(1)],
             glyphs: vec![ColorGlyph {
-                glyph: base.clone(),
-                paint: layer(&base, solid(0)),
+                glyph: base,
+                paint: layer(base, solid(0)),
             }],
         };
         assert!(data.validate(|_| true).is_err());
@@ -452,7 +452,7 @@ mod tests {
             palettes: vec![palette(1)],
             glyphs: vec![ColorGlyph {
                 glyph: base,
-                paint: layer(&a, solid(0)),
+                paint: layer(a, solid(0)),
             }],
         };
         assert!(data.validate(|id| id != &a).is_err());
@@ -462,8 +462,8 @@ mod tests {
     fn rejects_duplicate_base_glyph_and_nested_colour_glyph() {
         let (base, a, b) = fixture();
         let entry = |glyph: &GlyphId, layer_glyph: &GlyphId| ColorGlyph {
-            glyph: glyph.clone(),
-            paint: layer(layer_glyph, solid(0)),
+            glyph: *glyph,
+            paint: layer(*layer_glyph, solid(0)),
         };
         let duplicate = ColorData {
             palettes: vec![palette(1)],
@@ -483,13 +483,10 @@ mod tests {
         let (base, a, _) = fixture();
         let with = |paint: Paint| ColorData {
             palettes: vec![palette(1)],
-            glyphs: vec![ColorGlyph {
-                glyph: base.clone(),
-                paint,
-            }],
+            glyphs: vec![ColorGlyph { glyph: base, paint }],
         };
         let bad_alpha = layer(
-            &a,
+            a,
             Paint::Solid {
                 color: PaintColor::Foreground,
                 alpha: 1.5,
@@ -498,7 +495,7 @@ mod tests {
         assert!(with(bad_alpha).validate(|_| true).is_err());
 
         let unordered = layer(
-            &a,
+            a,
             Paint::RadialGradient {
                 stops: vec![
                     ColorStop {
@@ -535,7 +532,7 @@ mod tests {
             palettes: vec![palette(1)],
             glyphs: vec![ColorGlyph {
                 glyph: base,
-                paint: layer(&a, solid(0)),
+                paint: layer(a, solid(0)),
             }],
         };
         let json = serde_json::to_string(&data).unwrap();

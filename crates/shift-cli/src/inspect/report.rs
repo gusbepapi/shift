@@ -111,7 +111,7 @@ impl ColorSummary {
     fn from_font(font: &Font) -> Self {
         let color = font.color();
         let glyph_name = |id: &shift_font::GlyphId| {
-            font.glyph(id)
+            font.glyph(*id)
                 .map_or_else(|| id.to_string(), |glyph| glyph.name().to_string())
         };
         Self {
@@ -476,7 +476,7 @@ impl SourceSummary {
                 .iter()
                 .filter_map(|definition| {
                     source
-                        .metric_value(&definition.id())
+                        .metric_value(definition.id())
                         .map(|value| MetricValueSummary {
                             metric_id: definition.id().to_string(),
                             name: definition.name().to_string(),

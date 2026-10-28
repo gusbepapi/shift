@@ -19,10 +19,10 @@ fn colour_data(font: &Font) -> ColorData {
             },
         ],
         glyphs: vec![ColorGlyph {
-            glyph: ids[0].clone(),
+            glyph: ids[0],
             paint: Paint::Layers {
                 layers: vec![Paint::Glyph {
-                    glyph: ids[1].clone(),
+                    glyph: ids[1],
                     fill: Box::new(Paint::Solid {
                         color: PaintColor::Palette { index: 1 },
                         alpha: 0.75,

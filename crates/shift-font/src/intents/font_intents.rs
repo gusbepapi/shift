@@ -21,7 +21,7 @@ impl FontLevelIntent for CreateGlyph {
             name,
             unicodes,
         } = self;
-        let glyph_id = font.apply_create_glyph(glyph_id.clone(), name, unicodes.clone())?;
+        let glyph_id = font.apply_create_glyph(*glyph_id, name, unicodes.clone())?;
         Ok((Vec::new(), Some(glyph_id)))
     }
 }
@@ -41,8 +41,8 @@ impl FontLevelIntent for UpdateGlyph {
             new_name,
             new_unicodes,
         } = self;
-        font.apply_update_glyph(glyph_id, new_name.clone(), new_unicodes.clone())?;
-        Ok((Vec::new(), Some(glyph_id.clone())))
+        font.apply_update_glyph(*glyph_id, new_name.clone(), new_unicodes.clone())?;
+        Ok((Vec::new(), Some(*glyph_id)))
     }
 }
 
@@ -113,7 +113,7 @@ pub struct DeleteAxis {
 impl FontLevelIntent for DeleteAxis {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let Self { axis_id } = self;
-        font.apply_delete_axis(axis_id)?;
+        font.apply_delete_axis(*axis_id)?;
         Ok((Vec::new(), None))
     }
 }
@@ -178,7 +178,7 @@ pub struct DeleteNamedInstance {
 impl FontLevelIntent for DeleteNamedInstance {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let Self { instance_id } = self;
-        font.remove_named_instance(instance_id)?;
+        font.remove_named_instance(*instance_id)?;
         Ok((Vec::new(), None))
     }
 }
@@ -266,13 +266,13 @@ pub struct DeleteSource {
 impl FontLevelIntent for DeleteSource {
     fn required_layer_ids(&self, font: &Font) -> Vec<LayerId> {
         font.glyphs()
-            .filter_map(|glyph| glyph.layer_for_source(&self.source_id).map(GlyphLayer::id))
+            .filter_map(|glyph| glyph.layer_for_source(self.source_id).map(GlyphLayer::id))
             .collect()
     }
 
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let Self { source_id } = self;
-        let layer_ids = font.apply_delete_source(source_id)?;
+        let layer_ids = font.apply_delete_source(*source_id)?;
         Ok((layer_ids, None))
     }
 }
@@ -293,7 +293,7 @@ impl FontLevelIntent for CreateSource {
             name,
             location,
         } = self;
-        font.apply_create_source(source_id.clone(), name, location)?;
+        font.apply_create_source(*source_id, name, location)?;
         Ok((Vec::new(), None))
     }
 }
@@ -313,7 +313,7 @@ pub struct UpdateSource {
 
 impl FontLevelIntent for UpdateSource {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
-        let mut source = font.require_source(&self.source_id)?.clone();
+        let mut source = font.require_source(self.source_id)?.clone();
         source.set_name(self.name.trim().to_string());
         source.set_location(self.location.clone());
         source.set_metric_values(self.metric_values.clone());
@@ -341,8 +341,7 @@ impl FontLevelIntent for CreateGlyphLayer {
             glyph_id,
             source_id,
         } = self;
-        let layer_ids =
-            font.apply_create_glyph_layer(layer_id.clone(), glyph_id.clone(), source_id.clone())?;
+        let layer_ids = font.apply_create_glyph_layer(*layer_id, *glyph_id, *source_id)?;
         Ok((layer_ids, None))
     }
 }
@@ -358,7 +357,7 @@ pub struct CloneGlyphLayer {
 
 impl FontLevelIntent for CloneGlyphLayer {
     fn required_layer_ids(&self, _font: &Font) -> Vec<LayerId> {
-        vec![self.from_layer_id.clone()]
+        vec![self.from_layer_id]
     }
 
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
@@ -368,12 +367,8 @@ impl FontLevelIntent for CloneGlyphLayer {
             source_id,
             from_layer_id,
         } = self;
-        let layer_ids = font.apply_clone_glyph_layer(
-            layer_id.clone(),
-            glyph_id.clone(),
-            source_id.clone(),
-            from_layer_id.clone(),
-        )?;
+        let layer_ids =
+            font.apply_clone_glyph_layer(*layer_id, *glyph_id, *source_id, *from_layer_id)?;
         Ok((layer_ids, None))
     }
 }
@@ -416,14 +411,12 @@ impl FontLevelIntent for CreateKerningGroup {
             position,
             name,
         } = self;
-        if font.kerning().group(group_id).is_some() {
-            return Err(CoreError::DuplicateKerningGroup(group_id.clone()));
+        if font.kerning().group(*group_id).is_some() {
+            return Err(CoreError::DuplicateKerningGroup(*group_id));
         }
         let name = kerning_group_name(name)?;
-        font.kerning_mut().set_group(
-            group_id.clone(),
-            KerningGroup::new(*position, name, Vec::new()),
-        )?;
+        font.kerning_mut()
+            .set_group(*group_id, KerningGroup::new(*position, name, Vec::new()))?;
         Ok((Vec::new(), None))
     }
 }
@@ -448,7 +441,7 @@ impl FontLevelIntent for SetKerningGroupMember {
             glyph_id,
             group_id,
         } = self;
-        font.apply_set_kerning_group_member(*position, glyph_id, group_id.as_ref())?;
+        font.apply_set_kerning_group_member(*position, *glyph_id, group_id.as_ref())?;
         Ok((Vec::new(), None))
     }
 }
@@ -468,7 +461,7 @@ impl FontLevelIntent for RenameKerningGroup {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let Self { group_id, name } = self;
         let name = kerning_group_name(name)?;
-        font.kerning_mut().rename_group(group_id, name)?;
+        font.kerning_mut().rename_group(*group_id, name)?;
         Ok((Vec::new(), None))
     }
 }
@@ -487,8 +480,8 @@ impl FontLevelIntent for DeleteKerningGroup {
 
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let Self { group_id } = self;
-        font.kerning().group(group_id).require(group_id)?;
-        font.kerning_mut().remove_group(group_id);
+        font.kerning().group(*group_id).require(group_id)?;
+        font.kerning_mut().remove_group(*group_id);
         Ok((Vec::new(), None))
     }
 }
@@ -509,7 +502,7 @@ pub struct MaterializeGlyphLayer {
 
 impl FontLevelIntent for MaterializeGlyphLayer {
     fn required_layer_ids(&self, _font: &Font) -> Vec<LayerId> {
-        vec![self.from_layer_id.clone()]
+        vec![self.from_layer_id]
     }
 
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
@@ -521,10 +514,10 @@ impl FontLevelIntent for MaterializeGlyphLayer {
             values,
         } = self;
         let layer_ids = font.apply_materialize_glyph_layer(
-            layer_id.clone(),
-            glyph_id.clone(),
-            source_id.clone(),
-            from_layer_id.clone(),
+            *layer_id,
+            *glyph_id,
+            *source_id,
+            *from_layer_id,
             values,
         )?;
         Ok((layer_ids, None))

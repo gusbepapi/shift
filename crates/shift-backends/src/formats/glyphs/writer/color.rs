@@ -144,7 +144,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
 
     /// Returns how `glyph` is written, or `None` when it is not a colour glyph.
     pub(super) fn plan(&self, glyph: &Glyph) -> Option<GlyphColor> {
-        let entry = self.font.color().glyph(&glyph.id())?;
+        let entry = self.font.color().glyph(glyph.id())?;
         let layers = paint_layers(&entry.paint);
         if layers.is_empty() {
             return None;
@@ -159,7 +159,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
                 return Some(self.literal(&layers));
             }
             palette.push(PaletteLayer {
-                glyph_name: self.name(layer_glyph),
+                glyph_name: self.name(**layer_glyph),
                 palette_index: match color {
                     PaintColor::Foreground => FOREGROUND_INDEX,
                     PaintColor::Palette { index } => *index,
@@ -178,7 +178,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
         let GlyphColor::Literal(layers) = colour else {
             return None;
         };
-        let source_layers = self.layers_of(&master.source.id());
+        let source_layers = self.layers_of(master.source.id());
         let mut shapes = Vec::with_capacity(layers.len());
         for layer in layers {
             if !layer.outlined {
@@ -189,7 +189,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
                 continue;
             }
             let contours =
-                resolved_contours_from_layers(&layer.glyph, &source_layers).unwrap_or_default();
+                resolved_contours_from_layers(layer.glyph, &source_layers).unwrap_or_default();
             for contour in contours.iter().filter(|c| c.points.len() > 1) {
                 let mut path = path_dict(&contour.points, contour.closed);
                 path.entries.insert(
@@ -202,9 +202,9 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
         Some(shapes)
     }
 
-    fn name(&self, glyph: &GlyphId) -> String {
+    fn name(&self, glyph: GlyphId) -> String {
         self.names
-            .get(glyph)
+            .get(&glyph)
             .map_or_else(|| glyph.to_string(), Clone::clone)
     }
 
@@ -221,14 +221,14 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
                 .map_or(layers.len(), |offset| start + offset);
             let bounds = self.run_bounds(&layers[start..end]);
             for (glyph, _) in &layers[start..end] {
-                planned.push(self.literal_layer(glyph, fill, bounds));
+                planned.push(self.literal_layer(**glyph, fill, bounds));
             }
             start = end;
         }
         GlyphColor::Literal(planned)
     }
 
-    fn literal_layer(&self, glyph: &GlyphId, fill: &Paint, bounds: Option<Bounds>) -> LiteralLayer {
+    fn literal_layer(&self, glyph: GlyphId, fill: &Paint, bounds: Option<Bounds>) -> LiteralLayer {
         let mut attributes = Dict::new();
         let mut outlined = false;
         match fill {
@@ -254,7 +254,7 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
             Paint::Glyph { .. } | Paint::Layers { .. } => {}
         }
         LiteralLayer {
-            glyph: glyph.clone(),
+            glyph,
             glyph_name: self.name(glyph),
             attributes,
             outlined,
@@ -319,9 +319,9 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
     }
 
     /// Returns the layers of `source` by glyph, reading them on first use.
-    fn layers_of(&self, source: &SourceId) -> Rc<HashMap<GlyphId, GlyphLayer>> {
+    fn layers_of(&self, source: SourceId) -> Rc<HashMap<GlyphId, GlyphLayer>> {
         let mut cache = self.layers.borrow_mut();
-        Rc::clone(cache.entry(source.clone()).or_insert_with(|| {
+        Rc::clone(cache.entry(source).or_insert_with(|| {
             Rc::new(
                 self.font
                     .glyphs()
@@ -333,10 +333,10 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
 
     /// Returns the union of the default-source outlines of a run's layer glyphs.
     fn run_bounds(&self, run: &[(&GlyphId, &Paint)]) -> Option<Bounds> {
-        let layers = self.layers_of(&self.font.default_source_id()?);
+        let layers = self.layers_of(self.font.default_source_id()?);
         run.iter()
             .filter_map(|(glyph, _)| {
-                let contours = resolved_contours_from_layers(glyph, &layers).ok()?;
+                let contours = resolved_contours_from_layers(**glyph, &layers).ok()?;
                 resolved_contours_bbox(&contours)
             })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))

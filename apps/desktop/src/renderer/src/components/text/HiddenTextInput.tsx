@@ -2,7 +2,7 @@ import { useCallback, useRef } from "react";
 import { useEditor } from "@/workspace/WorkspaceContext";
 import type { Editor } from "@shift/editor";
 import { useSignalState } from "@shift/editor/signals";
-import { characterTextItem, lineBreakTextItem, type TextItem } from "@shift/editor/text";
+import { lineBreakTextItem, type TextItem } from "@shift/editor/text";
 
 /** Receives native text, clipboard, and IME events while a text node is active. */
 export function TextInput() {
@@ -19,17 +19,10 @@ export function TextInput() {
 
   if (tool?.state.type !== "editing" || !editing) return null;
 
-  const insertLiteral = (text: string) => {
-    const items = [...text.replaceAll("\r\n", "\n")].map((char) =>
-      char === "\n" ? lineBreakTextItem() : characterTextItem(char.codePointAt(0)!),
-    );
-    editor.textEditing.insert(items);
-  };
-
   const flushInput = () => {
     const textarea = ref.current;
     if (!textarea || composing.current || !textarea.value) return;
-    insertLiteral(textarea.value);
+    editor.textEditing.typeText(textarea.value);
     textarea.value = "";
   };
 
@@ -153,6 +146,6 @@ function horizontalGranularity(e: React.KeyboardEvent): "character" | "word" | "
 function clipboardText(item: TextItem, editor: Editor): string {
   if (item.kind === "linebreak") return "\n";
   if (item.kind === "character") return String.fromCodePoint(item.codepoint);
-  const name = editor.font.entryForId(item.glyphId)?.name;
+  const name = editor.font.glyphName(item.glyphId);
   return name ? `/${name}` : "";
 }

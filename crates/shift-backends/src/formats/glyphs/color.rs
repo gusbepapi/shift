@@ -77,7 +77,7 @@ impl SynthesizedGlyph {
         source: &GlyphsFont,
         glyph_ids: &HashMap<String, GlyphId>,
     ) -> FormatBackendResult<shift_font::Glyph> {
-        let mut glyph = shift_font::Glyph::with_id(self.id.clone(), self.name.clone());
+        let mut glyph = shift_font::Glyph::with_id(self.id, self.name.clone());
         let Some(base) = source.glyphs.get(self.base.as_str()) else {
             return Ok(glyph);
         };
@@ -86,7 +86,7 @@ impl SynthesizedGlyph {
                 continue;
             };
             let mut result =
-                GlyphLayer::with_width(LayerId::new(), source_id.clone(), layer.width.into_inner());
+                GlyphLayer::with_width(LayerId::new(), *source_id, layer.width.into_inner());
             for shape in shapes {
                 add_shape(&mut result, shape, glyph_ids)?;
             }
@@ -134,7 +134,7 @@ pub(super) fn plan_color(
         if paints.is_empty() {
             continue;
         }
-        let base = planner.glyph_ids[glyph.name.as_str()].clone();
+        let base = planner.glyph_ids[glyph.name.as_str()];
         glyphs.push(ColorGlyph {
             glyph: base,
             paint: Paint::Layers { layers: paints },
@@ -303,7 +303,7 @@ impl<'a> Planner<'a> {
         if let [Shape::Component(component)] = shapes
             && self.can_reuse(base, component)
         {
-            return self.glyph_ids[component.name.as_str()].clone();
+            return self.glyph_ids[component.name.as_str()];
         }
         self.synthesize(base, origin)
     }
@@ -333,7 +333,7 @@ impl<'a> Planner<'a> {
             attempt += 1;
         }
         let id = self.ids.glyph_id(&name);
-        self.glyph_ids.insert(name.clone(), id.clone());
+        self.glyph_ids.insert(name.clone(), id);
 
         let layers = self
             .source
@@ -343,7 +343,7 @@ impl<'a> Planner<'a> {
             .filter_map(|master| Some((master.id.clone(), self.sources.master_source(&master.id)?)))
             .collect();
         self.synthesized.push(SynthesizedGlyph {
-            id: id.clone(),
+            id,
             name,
             base: base.name.to_string(),
             origin,
@@ -445,7 +445,7 @@ impl<'a> Planner<'a> {
     /// Measures a run of shapes in the default master, as Glyphs does for a gradient.
     fn run_bounds(&self, run: &[Shape]) -> Option<Bounds> {
         let default_source = self.sources.master_source(self.default_master)?;
-        let mut root = GlyphLayer::with_width(LayerId::new(), default_source.clone(), 0.0);
+        let mut root = GlyphLayer::with_width(LayerId::new(), default_source, 0.0);
         let mut pending = Vec::new();
         for shape in run {
             add_shape(&mut root, shape, self.glyph_ids).ok()?;
@@ -456,7 +456,7 @@ impl<'a> Planner<'a> {
 
         let mut layers: HashMap<GlyphId, GlyphLayer> = HashMap::new();
         while let Some(name) = pending.pop() {
-            let id = self.glyph_ids.get(&name)?.clone();
+            let id = *self.glyph_ids.get(&name)?;
             if layers.contains_key(&id) {
                 continue;
             }
@@ -465,11 +465,8 @@ impl<'a> Planner<'a> {
                 .layers
                 .iter()
                 .find(|layer| layer.is_master() && layer.layer_id == self.default_master)?;
-            let mut converted = GlyphLayer::with_width(
-                LayerId::new(),
-                default_source.clone(),
-                layer.width.into_inner(),
-            );
+            let mut converted =
+                GlyphLayer::with_width(LayerId::new(), default_source, layer.width.into_inner());
             for shape in &layer.shapes {
                 add_shape(&mut converted, shape, self.glyph_ids).ok()?;
                 if let Shape::Component(component) = shape {
@@ -480,8 +477,8 @@ impl<'a> Planner<'a> {
         }
 
         let root_id = GlyphId::new();
-        layers.insert(root_id.clone(), root);
-        let contours = resolved_contours_from_layers(&root_id, &layers).ok()?;
+        layers.insert(root_id, root);
+        let contours = resolved_contours_from_layers(root_id, &layers).ok()?;
         resolved_contours_bbox(&contours)
     }
 

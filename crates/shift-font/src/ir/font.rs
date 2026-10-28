@@ -288,7 +288,7 @@ impl Font {
         &self.data().metric_definitions
     }
 
-    pub fn metric_definition(&self, metric_id: &MetricId) -> Option<&MetricDefinition> {
+    pub fn metric_definition(&self, metric_id: MetricId) -> Option<&MetricDefinition> {
         self.metric_definitions().definition(metric_id)
     }
 
@@ -301,9 +301,9 @@ impl Font {
     /// The font performs the join because it owns both stable metric
     /// definitions and source-local values. `None` means the source or role is
     /// absent; it does not synthesize a default value.
-    pub fn metric_value(&self, source_id: &SourceId, kind: MetricKind) -> Option<MetricValue> {
+    pub fn metric_value(&self, source_id: SourceId, kind: MetricKind) -> Option<MetricValue> {
         let metric_id = self.metric_definition_for_kind(kind)?.id();
-        self.source(source_id)?.metric_value(&metric_id)
+        self.source(source_id)?.metric_value(metric_id)
     }
 
     /// Replaces metric definitions while retaining source values by stable ID.
@@ -402,7 +402,7 @@ impl Font {
         if is_external {
             for instance in &mut instances {
                 let mut location = instance.location().clone();
-                location.set(axis_id.clone(), axis_default);
+                location.set(axis_id, axis_default);
                 *instance = NamedInstance::with_id(
                     instance.id(),
                     instance.name().to_string(),
@@ -566,17 +566,17 @@ impl Font {
     /// Returns [`CoreError::AxisNotFound`] for an unknown identity. Returns a
     /// named-instance validation error when removing the coordinate would make
     /// two explicit products indistinguishable.
-    pub fn remove_axis(&mut self, axis_id: &AxisId) -> CoreResult<Axis> {
+    pub fn remove_axis(&mut self, axis_id: AxisId) -> CoreResult<Axis> {
         let index = self
             .axes()
             .iter()
-            .position(|axis| axis.id() == *axis_id)
+            .position(|axis| axis.id() == axis_id)
             .require(&axis_id)?;
         let mut axes = self.axes().to_vec();
         let axis = axes.remove(index);
         let mut mappings = self.axis_mappings().to_vec();
         mappings.retain(|mapping| {
-            !mapping.inputs().contains(axis_id) && !mapping.outputs().contains(axis_id)
+            !mapping.inputs().contains(&axis_id) && !mapping.outputs().contains(&axis_id)
         });
         let mut sources = self.sources().to_vec();
         for source in &mut sources {
@@ -585,7 +585,7 @@ impl Font {
         let mut instances = self.named_instances().to_vec();
         for instance in &mut instances {
             let mut location = instance.location().clone();
-            location.remove(axis_id);
+            location.remove(&axis_id);
             *instance = NamedInstance::with_id(
                 instance.id(),
                 instance.name().to_string(),
@@ -615,7 +615,7 @@ impl Font {
     /// Returns [`CoreError::InvalidColor`] when palettes are inconsistent or a
     /// paint refers to a missing glyph or palette entry.
     pub fn set_color(&mut self, color: ColorData) -> CoreResult<()> {
-        color.validate(|id| self.glyph(id).is_some())?;
+        color.validate(|id| self.glyph(*id).is_some())?;
         self.data_mut().color = color;
         Ok(())
     }
@@ -681,17 +681,17 @@ impl Font {
     /// Returns [`CoreError::NamedInstanceNotFound`] for an unknown identity.
     pub fn remove_named_instance(
         &mut self,
-        instance_id: &NamedInstanceId,
+        instance_id: NamedInstanceId,
     ) -> CoreResult<NamedInstance> {
         let index = self
             .named_instances()
             .iter()
-            .position(|instance| instance.id() == *instance_id)
+            .position(|instance| instance.id() == instance_id)
             .require(&instance_id)?;
         Ok(self.data_mut().named_instances.remove(index))
     }
 
-    pub fn axis(&self, axis_id: &AxisId) -> Option<&Axis> {
+    pub fn axis(&self, axis_id: AxisId) -> Option<&Axis> {
         self.data().axes.axis(axis_id)
     }
 
@@ -708,7 +708,7 @@ impl Font {
     }
 
     /// Returns the source with `source_id`, whatever its role.
-    pub fn source(&self, source_id: &SourceId) -> Option<&Source> {
+    pub fn source(&self, source_id: SourceId) -> Option<&Source> {
         self.sources().source(source_id)
     }
 
@@ -728,7 +728,7 @@ impl Font {
 
     /// Returns `glyph`'s layer on the [default master](Self::default_master).
     pub fn default_master_layer<'a>(&self, glyph: &'a Glyph) -> Option<&'a Arc<GlyphLayer>> {
-        glyph.shared_layer_for_source(&self.default_master()?.id())
+        glyph.shared_layer_for_source(self.default_master()?.id())
     }
 
     /// Returns the layer that stands for `glyph` when no location picks one.
@@ -758,7 +758,7 @@ impl Font {
         glyph: &'a Glyph,
     ) -> impl Iterator<Item = (&'a Source, &'a GlyphLayer)> {
         self.masters()
-            .filter_map(|source| Some((source, glyph.layer_for_source(&source.id())?)))
+            .filter_map(|source| Some((source, glyph.layer_for_source(source.id())?)))
     }
 
     /// Returns `glyph`'s layers on [master sources](Self::masters), in source order, and by
@@ -819,7 +819,7 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::SourceNotFound`] when the font has no such source.
-    pub fn standard_metrics(&self, source_id: &SourceId) -> CoreResult<StandardMetrics> {
+    pub fn standard_metrics(&self, source_id: SourceId) -> CoreResult<StandardMetrics> {
         let source = self.require_source(source_id)?;
         Ok(StandardMetrics::of(source, self.metric_definitions()))
     }
@@ -832,16 +832,16 @@ impl Font {
     /// Returns [`CoreError::SourceNotFound`] when the font has no such source.
     pub fn set_standard_metrics(
         &mut self,
-        source_id: &SourceId,
+        source_id: SourceId,
         metrics: StandardMetrics,
     ) -> CoreResult<()> {
         let data = self.data_mut();
-        let source = data.sources.source_mut(source_id).require(source_id)?;
+        let source = data.sources.source_mut(source_id).require(&source_id)?;
         metrics.apply_to(source, &data.metric_definitions);
         Ok(())
     }
 
-    pub fn source_mut(&mut self, source_id: &SourceId) -> Option<&mut Source> {
+    pub fn source_mut(&mut self, source_id: SourceId) -> Option<&mut Source> {
         self.data_mut().sources.source_mut(source_id)
     }
 
@@ -852,7 +852,7 @@ impl Font {
         let source_id = source.id();
         let data = self.data_mut();
         if data.default_source_id.is_none() {
-            data.default_source_id = Some(source_id.clone());
+            data.default_source_id = Some(source_id);
         }
         data.sources.push(source);
         source_id
@@ -909,7 +909,7 @@ impl Font {
     }
 
     pub fn default_source_id(&self) -> Option<SourceId> {
-        self.data().default_source_id.clone()
+        self.data().default_source_id
     }
 
     pub fn set_default_source_id(&mut self, source_id: SourceId) {
@@ -917,7 +917,7 @@ impl Font {
     }
 
     pub fn default_source(&self) -> Option<&Source> {
-        self.source(self.data().default_source_id.as_ref()?)
+        self.source(*self.data().default_source_id.as_ref()?)
     }
 
     pub fn is_variable(&self) -> bool {
@@ -938,31 +938,31 @@ impl Font {
         self.glyphs().map(|glyph| glyph.layers().len()).sum()
     }
 
-    pub fn glyph(&self, glyph_id: &GlyphId) -> Option<&Glyph> {
-        self.data().glyphs.get(glyph_id).map(Arc::as_ref)
+    pub fn glyph(&self, glyph_id: GlyphId) -> Option<&Glyph> {
+        self.data().glyphs.get(&glyph_id).map(Arc::as_ref)
     }
 
     /// Returns a glyph's authored directory position in constant time.
-    pub fn glyph_order(&self, glyph_id: &GlyphId) -> Option<usize> {
-        self.data().glyphs.index_of(glyph_id)
+    pub fn glyph_order(&self, glyph_id: GlyphId) -> Option<usize> {
+        self.data().glyphs.index_of(&glyph_id)
     }
 
     pub fn glyph_id_by_name(&self, name: &str) -> Option<GlyphId> {
-        self.index().id_by_name(name).cloned()
+        self.index().id_by_name(name).copied()
     }
 
     pub fn glyph_by_name(&self, name: &str) -> Option<&Glyph> {
-        self.glyph(&self.glyph_id_by_name(name)?)
+        self.glyph(self.glyph_id_by_name(name)?)
     }
 
     pub fn glyphs_by_unicode(&self, unicode: u32) -> impl Iterator<Item = &Glyph> {
         self.index()
             .ids_with_unicode(unicode)
-            .filter_map(|glyph_id| self.glyph(glyph_id))
+            .filter_map(|glyph_id| self.glyph(*glyph_id))
     }
 
-    pub fn glyph_id_by_layer(&self, layer_id: &LayerId) -> Option<GlyphId> {
-        self.index().owner(layer_id).cloned()
+    pub fn glyph_id_by_layer(&self, layer_id: LayerId) -> Option<GlyphId> {
+        self.index().owner(layer_id).copied()
     }
 
     pub fn layer_id_for_glyph_source(
@@ -970,15 +970,15 @@ impl Font {
         glyph_id: GlyphId,
         source_id: SourceId,
     ) -> Option<LayerId> {
-        self.index().layer_at(glyph_id, source_id).cloned()
+        self.index().layer_at(glyph_id, source_id).copied()
     }
 
-    pub fn layer(&self, layer_id: &LayerId) -> Option<&GlyphLayer> {
+    pub fn layer(&self, layer_id: LayerId) -> Option<&GlyphLayer> {
         let glyph_id = self.glyph_id_by_layer(layer_id)?;
-        self.glyph(&glyph_id)?.layer(layer_id)
+        self.glyph(glyph_id)?.layer(layer_id)
     }
 
-    pub fn layer_mut(&mut self, layer_id: &LayerId) -> Option<&mut GlyphLayer> {
+    pub fn layer_mut(&mut self, layer_id: LayerId) -> Option<&mut GlyphLayer> {
         let glyph_id = self.glyph_id_by_layer(layer_id)?;
         self.data_mut()
             .glyphs
@@ -991,8 +991,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::GlyphNotFound`] when the font has no such glyph.
-    pub fn require_glyph(&self, glyph_id: &GlyphId) -> CoreResult<&Glyph> {
-        self.glyph(glyph_id).require(glyph_id)
+    pub fn require_glyph(&self, glyph_id: GlyphId) -> CoreResult<&Glyph> {
+        self.glyph(glyph_id).require(&glyph_id)
     }
 
     /// Returns the id of the glyph that owns `layer_id`.
@@ -1000,8 +1000,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::LayerNotFound`] when no glyph owns the layer.
-    pub fn require_layer_owner(&self, layer_id: &LayerId) -> CoreResult<GlyphId> {
-        self.glyph_id_by_layer(layer_id).require(layer_id)
+    pub fn require_layer_owner(&self, layer_id: LayerId) -> CoreResult<GlyphId> {
+        self.glyph_id_by_layer(layer_id).require(&layer_id)
     }
 
     /// Returns the glyph layer with `layer_id`.
@@ -1009,8 +1009,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::LayerNotFound`] when no glyph owns the layer.
-    pub fn require_layer(&self, layer_id: &LayerId) -> CoreResult<&GlyphLayer> {
-        self.layer(layer_id).require(layer_id)
+    pub fn require_layer(&self, layer_id: LayerId) -> CoreResult<&GlyphLayer> {
+        self.layer(layer_id).require(&layer_id)
     }
 
     /// Returns the glyph layer with `layer_id` for editing, unsharing its glyph first.
@@ -1018,8 +1018,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::LayerNotFound`] when no glyph owns the layer.
-    pub fn require_layer_mut(&mut self, layer_id: &LayerId) -> CoreResult<&mut GlyphLayer> {
-        self.layer_mut(layer_id).require(layer_id)
+    pub fn require_layer_mut(&mut self, layer_id: LayerId) -> CoreResult<&mut GlyphLayer> {
+        self.layer_mut(layer_id).require(&layer_id)
     }
 
     /// Returns the source with `source_id`, whatever its role.
@@ -1027,8 +1027,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::SourceNotFound`] when the font has no such source.
-    pub fn require_source(&self, source_id: &SourceId) -> CoreResult<&Source> {
-        self.source(source_id).require(source_id)
+    pub fn require_source(&self, source_id: SourceId) -> CoreResult<&Source> {
+        self.source(source_id).require(&source_id)
     }
 
     /// Returns the axis with `axis_id`.
@@ -1036,8 +1036,8 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::AxisNotFound`] when the font has no such axis.
-    pub fn require_axis(&self, axis_id: &AxisId) -> CoreResult<&Axis> {
-        self.axis(axis_id).require(axis_id)
+    pub fn require_axis(&self, axis_id: AxisId) -> CoreResult<&Axis> {
+        self.axis(axis_id).require(&axis_id)
     }
 
     /// Adds `glyph` to the font and returns its id.
@@ -1053,7 +1053,7 @@ impl Font {
             return Err(CoreError::DuplicateGlyphId(glyph_id));
         }
         let mut index = self.index().clone();
-        index.try_insert(IndexEntries::of_glyph(&glyph_id, &glyph))?;
+        index.try_insert(IndexEntries::of_glyph(glyph_id, &glyph))?;
 
         let state = self.state_mut();
         state.index = index;
@@ -1153,10 +1153,10 @@ impl Font {
         let index = self.index();
         let base_glyph_ids = layer_ids
             .into_iter()
-            .filter_map(|layer_id| index.owner(layer_id));
+            .filter_map(|layer_id| index.owner(*layer_id));
         base_glyph_ids
             .flat_map(|base_glyph_id| index.composite_glyphs_of(base_glyph_id))
-            .cloned()
+            .copied()
             .collect()
     }
 
@@ -1167,7 +1167,7 @@ impl Font {
     ) -> BTreeSet<GlyphId> {
         layer_ids
             .into_iter()
-            .filter_map(|layer_id| self.layer(layer_id))
+            .filter_map(|layer_id| self.layer(*layer_id))
             .flat_map(GlyphLayer::component_glyph_ids)
             .collect()
     }
@@ -1179,7 +1179,7 @@ impl Font {
     ) -> BTreeSet<GlyphId> {
         glyph_ids
             .into_iter()
-            .filter_map(|glyph_id| self.glyph(glyph_id))
+            .filter_map(|glyph_id| self.glyph(*glyph_id))
             .flat_map(Glyph::component_glyph_ids)
             .collect()
     }
@@ -1191,7 +1191,7 @@ impl Font {
     ) -> BTreeSet<LayerId> {
         glyph_ids
             .into_iter()
-            .filter_map(|glyph_id| self.glyph(glyph_id))
+            .filter_map(|glyph_id| self.glyph(*glyph_id))
             .flat_map(Glyph::layer_ids)
             .collect()
     }
@@ -1201,13 +1201,13 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::LayerNotFound`] when no glyph owns `layer_id`.
-    pub(crate) fn layer_snapshot(&self, layer_id: &LayerId) -> CoreResult<Arc<GlyphLayer>> {
+    pub(crate) fn layer_snapshot(&self, layer_id: LayerId) -> CoreResult<Arc<GlyphLayer>> {
         let glyph_id = self.require_layer_owner(layer_id)?;
-        self.require_glyph(&glyph_id)?
+        self.require_glyph(glyph_id)?
             .layers()
-            .get(layer_id)
+            .get(&layer_id)
             .cloned()
-            .require(layer_id)
+            .require(&layer_id)
     }
 
     /// Re-indexes one layer after an in-place structural edit, in time
@@ -1222,7 +1222,7 @@ impl Font {
     /// identity another layer holds; the index is unchanged.
     pub(crate) fn reindex_layer(
         &mut self,
-        layer_id: &LayerId,
+        layer_id: LayerId,
         before: &GlyphLayer,
     ) -> CoreResult<()> {
         let glyph_id = self.require_layer_owner(layer_id)?;
@@ -1232,19 +1232,19 @@ impl Font {
         transfer.claim(after.entity_ids(), &self.index().entity_ids)?;
 
         let mut index = self.index().clone();
-        index.remove(&IndexEntries::records_of_layer(&glyph_id, before));
-        index.try_insert(IndexEntries::records_of_layer(&glyph_id, &after))?;
+        index.remove(&IndexEntries::records_of_layer(glyph_id, before));
+        index.try_insert(IndexEntries::records_of_layer(glyph_id, &after))?;
         transfer.apply_to(&mut index.entity_ids);
         self.state_mut().index = index;
         Ok(())
     }
 
-    fn remove_glyph(&mut self, glyph_id: &GlyphId) -> Option<Glyph> {
+    fn remove_glyph(&mut self, glyph_id: GlyphId) -> Option<Glyph> {
         let state = self.state_mut();
         let glyph = state
             .data
             .glyphs
-            .shift_remove(glyph_id)
+            .shift_remove(&glyph_id)
             .map(Arc::unwrap_or_clone)?;
         state
             .index
@@ -1273,7 +1273,7 @@ impl Font {
             return Err(CoreError::GlyphNotAtTail(glyph_id));
         }
 
-        self.remove_glyph(&glyph_id).require(&glyph_id)
+        self.remove_glyph(glyph_id).require(&glyph_id)
     }
 
     pub fn glyph_count(&self) -> usize {
@@ -1287,9 +1287,9 @@ impl Font {
     /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing, and
     /// [`CoreError::DuplicateGlyphName`] when another glyph has the name. The font is unchanged on
     /// failure.
-    pub fn rename_glyph(&mut self, glyph_id: &GlyphId, name: GlyphName) -> CoreResult<()> {
+    pub fn rename_glyph(&mut self, glyph_id: GlyphId, name: GlyphName) -> CoreResult<()> {
         let mut state = (*self.state).clone();
-        let glyph = state.data.glyphs.get_mut(glyph_id).require(&glyph_id)?;
+        let glyph = state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?;
         Arc::make_mut(glyph).set_name(name);
         state.rebuild_index()?;
         self.state = Arc::new(state);
@@ -1301,9 +1301,9 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing.
-    pub fn set_glyph_unicodes(&mut self, glyph_id: &GlyphId, unicodes: Vec<u32>) -> CoreResult<()> {
+    pub fn set_glyph_unicodes(&mut self, glyph_id: GlyphId, unicodes: Vec<u32>) -> CoreResult<()> {
         let mut state = (*self.state).clone();
-        let glyph = state.data.glyphs.get_mut(glyph_id).require(&glyph_id)?;
+        let glyph = state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?;
         Arc::make_mut(glyph).set_unicodes(unicodes);
         state.rebuild_index()?;
         self.state = Arc::new(state);
@@ -1318,12 +1318,12 @@ impl Font {
     /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing.
     pub fn set_glyph_category(
         &mut self,
-        glyph_id: &GlyphId,
+        glyph_id: GlyphId,
         category: Option<GlyphCategory>,
         sub_category: Option<GlyphSubcategory>,
     ) -> CoreResult<()> {
         let mut state = (*self.state).clone();
-        let glyph = Arc::make_mut(state.data.glyphs.get_mut(glyph_id).require(&glyph_id)?);
+        let glyph = Arc::make_mut(state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?);
         glyph.set_category(category);
         glyph.set_sub_category(sub_category);
         self.state = Arc::new(state);
@@ -1343,14 +1343,14 @@ impl Font {
         glyph_id: GlyphId,
         source_id: SourceId,
     ) -> CoreResult<()> {
-        if self.source(&source_id).is_none() {
+        if self.source(source_id).is_none() {
             return Err(CoreError::SourceNotFound(source_id));
         }
-        if self.index().owner(&layer_id).is_some() {
+        if self.index().owner(layer_id).is_some() {
             return Err(CoreError::DuplicateLayerId(layer_id));
         }
         if self
-            .layer_id_for_glyph_source(glyph_id.clone(), source_id.clone())
+            .layer_id_for_glyph_source(glyph_id, source_id)
             .is_some()
         {
             return Err(CoreError::DuplicateGlyphLayer {
@@ -1372,15 +1372,15 @@ impl Font {
     /// source or the glyph is missing, and [`CoreError::DuplicateLayerId`] or
     /// [`CoreError::DuplicateGlyphLayer`] when the layer's id or source is already used.
     pub fn insert_glyph_layer(&mut self, glyph_id: GlyphId, layer: GlyphLayer) -> CoreResult<()> {
-        if self.source(&layer.source_id()).is_none() {
+        if self.source(layer.source_id()).is_none() {
             return Err(CoreError::SourceNotFound(layer.source_id()));
         }
 
-        if self.glyph(&glyph_id).is_none() {
+        if self.glyph(glyph_id).is_none() {
             return Err(CoreError::GlyphNotFound(glyph_id));
         }
         let mut index = self.index().clone();
-        index.try_insert(IndexEntries::of_layer(&glyph_id, &layer))?;
+        index.try_insert(IndexEntries::of_layer(glyph_id, &layer))?;
 
         let state = self.state_mut();
         let glyph = state
@@ -1405,7 +1405,7 @@ impl Font {
     /// value is not finite.
     pub fn replace_glyph_layer_values(
         &mut self,
-        layer_id: &LayerId,
+        layer_id: LayerId,
         values: &GlyphInterpolationValues,
     ) -> CoreResult<()> {
         let glyph_id = self.require_layer_owner(layer_id)?;
@@ -1445,11 +1445,11 @@ impl Font {
         for layer in layers {
             let layer = layer.into();
             let layer_id = layer.id();
-            if !seen_layer_ids.insert(layer_id.clone()) {
+            if !seen_layer_ids.insert(layer_id) {
                 return Err(CoreError::DuplicateLayerId(layer_id));
             }
 
-            let glyph_id = self.require_layer_owner(&layer_id)?;
+            let glyph_id = self.require_layer_owner(layer_id)?;
             let previous = self
                 .data()
                 .glyphs
@@ -1477,10 +1477,10 @@ impl Font {
 
         let mut index = self.index().clone();
         for (glyph_id, previous, _) in &replacements {
-            index.remove(&IndexEntries::records_of_layer(glyph_id, previous));
+            index.remove(&IndexEntries::records_of_layer(*glyph_id, previous));
         }
         for (glyph_id, _, layer) in &replacements {
-            index.try_insert(IndexEntries::records_of_layer(glyph_id, layer))?;
+            index.try_insert(IndexEntries::records_of_layer(*glyph_id, layer))?;
         }
         transfer.apply_to(&mut index.entity_ids);
 
@@ -1503,7 +1503,7 @@ impl Font {
     /// # Errors
     ///
     /// Returns [`CoreError::LayerNotFound`] when no glyph owns the layer.
-    pub fn remove_glyph_layer(&mut self, layer_id: &LayerId) -> CoreResult<GlyphLayer> {
+    pub fn remove_glyph_layer(&mut self, layer_id: LayerId) -> CoreResult<GlyphLayer> {
         let glyph_id = self.require_layer_owner(layer_id)?;
         let state = self.state_mut();
         let glyph = state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?;
@@ -1512,7 +1512,7 @@ impl Font {
             .require(&layer_id)?;
         state
             .index
-            .remove(&IndexEntries::of_layer(&glyph_id, &layer));
+            .remove(&IndexEntries::of_layer(glyph_id, &layer));
         Ok(layer)
     }
 
@@ -1670,8 +1670,8 @@ fn validate_source_values(
     definitions: &[MetricDefinition],
 ) -> CoreResult<()> {
     for (axis_id, value) in source.location() {
-        if !axes.contains_axis(axis_id) {
-            return Err(CoreError::AxisNotFound(axis_id.clone()));
+        if !axes.contains_axis(*axis_id) {
+            return Err(CoreError::AxisNotFound(*axis_id));
         }
         if !value.is_finite() {
             return Err(CoreError::InvalidSourceName(format!(
@@ -1683,7 +1683,7 @@ fn validate_source_values(
     if source.is_master() {
         for definition in definitions {
             let metric_id = definition.id();
-            let Some(value) = source.metric_value(&metric_id) else {
+            let Some(value) = source.metric_value(metric_id) else {
                 return Err(CoreError::InvalidSourceMetric {
                     source_id: source.id(),
                     metric_id,
@@ -1713,7 +1713,7 @@ fn validate_source_values(
         {
             return Err(CoreError::InvalidSourceMetric {
                 source_id: source.id(),
-                metric_id: metric_id.clone(),
+                metric_id: *metric_id,
                 message: "metric definition does not exist".to_string(),
             });
         }
@@ -1785,7 +1785,7 @@ fn validate_axis_mappings(axes: &[Axis], mappings: &[AxisMapping]) -> CoreResult
 
         if mapping.is_independent() {
             for output in mapping.outputs() {
-                if let Some(owner) = independent_outputs.insert(output.clone(), mapping.id()) {
+                if let Some(owner) = independent_outputs.insert(*output, mapping.id()) {
                     return Err(CoreError::InvalidAxisMapping {
                         mapping_id: mapping.id(),
                         message: format!(
@@ -1847,11 +1847,8 @@ mod tests {
         for glyph_index in 0..mark.glyphs {
             let unicode = u32::try_from(glyph_index).unwrap();
             let mut glyph = Glyph::with_unicode(format!("g{glyph_index:05}"), unicode);
-            let mut layer = GlyphLayer::with_width(
-                LayerId::new(),
-                source_id.clone(),
-                500.0 + glyph_index as f64,
-            );
+            let mut layer =
+                GlyphLayer::with_width(LayerId::new(), source_id, 500.0 + glyph_index as f64);
 
             for contour_index in 0..mark.contours_per_glyph {
                 let mut contour = Contour::new();
@@ -1881,7 +1878,7 @@ mod tests {
 
         let mut first_contour = Contour::with_id(contour_id.clone());
         first_contour.add_point(0.0, 0.0, PointType::OnCurve, false);
-        let mut first_layer = GlyphLayer::new(LayerId::new(), source_id.clone());
+        let mut first_layer = GlyphLayer::new(LayerId::new(), source_id);
         first_layer.add_contour(first_contour);
         let mut first_glyph = Glyph::new("A");
         first_glyph.set_layer(first_layer);
@@ -2043,12 +2040,12 @@ mod tests {
         let axis_id = axis.id();
         font.add_axis(axis.clone())
             .expect("test axis should be valid");
-        let input = Location::from([(axis_id.clone(), 900.0)]);
-        let output = Location::from([(axis_id.clone(), 800.0)]);
+        let input = Location::from([(axis_id, 900.0)]);
+        let output = Location::from([(axis_id, 800.0)]);
         font.set_axis_mappings(vec![AxisMapping::new(
             "Weight curve".to_string(),
-            vec![axis_id.clone()],
-            vec![axis_id.clone()],
+            vec![axis_id],
+            vec![axis_id],
             vec![AxisMappingPoint {
                 description: None,
                 input,
@@ -2062,7 +2059,7 @@ mod tests {
         let result = font.replace_axis(replacement);
 
         assert!(matches!(result, Err(CoreError::InvalidAxisMapping { .. })));
-        assert_eq!(font.axis(&axis_id).unwrap().role(), AxisRole::External);
+        assert_eq!(font.axis(axis_id).unwrap().role(), AxisRole::External);
     }
 
     #[test]
@@ -2075,8 +2072,8 @@ mod tests {
         font.add_axis(weight).expect("weight axis should be valid");
         font.add_axis(width).expect("width axis should be valid");
 
-        let narrow = ExternalLocation::from([(weight_id.clone(), 400.0), (width_id.clone(), 75.0)]);
-        let wide = ExternalLocation::from([(weight_id, 400.0), (width_id.clone(), 125.0)]);
+        let narrow = ExternalLocation::from([(weight_id, 400.0), (width_id, 75.0)]);
+        let wide = ExternalLocation::from([(weight_id, 400.0), (width_id, 125.0)]);
         font.set_named_instances(vec![
             NamedInstance::new("Narrow".to_string(), narrow, None),
             NamedInstance::new("Wide".to_string(), wide, None),
@@ -2084,7 +2081,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            font.remove_axis(&width_id),
+            font.remove_axis(width_id),
             Err(CoreError::DuplicateNamedInstanceLocation { .. })
         ));
         assert_eq!(font.axes().len(), 2);
@@ -2103,12 +2100,12 @@ mod tests {
         let glyph_id = font.insert_glyph(glyph).unwrap();
 
         assert_eq!(font.glyph_count(), 1);
-        assert!(font.glyph(&glyph_id).is_some());
-        assert_eq!(font.glyph_id_by_name("A"), Some(glyph_id.clone()));
+        assert!(font.glyph(glyph_id).is_some());
+        assert_eq!(font.glyph_id_by_name("A"), Some(glyph_id));
         assert!(font.glyph_by_name("A").is_some());
-        assert_eq!(font.glyph_id_by_layer(&layer_id), Some(glyph_id.clone()));
+        assert_eq!(font.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            font.layer_id_for_glyph_source(glyph_id.clone(), font.default_source_id().unwrap()),
+            font.layer_id_for_glyph_source(glyph_id, font.default_source_id().unwrap()),
             Some(layer_id)
         );
         assert_eq!(
@@ -2123,13 +2120,13 @@ mod tests {
     fn glyph_layer_batch_replacement_is_atomic() {
         let mut font = Font::new();
         let source_id = font.default_source_id().unwrap();
-        let first_layer = GlyphLayer::with_width(LayerId::new(), source_id.clone(), 500.0);
+        let first_layer = GlyphLayer::with_width(LayerId::new(), source_id, 500.0);
         let first_layer_id = first_layer.id();
         let mut first_glyph = Glyph::new("A");
         first_glyph.set_layer(first_layer);
         font.insert_glyph(first_glyph).unwrap();
 
-        let second_layer = GlyphLayer::with_width(LayerId::new(), source_id.clone(), 600.0);
+        let second_layer = GlyphLayer::with_width(LayerId::new(), source_id, 600.0);
         let second_layer_id = second_layer.id();
         let mut second_glyph = Glyph::new("B");
         second_glyph.set_layer(second_layer);
@@ -2138,30 +2135,28 @@ mod tests {
         let contour_id = ContourId::new();
         let mut first_contour = Contour::with_id(contour_id.clone());
         first_contour.add_point(0.0, 0.0, PointType::OnCurve, false);
-        let mut first_replacement =
-            GlyphLayer::with_width(first_layer_id.clone(), source_id.clone(), 700.0);
+        let mut first_replacement = GlyphLayer::with_width(first_layer_id, source_id, 700.0);
         first_replacement.add_contour(first_contour);
 
         let mut second_contour = Contour::with_id(contour_id.clone());
         second_contour.add_point(10.0, 10.0, PointType::OnCurve, false);
-        let mut second_replacement =
-            GlyphLayer::with_width(second_layer_id.clone(), source_id.clone(), 800.0);
+        let mut second_replacement = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         second_replacement.add_contour(second_contour);
 
         assert!(matches!(
             font.replace_glyph_layers(vec![first_replacement, second_replacement]),
             Err(CoreError::DuplicateContourId(id)) if id == contour_id
         ));
-        assert_eq!(font.layer(&first_layer_id).unwrap().width(), 500.0);
-        assert_eq!(font.layer(&second_layer_id).unwrap().width(), 600.0);
+        assert_eq!(font.layer(first_layer_id).unwrap().width(), 500.0);
+        assert_eq!(font.layer(second_layer_id).unwrap().width(), 600.0);
 
         font.replace_glyph_layers(vec![
-            GlyphLayer::with_width(first_layer_id.clone(), source_id.clone(), 700.0),
-            GlyphLayer::with_width(second_layer_id.clone(), source_id, 800.0),
+            GlyphLayer::with_width(first_layer_id, source_id, 700.0),
+            GlyphLayer::with_width(second_layer_id, source_id, 800.0),
         ])
         .unwrap();
-        assert_eq!(font.layer(&first_layer_id).unwrap().width(), 700.0);
-        assert_eq!(font.layer(&second_layer_id).unwrap().width(), 800.0);
+        assert_eq!(font.layer(first_layer_id).unwrap().width(), 700.0);
+        assert_eq!(font.layer(second_layer_id).unwrap().width(), 800.0);
     }
 
     #[test]
@@ -2169,7 +2164,7 @@ mod tests {
         let mut font = Font::new();
         let source_id = font.default_source_id().unwrap();
         let glyph_with = |name: &str, bases: &[&Glyph]| {
-            let mut layer = GlyphLayer::with_width(LayerId::new(), source_id.clone(), 500.0);
+            let mut layer = GlyphLayer::with_width(LayerId::new(), source_id, 500.0);
             for base in bases {
                 layer.add_component(Component::with_id(
                     ComponentId::new(),
@@ -2194,7 +2189,7 @@ mod tests {
 
         assert_eq!(
             font.dependent_glyph_ids([&base_layer]),
-            BTreeSet::from([composite_id.clone()])
+            BTreeSet::from([composite_id])
         );
         let drawn = BTreeSet::from([base_id, mark_id]);
         assert_eq!(
@@ -2238,7 +2233,7 @@ mod tests {
         font.insert_glyph(glyph).unwrap();
 
         let snapshot = font.clone();
-        let mut expected = font.layer(&layer_id).unwrap().clone();
+        let mut expected = font.layer(layer_id).unwrap().clone();
         expected.set_width(700.0);
         expected.contours_iter_mut().next().unwrap().points_mut()[0].set_position(50.0, 60.0);
         expected
@@ -2253,10 +2248,10 @@ mod tests {
             .translate(90.0, 100.0);
         let values = expected.interpolation_values();
 
-        font.replace_glyph_layer_values(&layer_id, &values).unwrap();
+        font.replace_glyph_layer_values(layer_id, &values).unwrap();
 
-        assert_eq!(font.layer(&layer_id).unwrap(), &expected);
-        assert_ne!(snapshot.layer(&layer_id).unwrap(), &expected);
+        assert_eq!(font.layer(layer_id).unwrap(), &expected);
+        assert_ne!(snapshot.layer(layer_id).unwrap(), &expected);
         assert!(font.has_contour_id(&contour_id));
         assert!(font.has_point_id(&point_id));
         assert!(font.has_anchor_id(&anchor_id));
@@ -2266,14 +2261,14 @@ mod tests {
                 .contains(&GlyphEntityId::from(component_id))
         );
 
-        let committed = font.layer(&layer_id).unwrap().clone();
+        let committed = font.layer(layer_id).unwrap().clone();
         let mut invalid = values.into_vec();
         invalid[0] = f64::NAN;
         assert!(matches!(
-            font.replace_glyph_layer_values(&layer_id, &GlyphInterpolationValues::new(invalid)),
+            font.replace_glyph_layer_values(layer_id, &GlyphInterpolationValues::new(invalid)),
             Err(CoreError::InvalidPositionUpdateInput { .. })
         ));
-        assert_eq!(font.layer(&layer_id).unwrap(), &committed);
+        assert_eq!(font.layer(layer_id).unwrap(), &committed);
     }
 
     #[test]
@@ -2288,11 +2283,11 @@ mod tests {
         let base_glyph_id = GlyphId::new();
         let mut contour = Contour::with_id(contour_id.clone());
         contour.add_point_with_id(point_id.clone(), 0.0, 0.0, PointType::OnCurve, false);
-        let mut first_layer = GlyphLayer::with_width(LayerId::new(), source_id.clone(), 500.0);
+        let mut first_layer = GlyphLayer::with_width(LayerId::new(), source_id, 500.0);
         first_layer.add_contour(contour);
         first_layer.add_component(Component::with_id(
             component_id.clone(),
-            base_glyph_id.clone(),
+            base_glyph_id,
             "base",
             crate::DecomposedTransform::default(),
         ));
@@ -2315,19 +2310,19 @@ mod tests {
         first_glyph.set_layer(first_layer);
         font.insert_glyph(first_glyph).unwrap();
 
-        let second_layer = GlyphLayer::with_width(LayerId::new(), source_id.clone(), 600.0);
+        let second_layer = GlyphLayer::with_width(LayerId::new(), source_id, 600.0);
         let second_layer_id = second_layer.id();
         let mut second_glyph = Glyph::new("B");
         second_glyph.set_layer(second_layer);
         font.insert_glyph(second_glyph).unwrap();
 
         let snapshot = font.clone();
-        let mut replacement = font.layer(&first_layer_id).unwrap().clone();
+        let mut replacement = font.layer(first_layer_id).unwrap().clone();
         replacement.set_width(700.0);
         font.replace_glyph_layers(vec![replacement]).unwrap();
 
-        assert_eq!(font.layer(&first_layer_id).unwrap().width(), 700.0);
-        assert_eq!(snapshot.layer(&first_layer_id).unwrap().width(), 500.0);
+        assert_eq!(font.layer(first_layer_id).unwrap().width(), 700.0);
+        assert_eq!(snapshot.layer(first_layer_id).unwrap().width(), 500.0);
         assert!(font.has_contour_id(&contour_id));
         assert!(font.has_point_id(&point_id));
         assert!(font.has_anchor_id(&anchor_id));
@@ -2340,19 +2335,17 @@ mod tests {
             PointType::OnCurve,
             false,
         );
-        let mut conflicting_layer =
-            GlyphLayer::with_width(second_layer_id.clone(), source_id.clone(), 800.0);
+        let mut conflicting_layer = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         conflicting_layer.add_contour(conflicting_contour);
         assert!(matches!(
             font.replace_glyph_layers(vec![conflicting_layer]),
             Err(CoreError::DuplicatePointId(id)) if id == point_id
         ));
 
-        let mut conflicting_layer =
-            GlyphLayer::with_width(second_layer_id.clone(), source_id.clone(), 800.0);
+        let mut conflicting_layer = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         conflicting_layer.add_component(Component::with_id(
             component_id.clone(),
-            base_glyph_id.clone(),
+            base_glyph_id,
             "base",
             crate::DecomposedTransform::default(),
         ));
@@ -2361,16 +2354,14 @@ mod tests {
             Err(CoreError::DuplicateComponentId(id)) if id == component_id
         ));
 
-        let mut conflicting_layer =
-            GlyphLayer::with_width(second_layer_id.clone(), source_id.clone(), 800.0);
+        let mut conflicting_layer = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         conflicting_layer.add_anchor(Anchor::with_id(anchor_id.clone(), None, 10.0, 10.0));
         assert!(matches!(
             font.replace_glyph_layers(vec![conflicting_layer]),
             Err(CoreError::DuplicateAnchorId(id)) if id == anchor_id
         ));
 
-        let mut conflicting_layer =
-            GlyphLayer::with_width(second_layer_id.clone(), source_id.clone(), 800.0);
+        let mut conflicting_layer = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         conflicting_layer.add_guideline(Guideline::with_id(
             guideline_id.clone(),
             Some(10.0),
@@ -2383,9 +2374,9 @@ mod tests {
             font.replace_glyph_layers(vec![conflicting_layer]),
             Err(CoreError::DuplicateGuidelineId(id)) if id == guideline_id
         ));
-        assert_eq!(font.layer(&second_layer_id).unwrap().width(), 600.0);
+        assert_eq!(font.layer(second_layer_id).unwrap().width(), 600.0);
 
-        let emptied = GlyphLayer::with_width(first_layer_id, source_id.clone(), 700.0);
+        let emptied = GlyphLayer::with_width(first_layer_id, source_id, 700.0);
         let mut transferred_contour = Contour::with_id(contour_id.clone());
         transferred_contour.add_point_with_id(
             point_id.clone(),
@@ -2394,7 +2385,7 @@ mod tests {
             PointType::OnCurve,
             false,
         );
-        let mut transferred = GlyphLayer::with_width(second_layer_id.clone(), source_id, 800.0);
+        let mut transferred = GlyphLayer::with_width(second_layer_id, source_id, 800.0);
         transferred.add_contour(transferred_contour);
         transferred.add_component(Component::with_id(
             component_id,
@@ -2414,7 +2405,7 @@ mod tests {
         font.replace_glyph_layers(vec![emptied, transferred])
             .unwrap();
 
-        assert_eq!(font.layer(&second_layer_id).unwrap().width(), 800.0);
+        assert_eq!(font.layer(second_layer_id).unwrap().width(), 800.0);
         assert!(font.has_contour_id(&contour_id));
         assert!(font.has_point_id(&point_id));
         assert!(font.has_anchor_id(&anchor_id));
@@ -2428,11 +2419,7 @@ mod tests {
         let source_a = SourceId::from_raw("a");
         let source_b = SourceId::from_raw("b");
         let source_c = SourceId::from_raw("c");
-        for (source_id, name) in [
-            (source_a.clone(), "A"),
-            (source_b.clone(), "B"),
-            (source_c.clone(), "C"),
-        ] {
+        for (source_id, name) in [(source_a, "A"), (source_b, "B"), (source_c, "C")] {
             font.add_source(Source::with_id(
                 source_id,
                 name.to_string(),
@@ -2441,16 +2428,16 @@ mod tests {
             ));
         }
 
-        font.set_source_order(&[source_c.clone(), source_a.clone(), source_b.clone()])
+        font.set_source_order(&[source_c, source_a, source_b])
             .unwrap();
         assert_eq!(
             font.sources().iter().map(Source::id).collect::<Vec<_>>(),
-            [source_c.clone(), source_a.clone(), source_b.clone()]
+            [source_c, source_a, source_b]
         );
         let reordered_sources = font.clone();
         for invalid in [
-            vec![source_a.clone(), source_b.clone()],
-            vec![source_a.clone(), source_a.clone(), source_c],
+            vec![source_a, source_b],
+            vec![source_a, source_a, source_c],
             vec![source_a, source_b, SourceId::from_raw("d")],
         ] {
             assert!(matches!(
@@ -2470,9 +2457,9 @@ mod tests {
         let axis_b = AxisId::from_raw("b");
         let axis_c = AxisId::from_raw("c");
         for (axis_id, tag, name) in [
-            (axis_a.clone(), "AAAA", "A"),
-            (axis_b.clone(), "BBBB", "B"),
-            (axis_c.clone(), "CCCC", "C"),
+            (axis_a, "AAAA", "A"),
+            (axis_b, "BBBB", "B"),
+            (axis_c, "CCCC", "C"),
         ] {
             font.add_axis(Axis::with_id(
                 axis_id,
@@ -2485,16 +2472,15 @@ mod tests {
             .unwrap();
         }
 
-        font.set_axis_order(&[axis_c.clone(), axis_a.clone(), axis_b.clone()])
-            .unwrap();
+        font.set_axis_order(&[axis_c, axis_a, axis_b]).unwrap();
         assert_eq!(
             font.axes().iter().map(Axis::id).collect::<Vec<_>>(),
-            [axis_c.clone(), axis_a.clone(), axis_b.clone()]
+            [axis_c, axis_a, axis_b]
         );
         let reordered_axes = font.clone();
         for invalid in [
-            vec![axis_a.clone(), axis_b.clone()],
-            vec![axis_a.clone(), axis_a.clone(), axis_c],
+            vec![axis_a, axis_b],
+            vec![axis_a, axis_a, axis_c],
             vec![axis_a, axis_b, AxisId::from_raw("d")],
         ] {
             assert!(matches!(
@@ -2517,24 +2503,24 @@ mod tests {
         let glyph = Glyph::with_unicode("A".to_string(), 65);
         let glyph_id = font.insert_glyph(glyph).unwrap();
 
-        let taken = font.pop_glyph(glyph_id.clone()).unwrap();
+        let taken = font.pop_glyph(glyph_id).unwrap();
         assert_eq!(font.glyph_count(), 0);
         assert_eq!(font.glyph_id_by_name("A"), None);
 
         font.insert_glyph(taken).unwrap();
         assert_eq!(font.glyph_count(), 1);
-        assert_eq!(font.glyph_id_by_name("A"), Some(glyph_id.clone()));
-        assert_eq!(font.glyph_order(&glyph_id), Some(0));
+        assert_eq!(font.glyph_id_by_name("A"), Some(glyph_id));
+        assert_eq!(font.glyph_order(glyph_id), Some(0));
 
         let second_id = font.insert_glyph(Glyph::new("B")).unwrap();
         let before_invalid_pop = font.clone();
         assert!(matches!(
-            font.pop_glyph(glyph_id.clone()),
+            font.pop_glyph(glyph_id),
             Err(CoreError::GlyphNotAtTail(_))
         ));
         assert_eq!(font, before_invalid_pop);
-        assert_eq!(font.pop_glyph(second_id.clone()).unwrap().id(), second_id);
-        assert_eq!(font.glyph_order(&glyph_id), Some(0));
+        assert_eq!(font.pop_glyph(second_id).unwrap().id(), second_id);
+        assert_eq!(font.glyph_order(glyph_id), Some(0));
     }
 
     #[test]
@@ -2566,12 +2552,12 @@ mod tests {
         let mut font = Font::new();
         let glyph_id = font.insert_glyph(Glyph::new("A")).unwrap();
 
-        font.rename_glyph(&glyph_id, GlyphName::from("A.alt"))
+        font.rename_glyph(glyph_id, GlyphName::from("A.alt"))
             .unwrap();
 
         assert_eq!(font.glyph_id_by_name("A"), None);
-        assert_eq!(font.glyph_id_by_name("A.alt"), Some(glyph_id.clone()));
-        assert_eq!(font.glyph(&glyph_id).unwrap().name(), "A.alt");
+        assert_eq!(font.glyph_id_by_name("A.alt"), Some(glyph_id));
+        assert_eq!(font.glyph(glyph_id).unwrap().name(), "A.alt");
     }
 
     #[test]
@@ -2604,7 +2590,7 @@ mod tests {
         let mut font = Font::new();
         let source_id = font.default_source_id().unwrap();
         let mut glyph = Glyph::with_unicode("A", 0x41);
-        let layer = GlyphLayer::new(LayerId::new(), source_id.clone());
+        let layer = GlyphLayer::new(LayerId::new(), source_id);
         let layer_id = layer.id();
         glyph.set_layer(layer);
         let glyph_id = font.insert_glyph(glyph).unwrap();
@@ -2612,10 +2598,10 @@ mod tests {
         let json = serde_json::to_string(&font).unwrap();
         let decoded: Font = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(decoded.glyph_id_by_name("A"), Some(glyph_id.clone()));
-        assert_eq!(decoded.glyph_id_by_layer(&layer_id), Some(glyph_id.clone()));
+        assert_eq!(decoded.glyph_id_by_name("A"), Some(glyph_id));
+        assert_eq!(decoded.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            decoded.layer_id_for_glyph_source(glyph_id.clone(), source_id),
+            decoded.layer_id_for_glyph_source(glyph_id, source_id),
             Some(layer_id)
         );
         assert_eq!(
@@ -2633,7 +2619,7 @@ mod tests {
         let mut changed = original.clone();
 
         let point = changed
-            .layer_mut(&LayerId::from_raw("A_regular"))
+            .layer_mut(LayerId::from_raw("A_regular"))
             .unwrap()
             .contour_mut(&ContourId::from_raw("A_outer"))
             .unwrap()
@@ -2664,10 +2650,10 @@ mod tests {
         let glyph_id = font.insert_glyph(Glyph::new("A")).unwrap();
         let layer_id = LayerId::new();
 
-        font.create_glyph_layer(layer_id, glyph_id.clone(), source_id.clone())
+        font.create_glyph_layer(layer_id, glyph_id, source_id)
             .unwrap();
         let error = font
-            .create_glyph_layer(LayerId::new(), glyph_id.clone(), source_id.clone())
+            .create_glyph_layer(LayerId::new(), glyph_id, source_id)
             .unwrap_err();
 
         assert!(matches!(
@@ -2703,18 +2689,18 @@ mod tests {
         let source_id = font.default_source_id().unwrap();
         let glyph_id = font.insert_glyph(Glyph::new("A")).unwrap();
         let layer_id = LayerId::new();
-        font.create_glyph_layer(layer_id.clone(), glyph_id.clone(), source_id.clone())
+        font.create_glyph_layer(layer_id, glyph_id, source_id)
             .unwrap();
 
-        assert_eq!(font.glyph_id_by_layer(&layer_id), Some(glyph_id.clone()));
+        assert_eq!(font.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            font.layer_id_for_glyph_source(glyph_id.clone(), source_id.clone()),
-            Some(layer_id.clone())
+            font.layer_id_for_glyph_source(glyph_id, source_id),
+            Some(layer_id)
         );
 
-        font.remove_glyph_layer(&layer_id).unwrap();
+        font.remove_glyph_layer(layer_id).unwrap();
 
-        assert_eq!(font.glyph_id_by_layer(&layer_id), None);
+        assert_eq!(font.glyph_id_by_layer(layer_id), None);
         assert_eq!(font.layer_id_for_glyph_source(glyph_id, source_id), None);
     }
 
@@ -2722,8 +2708,8 @@ mod tests {
     fn index_validation_rejects_duplicate_layers_for_one_glyph_source() {
         let source_id = SourceId::new();
         let mut glyph = Glyph::new("A");
-        glyph.set_layer(GlyphLayer::new(LayerId::new(), source_id.clone()));
-        glyph.set_layer(GlyphLayer::new(LayerId::new(), source_id.clone()));
+        glyph.set_layer(GlyphLayer::new(LayerId::new(), source_id));
+        glyph.set_layer(GlyphLayer::new(LayerId::new(), source_id));
         let mut glyphs = PersistentEntityList::new();
         glyphs.insert(Arc::new(glyph));
 
@@ -2766,10 +2752,10 @@ mod tests {
             .unwrap();
         let snapshot = font.clone();
 
-        font.set_glyph_unicodes(&a, vec![0x41, 0x00C1]).unwrap();
+        font.set_glyph_unicodes(a, vec![0x41, 0x00C1]).unwrap();
 
-        assert_eq!(font.glyph(&a).unwrap().unicodes(), &[0x41, 0x00C1]);
-        assert_eq!(snapshot.glyph(&a).unwrap().unicodes(), &[0x41]);
+        assert_eq!(font.glyph(a).unwrap().unicodes(), &[0x41, 0x00C1]);
+        assert_eq!(snapshot.glyph(a).unwrap().unicodes(), &[0x41]);
         assert!(!Arc::ptr_eq(
             font.state.data.glyphs.get(&a).unwrap(),
             snapshot.state.data.glyphs.get(&a).unwrap()
@@ -2856,7 +2842,7 @@ mod tests {
             .layer_id_for_glyph_source(glyph_id, font.default_source_id().unwrap())
             .unwrap();
         let point_ids: Vec<PointId> = font
-            .layer(&layer_id)
+            .layer(layer_id)
             .unwrap()
             .contours_iter()
             .flat_map(|contour| contour.points().iter().map(crate::Point::id))
@@ -2864,7 +2850,7 @@ mod tests {
 
         let moved = median_time(|run| {
             font.apply_intents(&crate::FontIntentSet::from(crate::MovePoints {
-                layer_id: layer_id.clone(),
+                layer_id,
                 point_ids: vec![point_ids[0].clone()],
                 coords: vec![f64::from(run), 0.0],
             }))
@@ -2874,7 +2860,7 @@ mod tests {
         let removed = median_time(|_| {
             let applied = font
                 .apply_intents(&crate::FontIntentSet::from(crate::RemovePoints {
-                    layer_id: layer_id.clone(),
+                    layer_id,
                     point_ids: point_ids[8..].to_vec(),
                 }))
                 .unwrap();
@@ -2909,18 +2895,18 @@ mod tests {
         for first in &glyph_ids {
             for second in &glyph_ids {
                 font.kerning_mut().set_value(
-                    source_id.clone(),
-                    crate::KerningPair::glyphs(first.clone(), second.clone()),
+                    source_id,
+                    crate::KerningPair::glyphs(*first, *second),
                     -10.0,
                 );
             }
         }
-        let pair = crate::KerningPair::glyphs(glyph_ids[7].clone(), glyph_ids[9].clone());
+        let pair = crate::KerningPair::glyphs(glyph_ids[7], glyph_ids[9]);
 
         let edited = median_time(|run| {
             font.apply_intents(&crate::FontIntentSet::from(crate::SetKerningValues {
                 edits: vec![crate::KerningValueEdit {
-                    source_id: source_id.clone(),
+                    source_id,
                     pair: pair.clone(),
                     value: Some(f64::from(run)),
                 }],
@@ -2951,26 +2937,26 @@ mod tests {
         let default_source_id = font.default_source_id().unwrap();
         let glyph_id = font.glyph_id_by_name("g00000").unwrap();
         let layer_id = font
-            .layer_id_for_glyph_source(glyph_id.clone(), default_source_id)
+            .layer_id_for_glyph_source(glyph_id, default_source_id)
             .unwrap();
         let other_glyph_id = font.glyph_id_by_name("g00001").unwrap();
         let start = Instant::now();
 
-        font.layer_mut(&layer_id)
+        font.layer_mut(layer_id)
             .expect("target glyph should exist")
             .set_width(777.0);
 
         let elapsed = start.elapsed();
 
         assert_eq!(
-            font.layer(&layer_id)
+            font.layer(layer_id)
                 .expect("target source layer should exist")
                 .width(),
             777.0
         );
         assert_ne!(
             snapshot
-                .layer(&layer_id)
+                .layer(layer_id)
                 .expect("target source layer should exist")
                 .width(),
             777.0
@@ -3003,7 +2989,7 @@ mod tests {
         let glyph_id = font.glyph_id_by_name("g00000").unwrap();
         let start = Instant::now();
 
-        font.rename_glyph(&glyph_id, GlyphName::from("g00000.alt"))
+        font.rename_glyph(glyph_id, GlyphName::from("g00000.alt"))
             .unwrap();
 
         let elapsed = start.elapsed();
@@ -3030,7 +3016,7 @@ mod tests {
         let unicode = 0xE000;
         let start = Instant::now();
 
-        font.set_glyph_unicodes(&glyph_id, vec![0x41, unicode])
+        font.set_glyph_unicodes(glyph_id, vec![0x41, unicode])
             .unwrap();
 
         let elapsed = start.elapsed();
@@ -3062,14 +3048,14 @@ mod tests {
         let start = Instant::now();
 
         let layer_id = LayerId::new();
-        font.create_glyph_layer(layer_id.clone(), glyph_id.clone(), source_id.clone())
+        font.create_glyph_layer(layer_id, glyph_id, source_id)
             .unwrap();
-        let removed = font.remove_glyph_layer(&layer_id).unwrap();
+        let removed = font.remove_glyph_layer(layer_id).unwrap();
 
         let elapsed = start.elapsed();
 
         assert_eq!(removed.id(), layer_id);
-        assert_eq!(font.glyph_id_by_layer(&layer_id), None);
+        assert_eq!(font.glyph_id_by_layer(layer_id), None);
         assert_eq!(font.layer_id_for_glyph_source(glyph_id, source_id), None);
         print_perf_mark("create/remove layer and rebuild indexes", mark, elapsed);
         assert_within_budget(
@@ -3084,7 +3070,7 @@ mod tests {
         let first = font.add_source(Source::new("Light".to_string(), DesignLocation::new()));
         let second = font.add_source(Source::new("Bold".to_string(), DesignLocation::new()));
         // Layer ids sort in source order, so keeping the last tie by id would pick `second`.
-        let mut on_first = GlyphLayer::new(LayerId::from_raw("a"), first.clone());
+        let mut on_first = GlyphLayer::new(LayerId::from_raw("a"), first);
         on_first.add_empty_contour();
         let mut on_second = GlyphLayer::new(LayerId::from_raw("b"), second);
         on_second.add_empty_contour();
@@ -3110,10 +3096,7 @@ mod tests {
             .map(|(source, layer)| (source.name(), layer.source_id()))
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            font.default_master().map(Source::id),
-            Some(default_id.clone())
-        );
+        assert_eq!(font.default_master().map(Source::id), Some(default_id));
         assert_eq!(
             font.default_master_layer(glyph)
                 .map(|layer| layer.source_id()),

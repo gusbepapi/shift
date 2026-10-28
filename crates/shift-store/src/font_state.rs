@@ -266,7 +266,7 @@ fn load_sources(conn: &rusqlite::Connection) -> Result<Vec<font::Source>, StoreE
 
     let rows = stmt.query_map([], |row| {
         let source_id = row.get::<_, font::SourceId>(0)?;
-        let location = load_source_location(conn, &source_id)?;
+        let location = load_source_location(conn, source_id)?;
         let mut source = font::Source::with_id(
             source_id,
             row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -282,7 +282,7 @@ fn load_sources(conn: &rusqlite::Connection) -> Result<Vec<font::Source>, StoreE
         source.set_line_gap(row.get(7)?);
         source.set_underline_position(row.get(8)?);
         source.set_underline_thickness(row.get(9)?);
-        source.set_metric_values(load_source_metric_values(conn, &source.id())?);
+        source.set_metric_values(load_source_metric_values(conn, source.id())?);
         Ok(source)
     })?;
 
@@ -301,7 +301,7 @@ fn load_sources(conn: &rusqlite::Connection) -> Result<Vec<font::Source>, StoreE
 
 fn load_source_metric_values(
     conn: &rusqlite::Connection,
-    source_id: &font::SourceId,
+    source_id: font::SourceId,
 ) -> rusqlite::Result<BTreeMap<font::MetricId, font::MetricValue>> {
     let mut stmt = conn.prepare(
         "
@@ -323,7 +323,7 @@ fn load_source_metric_values(
 
 fn load_source_location(
     conn: &rusqlite::Connection,
-    source_id: &font::SourceId,
+    source_id: font::SourceId,
 ) -> rusqlite::Result<font::DesignLocation> {
     let mut stmt = conn.prepare(
         "
@@ -426,7 +426,7 @@ fn load_glyphs(
     if read == FontRead::WithLayerPayloads {
         let layer_ids = layer_rows
             .iter()
-            .map(|(layer_id, _, _, _, _)| layer_id.clone())
+            .map(|(layer_id, _, _, _, _)| *layer_id)
             .collect::<Vec<_>>();
         for layer in crate::layer::load_glyph_layers_from_conn(conn, &layer_ids)? {
             loaded_layers.insert(layer.id(), layer);
@@ -449,7 +449,7 @@ fn load_glyphs(
 
     let mut glyphs = Vec::with_capacity(glyph_rows.len());
     for (glyph_id, name, category, sub_category) in glyph_rows {
-        let mut glyph = font::Glyph::with_id(glyph_id.clone(), name);
+        let mut glyph = font::Glyph::with_id(glyph_id, name);
         // A name a later Shift wrote but this one does not know reads as unset.
         glyph.set_category(category.and_then(|category| category.parse().ok()));
         glyph.set_sub_category(sub_category.and_then(|sub_category| sub_category.parse().ok()));
