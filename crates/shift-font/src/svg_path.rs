@@ -24,8 +24,9 @@ pub enum SvgPathError {
 /// Relative commands become absolute, `H` and `V` lines, `S` and `T`
 /// reflect the previous control, and arcs become cubics. A line or curve
 /// adds an on-curve point, a cubic two off-curve points before it, and a
-/// quadratic one before a `qCurve` point. `Z` closes the subpath; one
-/// without it stays open. Every point is a corner, with a fresh id.
+/// quadratic one before a `qCurve` point. `Z` closes the subpath, dropping
+/// a final on-curve point that repeats the start, since closing already
+/// joins the two; one without `Z` stays open. Every point is a corner, with a fresh id.
 ///
 /// # Errors
 ///
@@ -63,7 +64,10 @@ pub fn contours_from_svg_path(path: &str) -> Result<Vec<Contour>, SvgPathError> 
                 contour.add_point(x1, y1, PointType::OffCurve, false);
                 contour.add_point(x, y, PointType::QCurve, false);
             }
-            SimplePathSegment::ClosePath => contour.close(),
+            SimplePathSegment::ClosePath => {
+                drop_repeated_start(contour);
+                contour.close();
+            }
             SimplePathSegment::MoveTo { .. } => unreachable!("a move starts a new contour"),
         }
     }
@@ -76,6 +80,22 @@ pub fn contours_from_svg_path(path: &str) -> Result<Vec<Contour>, SvgPathError> 
         return Err(SvgPathError::NotFinite);
     }
     Ok(contours)
+}
+
+/// Removes a final point that sits exactly where the contour starts, so a
+/// path that draws back to its start does not close on a doubled point.
+fn drop_repeated_start(contour: &mut Contour) {
+    let points = contour.points();
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return;
+    };
+    let repeats_start = points.len() > 1
+        && last.point_type() == PointType::OnCurve
+        && last.x() == first.x()
+        && last.y() == first.y();
+    if repeats_start {
+        contour.points_mut().pop();
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +131,37 @@ mod tests {
             [(
                 true,
                 vec![(0.0, 0.0, On), (100.0, 0.0, On), (100.0, 100.0, On)]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_closing_point_that_repeats_the_start_is_dropped() {
+        let contours = contours_from_svg_path("M0,0 L100,0 L100,100 L0,0 Z").unwrap();
+
+        assert_eq!(
+            shape(&contours),
+            [(
+                true,
+                vec![(0.0, 0.0, On), (100.0, 0.0, On), (100.0, 100.0, On)]
+            )]
+        );
+    }
+
+    #[test]
+    fn off_curve_points_that_curve_back_to_the_start_are_kept() {
+        let contours = contours_from_svg_path("M0,0 L100,0 C100,50 50,100 0,0 Z").unwrap();
+
+        assert_eq!(
+            shape(&contours),
+            [(
+                true,
+                vec![
+                    (0.0, 0.0, On),
+                    (100.0, 0.0, On),
+                    (100.0, 50.0, Off),
+                    (50.0, 100.0, Off)
+                ]
             )]
         );
     }
