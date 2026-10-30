@@ -84,16 +84,19 @@ describe("fallbacks", () => {
 });
 
 describe("conditional-spread", () => {
-  it("reports a spread that chooses on a condition", () => {
+  it("reports an array spread that chooses on a condition", () => {
     const found = scan(
-      `const a = { ...(name ? { name } : {}) };\nconst b = { ...(open && { open }) };\nconst c = [...(isMac ? [] : [quit])];`,
+      `const a = [...(isMac ? [] : [quit])];\nconst b = [...(open && [item])];\nf(...(x ? [1] : []));`,
     );
     assert.equal(found.length, 3);
     assert.ok(found.every((finding) => finding.startsWith("conditional-spread")));
   });
 
-  it("ignores a plain spread", () => {
-    assert.deepEqual(scan(`const a = { ...defaults, ...options };`), []);
+  it("leaves object spreads to the lint rule and ignores a plain spread", () => {
+    assert.deepEqual(
+      scan(`const a = { ...(name ? { name } : {}) };\nconst b = { ...defaults, ...options };`),
+      [],
+    );
   });
 });
 
@@ -128,6 +131,60 @@ describe("nested-callbacks", () => {
 
   it("ignores two levels", () => {
     assert.deepEqual(scan(`groups.map((group) => group.items.map((item) => item.id));`), []);
+  });
+});
+
+/** `model-rule` findings for one file at `fileName`. */
+function modelRules(fileName, source) {
+  const scanner = new TsScan(new Set());
+  scanner.add(fileName, source);
+  return scanner
+    .findings()
+    .filter((finding) => finding.kind === "model-rule")
+    .map((finding) => finding.detail);
+}
+
+const MODEL_FILE = "packages/editor/src/lib/model/Kerning.ts";
+
+describe("model-rule", () => {
+  it("reports a model method that decides over its data without the engine", () => {
+    const found = modelRules(
+      MODEL_FILE,
+      `class Kerning {
+        pairsNaming(glyphId: GlyphId) { return this.#pairs.filter((pair) => pair.first === glyphId); }
+        origin(sourceId: SourceId) { return this.authors(sourceId) || this.sources.length === 1 ? "unkerned" : "interpolated"; }
+      }`,
+    );
+    assert.deepEqual(found, [
+      "pairsNaming: computes without the engine — check whether shift-font owns this",
+      "origin: computes without the engine — check whether shift-font owns this",
+    ]);
+  });
+
+  it("ignores a method that asks the engine, by name or through a wasm import", () => {
+    const found = modelRules(
+      MODEL_FILE,
+      `import { kerningRun } from "../wasm/kerning";
+      class Kerning {
+        between(pairs: Pair[]) { return pairs.some((pair) => !pair) ? null : this.#engine.kerningRun(pairs); }
+        run(pairs: Pair[]) { for (const pair of pairs) kerningRun(pair); }
+        name(id: GlyphId) { return this.#requireEngine().nameFor(id) || id || null; }
+      }`,
+    );
+    assert.deepEqual(found, []);
+  });
+
+  it("ignores a lookup with one branch, and code outside the model or in its tests", () => {
+    const loop = `class Kerning { sum(values: number[]) { let total = 0; for (const v of values) total += v; return total; } }`;
+    assert.deepEqual(
+      modelRules(
+        MODEL_FILE,
+        `class Font { source(id: SourceId) { return this.#sources.get(id) ?? null; } }`,
+      ),
+      [],
+    );
+    assert.deepEqual(modelRules("packages/editor/src/lib/tools/Pen.ts", loop), []);
+    assert.deepEqual(modelRules("packages/editor/src/lib/model/Kerning.test.ts", loop), []);
   });
 });
 

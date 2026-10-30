@@ -61,7 +61,7 @@ import type {
   KerningPlace,
   WorkspaceEditCoordinator,
 } from "../../types/font";
-import type { InterpolatedMetrics } from "../wasm/engine";
+import type { InterpolatedMetrics, MissingKerningOrigin } from "../wasm/engine";
 import { locationValues } from "../wasm/variation";
 import type { GlyphReader } from "../../types/glyph";
 import { Glyph, GlyphLayer } from "./Glyph";
@@ -227,8 +227,7 @@ const DEFAULT_FONT_METRICS: FontMetrics = {
   unitsPerEm: 1000,
 };
 
-/** Where a pair's value comes from at a source that authors no pair for it; see {@link Font.missingPairOrigin}. */
-export type MissingKerningOrigin = "unkerned" | "interpolated";
+export type { MissingKerningOrigin };
 
 /** One page of a font's glyph directory, in font order. */
 export interface GlyphDirectoryPage {
@@ -1318,6 +1317,38 @@ export class Font {
     return this.#peekDesignspace((designspace) => designspace.source(sourceId));
   }
 
+  /** The axis with id `axisId`, or null when the font has none. */
+  axis(axisId: AxisId): Axis | null {
+    return this.#peekDesignspace((designspace) => designspace.axis(axisId));
+  }
+
+  /** The axis tagged `tag`, or null when the font has none. */
+  axisTagged(tag: string): Axis | null {
+    return this.#peekDesignspace((designspace) => designspace.axisTagged(tag));
+  }
+
+  /** The named instance with id `instanceId`, or null when the font has none. */
+  namedInstance(instanceId: NamedInstanceId): NamedInstance | null {
+    return this.namedInstances.find((instance) => instance.id === instanceId) ?? null;
+  }
+
+  /**
+   * The named instance called exactly `name`.
+   *
+   * @remarks
+   * Instance names are not unique, as source names are not (see {@link Designspace.sourceNamed}).
+   *
+   * @returns null when no instance has the name.
+   * @throws {Error} when more than one instance has it.
+   */
+  namedInstanceNamed(name: string): NamedInstance | null {
+    const named = this.namedInstances.filter((instance) => instance.name === name);
+    if (named.length > 1) {
+      throw new Error(`Instance name ${name} is ambiguous: ${named.length} instances have it`);
+    }
+    return named[0] ?? null;
+  }
+
   /**
    * Find a source by its exact name; see {@link Designspace.sourceNamed}.
    *
@@ -1785,8 +1816,7 @@ export class Font {
    * value blends the sources that do author kerning.
    */
   missingPairOrigin(sourceId: SourceId): MissingKerningOrigin {
-    const ownsKerning = this.#kerningCell.peek().authors(sourceId) || this.sources.length === 1;
-    return ownsKerning ? "unkerned" : "interpolated";
+    return this.#store.engine?.missingKerningOrigin(sourceId) ?? "unkerned";
   }
 
   /** A kerning side as people know it: the group's name, or the glyph's; null when unknown. */
@@ -1990,6 +2020,10 @@ function memberIntent(
 ): FontIntent {
   return {
     kind: "setKerningGroupMember",
-    setKerningGroupMember: { position, glyphId, ...(groupId === null ? {} : { groupId }) },
+    setKerningGroupMember: {
+      position,
+      glyphId,
+      groupId: groupId === null ? undefined : groupId,
+    },
   };
 }
