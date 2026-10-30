@@ -1,5 +1,6 @@
 import type {
   AuthoredContour,
+  DocumentState,
   EditorView,
   KerningGapView,
   KerningPairSideView,
@@ -12,13 +13,13 @@ import type {
   TextRunView,
 } from "@shift/runtime";
 import type { Editor } from "@shift/editor";
+import type { ScenePoint } from "@shift/editor/spaces";
 import { isGroupSide, type KerningPairPosition } from "@shift/editor/model";
 import type { GlyphOutlineTarget, PositionGuide } from "@shift/editor/types";
-import type { PointId } from "@shift/types";
-import type { Signal } from "@shift/editor/signals";
+import { ascending, comparing, type PointId, type Source, type SourceId } from "@shift/types";
 import type { TextItem } from "@shift/editor/text";
-import { KerningTool, SpacingTool, type KerningPair } from "@shift/editor/tools";
-import type { WorkspaceApplyStatus } from "@/types/workspace";
+import type { KerningPair, SpacingTool } from "@shift/editor/tools";
+import type { WorkspaceEditCoordinator } from "@/lib/workspace/WorkspaceEditCoordinator";
 
 /** One point handle the canvas draws, and how it is styled. */
 export interface DrawnHandle {
@@ -27,24 +28,50 @@ export interface DrawnHandle {
   state: "idle" | "hovered" | "selected" | "interpolated";
 }
 
+/** The canvas camera: its zoom level and how far it is panned, in screen pixels. */
+export interface CanvasCamera {
+  zoom: number;
+  pan: { x: number; y: number };
+}
+
+/** One selected object and its kind (`point`, `segment`, `contour`, `component`, `anchor`, …). */
+export interface SelectedObject {
+  id: string;
+  kind: string;
+}
+
+/** A rectangle in the open glyph's units. */
+export interface GlyphRect {
+  min: { x: number; y: number };
+  max: { x: number; y: number };
+}
+
+/** A point an edit also moves: the source whose layer holds it, its id, and where it is now. */
+export interface MatchedPoint {
+  sourceId: SourceId;
+  pointId: PointId;
+  x: number;
+  y: number;
+}
+
 /**
  * Public reads of one editor's view: its open glyph, sources, location,
- * selection, tool and edit state.
+ * selection, tool, edit and save state.
  *
  * @remarks
  * Returns runtime DTOs. Revision guarding and transport belong to the caller.
  */
 export class ShiftEditorReader {
   readonly #editor: Editor;
-  readonly #applyStatusCell: Signal<WorkspaceApplyStatus> | null;
+  readonly #edits: WorkspaceEditCoordinator | null;
 
   /**
-   * @param applyStatusCell - The workspace's apply status; null for a session
+   * @param edits - The workspace's edit coordinator; null for a session
    * without a workspace (a preview or an in-memory font).
    */
-  constructor(editor: Editor, applyStatusCell: Signal<WorkspaceApplyStatus> | null) {
+  constructor(editor: Editor, edits: WorkspaceEditCoordinator | null) {
     this.#editor = editor;
-    this.#applyStatusCell = applyStatusCell;
+    this.#edits = edits;
   }
 
   /**
@@ -75,8 +102,110 @@ export class ShiftEditorReader {
       tool: tool ? { id: tool.id, state: tool.state.type } : null,
       dragging: editor.isDragging,
       editing: editor.isEditing,
-      applyStatus: this.#applyStatusCell?.peek() ?? null,
+      applyStatus: this.#edits?.applyStatusCell.peek() ?? null,
     };
+  }
+
+  /** The canvas camera: its zoom level and pan. */
+  camera(): CanvasCamera {
+    const { zoom, pan } = this.#editor;
+    return { zoom, pan: { x: pan.x, y: pan.y } };
+  }
+
+  /** The id of the object under the pointer, or null when nothing is hovered. */
+  hoveredId(): string | null {
+    return this.#editor.hover.id ?? null;
+  }
+
+  /** The selected objects with their kinds, in selection order; an id the glyph no longer has is left out. */
+  selectedObjects(): SelectedObject[] {
+    const editor = this.#editor;
+    return editor.selection.ids.flatMap((id) => {
+      const object = editor.object(id);
+      return object ? [{ id, kind: object.kind }] : [];
+    });
+  }
+
+  /** The selection's bounds in the open glyph's units, a gesture's preview included; null when nothing bounded is selected. */
+  selectionBounds(): GlyphRect | null {
+    const bounds = this.#editor.selectionBounds();
+    return bounds ? { min: { ...bounds.min }, max: { ...bounds.max } } : null;
+  }
+
+  /** The scene nodes being edited in place, in the order they were entered; empty when none is. */
+  editingNodeIds(): string[] {
+    return [...this.#editor.editing.nodeIds];
+  }
+
+  /**
+   * Where an edit of the active layer's point `pointId` moves a point in each source being
+   * edited: the active source first, then each other one, a gesture's preview included.
+   *
+   * @returns one entry per layer the edit moves; empty when the point is not editable.
+   */
+  matchedPoints(pointId: PointId): MatchedPoint[] {
+    const selection = this.#editor.positionSelection([pointId]);
+    if (!selection) return [];
+
+    return [selection, ...selection.additionalLayers].flatMap(({ layer, targets }) => {
+      const id = targets.points?.[0];
+      const point = id ? layer.point(id) : null;
+      return id && point
+        ? [{ sourceId: layer.source.id, pointId: id, x: point.x, y: point.y }]
+        : [];
+    });
+  }
+
+  /** Whether the editor tracks a pointer over the canvas, or one a gesture has captured. */
+  hasPointer(): boolean {
+    return this.#editor.input.pointer !== null;
+  }
+
+  /**
+   * The two handles the Select tool previews on the Cmd-hovered line segment, at one and two
+   * thirds of it, in the open glyph's units; null while it previews none.
+   */
+  drawnUpgradePreview(): { x: number; y: number }[] | null {
+    const editor = this.#editor;
+    const preview = editor.toolIf("select")?.upgradePreview.propsSnapshot() ?? null;
+    const node = editor.scene.first("glyph");
+    if (!preview || !node) return null;
+
+    return preview.map((scene) => {
+      const { x, y } = editor.toLocal(node, scene as ScenePoint);
+      return { x, y };
+    });
+  }
+
+  /** Where the Pen's drag places the outgoing handle now, in glyph units; null outside a Pen drag. */
+  drawnPenHandle(): { x: number; y: number } | null {
+    const state = this.#editor.toolIf("pen")?.state;
+    if (state?.type !== "dragging") return null;
+
+    const { x, y } = state.curve.handlePosition;
+    return { x, y };
+  }
+
+  /** The source the editor shows and edits, or null between sources. */
+  activeSource(): Source | null {
+    const editor = this.#editor;
+    const sourceId = editor.activeSourceId;
+    return sourceId ? editor.font.source(sourceId) : null;
+  }
+
+  /**
+   * The window's document and whether it has unsaved edits, read behind every
+   * edit already made.
+   *
+   * @returns null for a session without a document (a preview or an
+   * in-memory font).
+   */
+  async documentState(): Promise<DocumentState | null> {
+    const state = await this.#edits?.state();
+    if (!state) return null;
+
+    const { sourceKind, saveTarget, canonicalPath, dirty, needsSaveAs } = state;
+    return { sourceKind, saveTarget, path: canonicalPath, dirty, needsSaveAs };
   }
 
   /**
@@ -121,13 +250,28 @@ export class ShiftEditorReader {
     return [...states].map(([pointId, state]) => ({ pointId, state }));
   }
 
-  /** The source and instance outlines the canvas draws around the open glyph, in drawing order. */
+  /**
+   * The source and instance outlines the canvas draws around the open glyph: sources first, in
+   * the font's source order, then instances, in the font's instance order.
+   */
   drawnOutlineTargets(): GlyphOutlineTarget[] {
     const editor = this.#editor;
     const node = editor.scene.first("glyph");
     if (!node) return [];
 
-    return [...editor.nodeDefinition("glyph").visibleOutlines(node.id)];
+    const { sources, namedInstances } = editor.font;
+    const sourceOrder = new Map(sources.map((source, index) => [source.id, index]));
+    const instanceOrder = new Map(
+      namedInstances.map((instance, index) => [instance.id, sources.length + index]),
+    );
+    const rank = (target: GlyphOutlineTarget) =>
+      target.kind === "source"
+        ? (sourceOrder.get(target.sourceId) ?? -1)
+        : (instanceOrder.get(target.instanceId) ?? -1);
+    return editor
+      .nodeDefinition("glyph")
+      .visibleOutlines(node.id)
+      .toSorted(comparing(rank, ascending));
   }
 
   /**
@@ -197,8 +341,8 @@ export class ShiftEditorReader {
    * @returns null when the Spacing tool is not active.
    */
   spacingTool(): SpacingToolView | null {
-    const tool = this.#editor.toolManager.activeTool;
-    if (!(tool instanceof SpacingTool)) return null;
+    const tool = this.#editor.toolIf("spacing");
+    if (!tool) return null;
 
     const { hovered, selected, editing } = tool;
     return {
@@ -220,8 +364,8 @@ export class ShiftEditorReader {
    * @returns null when the Kerning tool is not active.
    */
   kerningTool(): KerningToolView | null {
-    const tool = this.#editor.toolManager.activeTool;
-    if (!(tool instanceof KerningTool)) return null;
+    const tool = this.#editor.toolIf("kerning");
+    if (!tool) return null;
 
     const { hovered, currentPair: selected, editing } = tool;
     return {

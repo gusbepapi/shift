@@ -576,7 +576,7 @@ export class WorkspaceEditCoordinator {
       changeSet,
       origin,
       saveState,
-      ...(label === undefined ? {} : { label }),
+      label,
     };
 
     batch(() => {

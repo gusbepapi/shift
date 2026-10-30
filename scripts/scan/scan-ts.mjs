@@ -4,9 +4,16 @@
  * free functions whose first argument is a class of the codebase (maybe a method), classes named
  * as Manager, Store or Cache wrappers, and the `typescript` skill's signs of a type missing a
  * method: `?.` chains across two objects, the same `filter`/`find` in several files, and files
- * leaning on `?? null` / `?? []`, spreads of a condition (`...(x ? { a } : {})`, `...(x && { a })`),
- * and inline functions nested three or more deep. Tests are scanned like other code, except that
+ * leaning on `?? null` / `?? []`, array spreads of a condition (`[...(x ? [a] : [])]`; the object
+ * form is `shift/no-conditional-spread`'s), and inline functions nested three or more deep. Tests are scanned like other code, except that
  * `rust-twin` skips them (a test recomputing a rule is an oracle, not a port).
+ *
+ * `model-rule` reads only `packages/editor/src/lib/model/**` outside tests: a function, method or
+ * getter there that computes over domain data (a loop, two or more `if`/`?:`/`switch`/`&&`/`||`,
+ * or a `filter`/`find`/`some` given a function) without reaching the engine (no identifier or private
+ * name containing `engine`, such as `#engine`, `store.engine` or `#requireEngine()`, and no
+ * value imported from a `wasm` module). Rust owns every answer another consumer could need, so
+ * such a body may be a rule that belongs in shift-font; a lookup by id or name is a correct hit.
  *
  * Two kinds read the diff rather than the tree, and need `--since`:
  * - `test-ledger`: per changed test file, the `it`/`test` cases removed and added (matched by
@@ -58,6 +65,10 @@ const TWIN_WEIGHT = 4;
 const FALLBACKS = 5;
 /** Callbacks nested this deep or deeper are reported, at the outermost. */
 const CALLBACK_DEPTH = 3;
+/** Where `model-rule` looks: the editor's model, whose answers Rust may already own. */
+const MODEL_ROOT = /(^|[/\\])packages[/\\]editor[/\\]src[/\\]lib[/\\]model[/\\]/;
+/** A body branching this many times computes, for `model-rule`. */
+const MODEL_BRANCHES = 2;
 
 export const KINDS = [
   "rust-twin",
@@ -68,6 +79,7 @@ export const KINDS = [
   "fallbacks",
   "conditional-spread",
   "nested-callbacks",
+  "model-rule",
   "test-ledger",
   "refactor-churn",
 ];
@@ -116,11 +128,16 @@ class FileScan {
   #source;
   #scan;
   #test;
+  #model;
+  /** Names this file imports from a `wasm` module; using one reaches the engine. */
+  #wasmImports = new Set();
 
   constructor(source, scan) {
     this.#source = source;
     this.#scan = scan;
     this.#test = TEST_FILE.test(source.fileName);
+    this.#model = !this.#test && MODEL_ROOT.test(source.fileName);
+    if (this.#model) this.#wasmImports = wasmImports(source);
     this.#visit(source);
     const [first] = this.#fallbacks;
     if (first && this.#fallbacks.length >= FALLBACKS) {
@@ -169,6 +186,16 @@ class FileScan {
       }
     }
 
+    const modelMember = (named || (ts.isGetAccessorDeclaration(node) && node.body)) && this.#model;
+    if (modelMember && computesOverData(node.body) && !this.#reachesEngine(node.body)) {
+      const name = node.name.getText(this.#source);
+      this.#report(
+        "model-rule",
+        node,
+        `${name}: computes without the engine — check whether shift-font owns this`,
+      );
+    }
+
     if (named && ts.isFunctionDeclaration(node) && ts.isSourceFile(node.parent)) {
       const first = node.parameters[0]?.type?.getText(this.#source).replace(/^readonly /, "");
       if (first && this.#scan.isClass(first)) {
@@ -202,8 +229,8 @@ class FileScan {
         (ts.isArrayLiteralExpression(node.right) && node.right.elements.length === 0));
     if (fallsBack) this.#fallbacks.push(node);
 
-    const spread =
-      (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) && conditionOf(node.expression);
+    // An object spread that omits a key is the lint rule `shift/no-conditional-spread`'s.
+    const spread = ts.isSpreadElement(node) && conditionOf(node.expression);
     if (spread) {
       this.#report("conditional-spread", node, node.getText(this.#source).slice(0, 80));
     }
@@ -227,9 +254,80 @@ class FileScan {
       if (predicate.length >= 20) this.predicates.set(predicate, node);
     }
   }
+
+  /** True when `body` names the engine or uses a value imported from a `wasm` module. */
+  #reachesEngine(body) {
+    let reaches = false;
+    const walk = (node) => {
+      if (reaches) return;
+      const named = ts.isIdentifier(node) || ts.isPrivateIdentifier(node);
+      if (named && (/engine/i.test(node.text) || this.#wasmImports.has(node.text))) reaches = true;
+      else node.forEachChild(walk);
+    };
+    walk(body);
+    return reaches;
+  }
 }
 
-/** The condition a spread chooses on: `x ? {..} : {}` or `x && {..}`; null otherwise. */
+/** The local names a file imports from a module whose path contains `wasm`. */
+function wasmImports(source) {
+  const names = new Set();
+  for (const statement of source.statements) {
+    const fromWasm =
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text.includes("wasm");
+    const clause = fromWasm ? statement.importClause : null;
+    if (!clause || clause.isTypeOnly) continue;
+    if (clause.name) names.add(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (!element.isTypeOnly) names.add(element.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+const LOGICAL_OPERATORS = [ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken];
+
+/** A loop, `MODEL_BRANCHES` or more branches, or a `filter`/`find`/`some` given a function. */
+function computesOverData(body) {
+  let loops = 0;
+  let branches = 0;
+  let predicates = 0;
+  const walk = (node) => {
+    const loop =
+      ts.isForStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isWhileStatement(node) ||
+      ts.isDoStatement(node);
+    const logical =
+      ts.isBinaryExpression(node) && LOGICAL_OPERATORS.includes(node.operatorToken.kind);
+    const branch =
+      ts.isIfStatement(node) ||
+      ts.isConditionalExpression(node) ||
+      ts.isSwitchStatement(node) ||
+      logical;
+    const predicate =
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ["filter", "find", "some"].includes(node.expression.name.text) &&
+      node.arguments[0] &&
+      (ts.isArrowFunction(node.arguments[0]) || ts.isFunctionExpression(node.arguments[0]));
+    if (loop) loops++;
+    if (branch) branches++;
+    if (predicate) predicates++;
+    node.forEachChild(walk);
+  };
+  walk(body);
+  return loops > 0 || branches >= MODEL_BRANCHES || predicates > 0;
+}
+
+/** The condition a spread chooses on: `x ? [..] : []` or `x && [..]`; null otherwise. */
 function conditionOf(expression) {
   let inner = expression;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
@@ -328,7 +426,11 @@ export function computeWeight(body) {
 function repeatedFilters(files) {
   const byPredicate = Map.groupBy(
     files.flatMap((file) =>
-      [...file.predicates].map(([predicate, node]) => ({ predicate, node, file })),
+      [...file.predicates].map(([predicate, node]) => ({
+        predicate,
+        node,
+        file,
+      })),
     ),
     (use) => use.predicate,
   );
@@ -350,7 +452,12 @@ function repeatedFilters(files) {
 export function testLedger(filePath, before, after) {
   const oldCases = before === null ? new Map() : testCases(filePath, before);
   const newCases = after === null ? new Map() : testCases(filePath, after);
-  const finding = (line, detail) => ({ path: filePath, line, kind: "test-ledger", detail });
+  const finding = (line, detail) => ({
+    path: filePath,
+    line,
+    kind: "test-ledger",
+    detail,
+  });
 
   if (before === null) {
     return newCases.size === 0 ? [] : [finding(1, `new file with ${newCases.size} cases`)];
@@ -560,7 +667,11 @@ function workingRoot() {
 }
 
 function git(root, args) {
-  return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 /** Where the current branch left `since`, so a stale `since` does not count its own changes. */

@@ -1,10 +1,12 @@
 import type {
   AuthoredLayer,
   AxisCoordinate,
+  AxisSelector,
   FontOverview,
   GlyphPage,
   GlyphSelector,
   GlyphSummary,
+  InstanceSelector,
   LayerAppearance,
   LayerOverlays,
   LayerSelector,
@@ -15,7 +17,16 @@ import type {
   ShiftSessionMode,
   SourceSelector,
 } from "@shift/runtime";
-import { asGlyphId, type GlyphId } from "@shift/types";
+import {
+  asGlyphId,
+  type Axis,
+  type GlyphId,
+  type GlyphName,
+  type LayerMatch,
+  type NamedInstance,
+  type Source,
+  type Unicode,
+} from "@shift/types";
 import type { Font } from "@shift/editor/model";
 import { ShiftLayer } from "./ShiftLayer";
 import { ShiftSelectors } from "./ShiftSelectors";
@@ -47,6 +58,7 @@ export class ShiftFontReader {
       metricDefinitions: font.metricDefinitions,
       glyphCount: font.glyphCount,
       axes: font.getAxes(),
+      axisMappings: font.getAxisMappings(),
       sources: font.sources,
       instances: font.namedInstances,
     };
@@ -112,6 +124,76 @@ export class ShiftFontReader {
     return this.#glyphSummary(this.#select.glyphId(selector));
   }
 
+  /** The glyph named `name`, or null when the font has none. */
+  glyphNamed(name: GlyphName): GlyphSummary | null {
+    const entry = this.#font.entryForName(name);
+    return entry ? this.#glyphSummary(entry.id) : null;
+  }
+
+  /** The glyph the font shows for `unicode`, or null when it has none. */
+  glyphForUnicode(unicode: number): GlyphSummary | null {
+    const font = this.#font;
+    const record = font.recordForName(font.glyphHandleForUnicode(unicode as Unicode).name);
+    return record ? this.#glyphSummary(record.id) : null;
+  }
+
+  /** The font's default source: where every axis sits at its default. */
+  defaultSource(): Source {
+    return this.#font.defaultSource;
+  }
+
+  /**
+   * The source `selector` names, as `sources.get` returns it.
+   *
+   * @throws {Error} when the font has no such source, or several sources share the name.
+   */
+  getSource(selector: SourceSelector): Source {
+    return this.#font.source(this.#select.sourceId(selector))!;
+  }
+
+  /**
+   * The source `selector` names, or null when the font has none.
+   *
+   * @throws {Error} when several sources share the name.
+   */
+  source(selector: SourceSelector): Source | null {
+    const font = this.#font;
+    return selector.name !== undefined
+      ? font.sourceNamed(selector.name)
+      : font.source(selector.sourceId);
+  }
+
+  /**
+   * The named instance `selector` names, as `instances.get` returns it.
+   *
+   * @throws {Error} when the font has no such instance, or several instances share the name.
+   */
+  getInstance(selector: InstanceSelector): NamedInstance {
+    const instance = this.instance(selector);
+    if (!instance) {
+      throw new Error(`Instance ${selector.name ?? selector.instanceId} is not in this font`);
+    }
+    return instance;
+  }
+
+  /**
+   * The named instance `selector` names, or null when the font has none.
+   *
+   * @throws {Error} when several instances share the name.
+   */
+  instance(selector: InstanceSelector): NamedInstance | null {
+    const font = this.#font;
+    return selector.name !== undefined
+      ? font.namedInstanceNamed(selector.name)
+      : font.namedInstance(selector.instanceId);
+  }
+
+  /** The axis `selector` names, by id or tag, or null when the font has none. */
+  axis(selector: AxisSelector): Axis | null {
+    const font = this.#font;
+    return selector.tag !== undefined ? font.axisTagged(selector.tag) : font.axis(selector.axisId);
+  }
+
   async resolveGlyphs(glyphIds: GlyphId[], location: AxisCoordinate[]): Promise<ResolvedGlyphs> {
     const font = this.#font;
     for (const glyphId of glyphIds) this.#select.glyphId({ glyphId });
@@ -134,6 +216,16 @@ export class ShiftFontReader {
   /** @throws {Error} for an unknown layer, glyph or source, or a glyph with no layer at that source. */
   async getLayer(selector: LayerSelector): Promise<AuthoredLayer> {
     return (await ShiftLayer.readAuthored(this.#font, this.#select.layerId(selector))).authored();
+  }
+
+  /**
+   * How the `target` layer's contours, points, anchors and components
+   * correspond to the `reference` layer's, as the engine matches them.
+   *
+   * @throws {Error} as {@link getLayer} does, for either layer.
+   */
+  async matchLayers(reference: LayerSelector, target: LayerSelector): Promise<LayerMatch> {
+    return this.#font.matchLayers(this.#select.layerId(reference), this.#select.layerId(target));
   }
 
   /** @throws {Error} as {@link getLayer} does, or when a component cannot resolve. */

@@ -125,29 +125,88 @@ describe("shift/no-page-evaluate-in-specs", () => {
   const evaluations = [
     "declare const page: any;",
     "declare const electronApp: any;",
-    "declare const canvas: any;",
     "await page.evaluate(() => window.shift);",
     "await electronApp.evaluate(({ app }) => app.getName());",
-    "await canvas.evaluate((element) => element.scrollTop);",
-    "await page.locator('li').evaluateAll((items) => items.length);",
     "await page.evaluateHandle(() => window);",
+    "await page.waitForFunction(() => window.shift);",
     "await page.waitForURL(/home/);",
   ].join("\n");
 
-  it("flags evaluate calls on any receiver in a desktop E2E spec", () => {
+  it("flags page, main-process and wait-for-function evaluations in a desktop E2E spec", () => {
     const lines = reportedLines(
       "no-page-evaluate-in-specs",
       evaluations,
       "apps/desktop/e2e/editor.spec.ts",
     );
 
-    assert.deepEqual(lines, [4, 5, 6, 7, 8]);
+    assert.deepEqual(lines, [3, 4, 5, 6]);
   });
 
-  it("allows evaluations in E2E fixtures and outside desktop E2E specs", () => {
+  it("allows evaluations on locators, element handles and window handles", () => {
+    const lines = reportedLines(
+      "no-page-evaluate-in-specs",
+      [
+        "import type { Locator, ElementHandle } from '@playwright/test';",
+        "declare const page: any;",
+        "declare const electronApp: any;",
+        "declare function helperCanvas(page: any): Locator;",
+        "async function slider(page: any): Promise<Locator> { return page.getByRole('slider'); }",
+        "await page.locator('#canvas').evaluate((element) => element.scrollTop);",
+        "await page.getByRole('list').first().evaluate((element) => element.id);",
+        "await page.locator('li').evaluateAll((items) => items.length);",
+        "const grid = page.getByRole('grid');",
+        "const viewport = grid;",
+        "await viewport.evaluate((element) => element.scrollTop);",
+        "const annotated: Locator = helperCanvas(page);",
+        "await annotated.evaluate((element) => element.scrollTop);",
+        "await (await slider(page)).evaluate((element) => element.value);",
+        "async function focused(element: ElementHandle) { return element.evaluate((node) => node === document.activeElement); }",
+        "const window = await electronApp.browserWindow(page);",
+        "await window.evaluate((browserWindow) => browserWindow.isMaximized());",
+        "await (await page.$('body')).evaluateHandle((body) => body);",
+      ].join("\n"),
+      "apps/desktop/e2e/editor.spec.ts",
+    );
+
+    assert.deepEqual(lines, []);
+  });
+
+  it("flags receivers it cannot prove are element-side", () => {
+    const lines = reportedLines(
+      "no-page-evaluate-in-specs",
+      [
+        "import { glyphCatalogCanvas } from './fixtures/appLocators';",
+        "declare const page: any;",
+        "declare const editor: any;",
+        "const workspacePage = page;",
+        "await workspacePage.evaluate(() => window.shift);",
+        "const canvas = glyphCatalogCanvas(page);",
+        "await canvas.evaluate((element) => element.scrollTop);",
+        "await editor.page.evaluate(() => window.shift);",
+        "await page.locator('#canvas').waitForFunction(() => true);",
+      ].join("\n"),
+      "apps/desktop/e2e/editor.spec.ts",
+    );
+
+    assert.deepEqual(lines, [5, 7, 8, 9]);
+  });
+
+  it("flags evaluations in E2E fixtures too", () => {
     for (const fileName of [
       "apps/desktop/e2e/fixtures/EditorDriver.ts",
-      "apps/desktop/e2e/fixtures/helpers.spec.ts",
+      "apps/desktop/e2e/fixtures/renderCounter.mts",
+    ]) {
+      assert.deepEqual(
+        reportedLines("no-page-evaluate-in-specs", evaluations, fileName),
+        [3, 4, 5, 6],
+        fileName,
+      );
+    }
+  });
+
+  it("allows evaluations only in the hook bridge and outside desktop E2E", () => {
+    for (const fileName of [
+      "apps/desktop/e2e/fixtures/appHooks.ts",
       "apps/desktop/src/renderer/src/editor.test.ts",
       "apps/web/e2e/landing.spec.ts",
     ]) {
@@ -287,6 +346,130 @@ describe("shift/no-wire-shapes-in-tests", () => {
         "const b = { kind: 'point', point };",
         "const c = { kind: 'createGlyph', glyph: { name: 'A' } };",
         "const d = { type: 'createGlyph', createGlyph: {} };",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(lines, []);
+  });
+});
+
+describe("shift/no-conditional-spread", () => {
+  it("flags a spread that picks an object or nothing", () => {
+    const lines = reportedLines(
+      "no-conditional-spread",
+      [
+        "declare const name: string | undefined;",
+        "declare const open: boolean;",
+        "const a = { ...(name === undefined ? {} : { name }) };",
+        "const b = { ...(open ? { open } : {}) };",
+        "const c = { ...(open && { open }) };",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(lines, [3, 4, 5]);
+  });
+
+  it("allows plain spreads, passed-through values, array spreads and a justified disable", () => {
+    const lines = reportedLines(
+      "no-conditional-spread",
+      [
+        "declare const name: string | undefined;",
+        "declare const defaults: { name: string };",
+        "declare const other: { name: string };",
+        "declare const isMac: boolean;",
+        "declare const quit: string;",
+        "const a = { ...defaults, name: name === undefined ? undefined : name.trim() };",
+        "const b = { ...(isMac ? defaults : other) };",
+        "const c = [...(isMac ? [] : [quit])];",
+        "// oxlint-disable-next-line shift/no-conditional-spread -- stored record omits the key",
+        "const d = { ...(name === undefined ? {} : { name }) };",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(lines, []);
+  });
+});
+
+describe("shift/no-lookup-in-tests", () => {
+  const spec = "apps/desktop/e2e/lookups.spec.ts";
+  const behaviour = "apps/desktop/src/renderer/src/behaviour/variation/lookups.test.ts";
+
+  it("flags find, filter and some that compare a member or destructured key", () => {
+    const source = [
+      "declare const sources: { id: string; name: string }[];",
+      "declare const id: string;",
+      'sources.find((source) => source.name === "Bold");',
+      "sources.filter(({ name }) => name !== id);",
+      "sources.some(function (source) { return id === source.id; });",
+    ].join("\n");
+
+    assert.deepEqual(reportedLines("no-lookup-in-tests", source, spec), [3, 4, 5]);
+    assert.deepEqual(reportedLines("no-lookup-in-tests", source, behaviour), [3, 4, 5]);
+  });
+
+  it("allows other predicates, other files and a justified disable", () => {
+    const source = [
+      "declare const values: number[];",
+      "declare const sources: { name: string }[];",
+      "values.filter((value) => value > 0);",
+      "values.some((value) => value === 3);",
+      'sources.map((source) => source.name === "Bold");',
+      "// oxlint-disable-next-line shift/no-lookup-in-tests -- the read has no selector for this",
+      'sources.find((source) => source.name === "Bold");',
+    ].join("\n");
+
+    assert.deepEqual(reportedLines("no-lookup-in-tests", source, spec), []);
+    assert.deepEqual(
+      reportedLines(
+        "no-lookup-in-tests",
+        'declare const s: { name: string }[];\ns.find((x) => x.name === "B");',
+        "apps/desktop/e2e/fixtures/helpers.ts",
+      ),
+      [],
+    );
+  });
+});
+
+describe("shift/no-drill-into-reads", () => {
+  const reads = [
+    "declare const editor: {",
+    "  spacingTool(): { hovered: { side: string } | null } | null;",
+    "  outline(): Promise<{ points: { x: number }[] }[]>;",
+    "  canvasText(): { items: { id: string }[]; caret: object | null } | null;",
+    "};",
+    "declare function expect(value: unknown, message?: string): any;",
+  ];
+
+  it("flags ?. chains, [n]! and read()!.x picks and .map projections of a read inside expect", () => {
+    const lines = reportedLines(
+      "no-drill-into-reads",
+      [
+        ...reads,
+        'expect(editor.spacingTool()?.hovered?.side).toBe("left");',
+        "expect((await editor.outline())[0]!.points).toHaveLength(3);",
+        "expect(editor.canvasText()!.items).toHaveLength(1);",
+        "expect(editor.canvasText()!.items.map(({ id }) => id)).toEqual([]);",
+        'expect.soft(editor.canvasText()?.caret, "caret").toBeNull();',
+        "await expect.poll(async () => (await editor.outline())[0]?.points).toHaveLength(3);",
+        "await expect.poll(() => { return editor.canvasText()?.caret; }).toBeNull();",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(lines, [7, 8, 9, 10, 11, 12, 13]);
+  });
+
+  it("allows whole reads, picks made to act on a read, and picks in the expected value", () => {
+    const lines = reportedLines(
+      "no-drill-into-reads",
+      [
+        ...reads,
+        'expect(editor.spacingTool()).toMatchObject({ hovered: { side: "left" } });',
+        "expect(await editor.outline()).toMatchObject([{ points: [{ x: 1 }] }]);",
+        "const [contour] = await editor.outline();",
+        "const id = editor.canvasText()!.items[0]!.id;",
+        "expect(editor.canvasText()).toMatchObject({ items: [{ id: editor.canvasText()?.items[0]?.id }] });",
+        "expect(editor.spacingTool()).toBeNull();",
+        "await expect.poll(() => editor.canvasText()).toMatchObject({ caret: null });",
       ].join("\n"),
     );
 

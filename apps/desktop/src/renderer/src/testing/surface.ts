@@ -12,7 +12,7 @@
  * agent read API (`@shift/runtime`, served to MCP by the window's agent
  * readers), so a test observes exactly what an agent can, and the harness has
  * no read logic of its own to bend. When a test needs a read that is not
- * there, add it to the agent readers, not here. Actions are named for what a
+ * there, add it to the app readers, not here. Actions are named for what a
  * user does, never one that forwards an internal. {@link EditorTestSurface.asEditor} is the one escape hatch, and
  * lint allows it only as a call argument, for code under test that takes an
  * `Editor`.
@@ -22,18 +22,8 @@ import type { GlyphOutlineTarget, PositionGuide, SourceSelectionMode } from "@sh
 import type { ToolName } from "@shift/editor/tools";
 import type { AlignmentType, DistributeType } from "@shift/editor/transform";
 import type { Bounds, Point2D, Rect2D } from "@shift/geo";
-import type {
-  AuthoredLayer,
-  EditorTool,
-  EditorView,
-  FontOverview,
-  GlyphSummary,
-  KerningToolView,
-  ResolvedGlyph,
-  ResolvedLocation,
-  SpacingToolView,
-  TextRunView,
-} from "@shift/runtime";
+import type { LocalPoint, ScreenPoint, ScreenVector } from "@shift/editor/spaces";
+import type { EditorTool, KerningToolView, ResolvedGlyph } from "@shift/runtime";
 import type {
   AnchorId,
   ComponentId,
@@ -42,22 +32,41 @@ import type {
   KerningPosition,
   PointId,
   SelectableId,
+  Axis,
+  NamedInstance,
   Source,
   SourceMetrics,
   Unicode,
 } from "@shift/types";
 import type { EditorCommandId } from "@shared/commands";
-import type { DrawnHandle } from "@/agent/ShiftEditorReader";
 import type { WorkspaceDocumentState } from "@shared/workspace/protocol";
-import type { GlyphFixture, PointNames } from "./fixtures";
+import type { DrawOptions, GlyphFixture, PointNames } from "./fixtures";
+import type { AxisFixture, AxisLocation, FontBuilder } from "./fonts";
 import type {
+  AnchorReadOptions,
+  AxisSelection,
+  CanvasHandle,
+  CanvasText,
+  DocumentSaveState,
+  EditorActions,
   EditorReads,
+  EditorViewState,
+  FontSummary,
   GlyphAnchor,
+  GlyphListing,
+  InstanceSelection,
   KerningGroup,
+  LocationSummary,
   Outline,
   OutlinePoint,
   SourceKerning,
+  SourceLayer,
+  SourceSelection,
+  SpacingToolState,
 } from "./reads";
+
+export type { DrawOptions } from "./fixtures";
+export type { AxisFixture, AxisLocation } from "./fonts";
 
 /** Keyboard modifiers held during a gesture. */
 export interface Modifiers {
@@ -65,30 +74,6 @@ export interface Modifiers {
   readonly altKey?: boolean;
   readonly metaKey?: boolean;
 }
-
-/** How {@link EditorTestSurface.draw} leaves the selection. */
-export interface DrawOptions {
-  /** Selects every point drawn, as if the test had then selected them all. */
-  readonly select?: boolean;
-}
-
-/** A new continuous axis, as the Axes panel creates one. */
-export interface AxisFixture {
-  readonly tag: string;
-  /** The axis's display name; its tag when omitted. */
-  readonly name?: string;
-  readonly minimum: number;
-  readonly default: number;
-  readonly maximum: number;
-  /** Whether users see the axis; `external` when omitted. */
-  readonly role?: "external" | "internal";
-}
-
-/**
- * A designspace location as each axis's user-facing value, keyed by axis tag;
- * unnamed axes sit at their default.
- */
-export type AxisLocation = Readonly<Record<string, number>>;
 
 /**
  * A glyph as the canvas draws it at the current location: interpolated
@@ -106,36 +91,24 @@ export interface DrawnGlyph {
     readonly dy: number;
     readonly bounds: Bounds | null;
   }[];
-  /** The glyph's anchors with those it takes from its components, by name. */
+  /**
+   * The glyph's anchors with those it takes from its components, in the order
+   * export propagates them (`shift_font::anchor_propagation`): components in
+   * turn, an anchor a later one replaces by name keeping its place.
+   */
   readonly anchors: readonly { readonly name: string; readonly x: number; readonly y: number }[];
 }
 
 // The read types tests see beyond {@link EditorReads}'s. Each aliases the
-// `@shift/runtime` (or agent reader) type agents read; tests import these,
+// `@shift/runtime` (or app reader) type agents read; tests import these,
 // never the runtime or `agent/`.
 
-/** One glyph's authored layer at one source, as agents read it with `layers.get`. */
-export type SourceLayer = AuthoredLayer;
 /** A glyph drawn at a designspace location: its path and advance. */
 export type GlyphAtLocation = ResolvedGlyph;
-/** A glyph's identity and the layer each source holds. */
-export type GlyphListing = GlyphSummary;
-/** The font's info, metrics, axes, sources and instances. */
-export type FontSummary = FontOverview;
-/** A location resolved: its design coordinates, the source there, and the metrics. */
-export type LocationSummary = ResolvedLocation;
-/** The window's editor facts: open glyph, sources, location, selection, tool and edit state. */
-export type EditorViewState = EditorView;
 /** The active tool and its state. */
 export type ActiveTool = EditorTool;
-/** The canvas text run as it shows now. */
-export type CanvasText = TextRunView;
-/** What the Spacing tool shows. */
-export type SpacingToolState = SpacingToolView;
 /** What the Kerning tool shows. */
 export type KerningToolState = KerningToolView;
-/** One point handle the canvas draws, and how it is styled. */
-export type CanvasHandle = DrawnHandle;
 
 /**
  * @remarks
@@ -143,7 +116,7 @@ export type CanvasHandle = DrawnHandle;
  * implements too. The in-process editor answers kerning and selection at
  * once, so those reads narrow to plain values here.
  */
-export interface EditorTestSurface extends EditorReads {
+export interface EditorTestSurface extends EditorReads, EditorActions, FontBuilder {
   /**
    * Builds `fixture` into the open glyph through the editor's own commands.
    *
@@ -387,6 +360,14 @@ export interface EditorTestSurface extends EditorReads {
   /** Deletes the source named `name`, as the sources settings panel's delete button does, and waits for it. */
   deleteSource(name: string): Promise<void>;
   /** Sets a source's metric named `metric` to `position`, as the source settings panel's metric field does. */
+  /** Deletes the axis tagged `tag`, as Settings › Axes does. */
+  deleteAxis(tag: string): Promise<void>;
+  /** Renames the source `source` to `name`, as Settings › Sources does. */
+  renameSource(source: string, name: string): Promise<void>;
+  /** Sets the source `source`'s italic angle, as Settings › Sources does. */
+  setSourceItalicAngle(source: string, italicAngle: number): Promise<void>;
+  /** Sets the source `source`'s line gap, as Settings › Sources does. */
+  setSourceLineGap(source: string, lineGap: number): Promise<void>;
   setSourceMetric(source: string, metric: string, position: number): Promise<void>;
   /** Adds a named instance at `location`, as the Create instance menu does. */
   addInstance(name: string, location: AxisLocation): void;
@@ -414,7 +395,7 @@ export interface EditorTestSurface extends EditorReads {
   /** The open glyph's point at a position in the active source, or null. */
   pointAt(position: Point2D): Promise<OutlinePoint | null>;
   /** The open glyph's anchor named `name` in the active source, or null. */
-  anchorNamed(name: string): Promise<GlyphAnchor | null>;
+  anchorNamed(name: string, options?: AnchorReadOptions): Promise<GlyphAnchor | null>;
   /** The open glyph's outline bounds, as agents read them; null when it has no outline. */
   outlineBounds(): Promise<Bounds | null>;
   /** The open glyph's authored layer at the source named `source`, as agents read it. */
@@ -426,7 +407,9 @@ export interface EditorTestSurface extends EditorReads {
   /** The font's info, metrics, axes, sources and instances, as agents read them. */
   fontOverview(): FontSummary;
   /** The font's source named `name`, or null. */
-  source(name: string): Source | null;
+  source(selector: SourceSelection): Source | null;
+  instance(selector: InstanceSelection): NamedInstance | null;
+  axis(selector: AxisSelection): Axis | null;
   /** The languages the font tracks; null when none were ever set. Test-only: not agent data yet. */
   languages(): readonly string[] | null;
   /** The current location resolved: its design coordinates, the source there, and the metrics. */
@@ -467,15 +450,16 @@ export interface EditorTestSurface extends EditorReads {
   /** The snap guides the active tool draws for the gesture in flight, in glyph units. */
   drawnSnapGuides(): readonly PositionGuide[];
   /**
-   * Where the canvas shows each point now, including a gesture not yet
-   * released, as {@link drawnOutline} draws them.
+   * One point of the open glyph as the canvas draws it now, a gesture not yet
+   * released included, as {@link drawnOutline} draws it; null when it draws no
+   * point with that id.
    */
-  shownPointPositions(ids: readonly PointId[]): Record<PointId, Point2D>;
+  drawnPoint(id: PointId): OutlinePoint | null;
   /**
    * Where the faint pre-edit outline shows each point while a gesture is in
    * flight, or null when none is shown. Test-only: not agent data.
    */
-  editGhost(ids: readonly PointId[]): Record<PointId, Point2D> | null;
+  editGhost(ids: readonly PointId[]): Record<PointId, LocalPoint> | null;
   /** A glyph as the canvas draws it at the current location; the open glyph when `glyph` is omitted. Test-only. */
   drawnGlyph(glyph?: string): Promise<DrawnGlyph>;
   /** The id selection uses for the segment from `start` to `end`. */
@@ -507,13 +491,13 @@ export interface EditorTestSurface extends EditorReads {
   /** The zoom level. Test-only: not agent data. */
   zoomLevel(): number;
   /** How far the canvas is panned, in screen pixels. Test-only: not agent data. */
-  canvasOffset(): Point2D;
+  canvasOffset(): ScreenVector;
   /** Where a glyph-local position shows in the viewport, in screen pixels. Test-only: not agent data. */
-  screenPosition(position: Point2D): Point2D;
+  screenPosition(position: Point2D): ScreenPoint;
   /** The viewport's centre, in screen pixels. Test-only: not agent data. */
-  viewportCentre(): Point2D;
-  /** Flushes pending edits and reads the document's save state. Test-only: not agent data. */
-  documentState(): Promise<WorkspaceDocumentState | null>;
+  viewportCentre(): ScreenPoint;
+  /** The document's save state behind every edit made so far, as agents read it; null without a document. */
+  documentState(): Promise<DocumentSaveState | null>;
 
   /** Adds a glyph to the font and loads it. */
   addGlyph(name: string, unicode: number | null): Promise<void>;
