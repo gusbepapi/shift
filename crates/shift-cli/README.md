@@ -2,7 +2,7 @@
 
 Command-line inspection, authoring, and compilation for canonical SQLite `.shift` documents.
 
-The crate builds the `shift-cli` binary. `inspect` opens a document, summarizes the font model, and can emit stable JSON for scripts and CI. Resource commands apply semantic Shift intents through a temporary recovery overlay and save only after the complete change validates. `compile` sends the canonical Shift model directly through fontir/fontc to produce a TrueType, OpenType (CFF), WOFF, or WOFF2 font, or exports it as a Glyphs 3 source. `color` authors colour palettes and colour glyphs.
+The crate builds the `shift-cli` binary. `inspect` opens a document, summarizes the font model, and can emit stable JSON for scripts and CI. Resource commands apply semantic Shift intents through a temporary recovery overlay and save only after the complete change validates. `compile` sends the canonical Shift model directly through fontir/fontc to produce a TrueType, OpenType (CFF), WOFF, or WOFF2 font, or exports it as a Glyphs 3 source. `color` authors colour palettes and colour glyphs, and `page` lists and authors the pages of the canvas.
 
 ## Install
 
@@ -376,6 +376,23 @@ shift-cli inspect --view color Lab.shift
 - `color glyph remove` removes the colour of a base glyph and leaves its outline.
 - Every command takes `--dry-run`, `--json` and `--output`, like the other authoring commands.
 
+### Canvas pages
+
+A document's canvas holds pages, and pages hold proof text runs, frames and glyph nodes. The commands read and change the pages through the same scene change set the editor persists.
+
+```sh
+shift-cli page list Lab.shift
+shift-cli page list Lab.shift --json
+shift-cli page add Lab.shift Proofs
+shift-cli page rename Lab.shift Proofs Specimens
+shift-cli page remove Lab.shift Specimens
+```
+
+- `page list` gives every page with its id, its node count, and each text run on it with its size, item count, and shaping settings (shaping, language, script, features). It does not write.
+- A page is selected by its id (`node_…`) or by its name. A name shared by several pages is refused; use the id.
+- `page add` places a new empty page after the existing ones. `page remove` deletes a page with everything on it and refuses to remove the last page.
+- `page add`, `rename` and `remove` take `--dry-run`, `--json` and `--output`, like the other authoring commands.
+
 ### Kerning
 
 ```sh
@@ -463,4 +480,8 @@ cargo run -p shift-cli -- axis set --help
 cargo run -p shift-cli -- instance add --help
 cargo run -p shift-cli -- instance set --help
 cargo run -p shift-cli -- instance remove --help
+cargo run -p shift-cli -- page list --help
+cargo run -p shift-cli -- page add --help
+cargo run -p shift-cli -- page rename --help
+cargo run -p shift-cli -- page remove --help
 ```

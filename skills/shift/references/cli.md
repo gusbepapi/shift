@@ -48,6 +48,8 @@ shift-cli kerning set Lab.shift --input kerning.json --dry-run --json
 shift-cli kerning group create Lab.shift O O Q --position first
 shift-cli color palette set Lab.shift --palette "Light:#FFD700,#C0392B"
 shift-cli color glyph set Lab.shift A.color --layer A.base=palette:0 --layer A.shadow=palette:1@0.5
+shift-cli page list Lab.shift --json
+shift-cli page add Lab.shift Proofs
 ```
 
 - **Shift assigns all identities.** Read the IDs a command returns and use them as selectors; never invent IDs.
@@ -58,6 +60,7 @@ shift-cli color glyph set Lab.shift A.color --layer A.base=palette:0 --layer A.s
 - Instances are presets, not masters: instance commands never create sources or drawings.
 - **Kerning sides**: `first` is the left glyph, and its first-position group kerns its right edge; `second` is the right glyph. A side is a glyph name or `@GROUP` for a group at that position. Values are per master and default to the default source; set every master you mean to change.
 - **Colour glyphs** paint a base glyph with layers of other glyphs, bottom to top. `color palette set` replaces every palette (all need the same number of colours); `color glyph set GLYPH --layer GLYPH=FILL` replaces one base glyph's layers, where `FILL` is `palette:INDEX[@ALPHA]`, `foreground[@ALPHA]`, `linear:X0,Y0,X1,Y1:STOPS` or `radial:X0,Y0,R0,X1,Y1,R1:STOPS` (`STOPS` is `OFFSET=COLOUR` joined by `/`); `color glyph remove` leaves the outline and drops the colour. `inspect --view color` reads it back.
+- **Pages** are the canvas pages that hold proof text runs. `page list` reads them (id, node count, each text run's size, item count, shaping, language, script, features); `page add NAME`, `page rename PAGE NAME` and `page remove PAGE` change them. `PAGE` is a page id or a unique page name, and the last page cannot be removed. Removing a page deletes everything on it.
 - **`kerning set --input`** applies `groups` (created if missing; `members` replaces membership) and then `pairs` (`value: null` removes) atomically, so pairs can name groups the batch creates.
 
 ## Check and proof

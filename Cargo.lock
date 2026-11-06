@@ -2527,6 +2527,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shift-backends",
+ "shift-engine",
  "shift-font",
  "shift-proof",
  "shift-store",

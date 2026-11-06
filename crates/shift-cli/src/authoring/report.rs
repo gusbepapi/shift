@@ -33,6 +33,20 @@ pub(crate) struct AuthoringReport {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum AuthoringChange {
+    PageCreated {
+        page_id: String,
+        name: String,
+    },
+    PageRenamed {
+        page_id: String,
+        from: String,
+        name: String,
+    },
+    PageRemoved {
+        page_id: String,
+        name: String,
+        node_count: usize,
+    },
     FontCreated {
         document_id: Option<String>,
     },
@@ -173,6 +187,23 @@ impl Report for AuthoringReport {
         let mut lines = vec![self.document.display().to_string(), String::new()];
         for change in &self.changes {
             match change {
+                AuthoringChange::PageCreated { page_id, name } => {
+                    lines.push(format!("+ page    {page_id}  {name}"));
+                }
+                AuthoringChange::PageRenamed {
+                    page_id,
+                    from,
+                    name,
+                } => {
+                    lines.push(format!("~ page    {page_id}  {from} -> {name}"));
+                }
+                AuthoringChange::PageRemoved {
+                    page_id,
+                    name,
+                    node_count,
+                } => {
+                    lines.push(format!("- page    {page_id}  {name}  {node_count} nodes"));
+                }
                 AuthoringChange::FontCreated { document_id } => {
                     let id = document_id.as_deref().unwrap_or("assigned when written");
                     lines.push(format!("+ font    {id}"));

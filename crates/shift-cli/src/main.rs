@@ -12,16 +12,17 @@ mod skill;
 use std::io::{self, IsTerminal, Write};
 
 use authoring::{
-    AuthoringReport, ExportSources, add_axis, add_glyph, add_instance, add_layer, add_source,
-    assign_kerning_group, copy_layer, create_font, create_kerning_group, delete_kerning_group,
-    export_glyphs, font_info, remove_color_glyph, remove_instance, remove_kerning,
-    rename_kerning_group, set_axis, set_color_glyph, set_font, set_glyphs, set_instance,
-    set_kerning, set_layer, set_palettes, unassign_kerning_group,
+    AuthoringReport, ExportSources, add_axis, add_glyph, add_instance, add_layer, add_page,
+    add_source, assign_kerning_group, copy_layer, create_font, create_kerning_group,
+    delete_kerning_group, export_glyphs, font_info, list_pages, remove_color_glyph,
+    remove_instance, remove_kerning, remove_page, rename_kerning_group, rename_page, set_axis,
+    set_color_glyph, set_font, set_glyphs, set_instance, set_kerning, set_layer, set_palettes,
+    unassign_kerning_group,
 };
 use clap::Parser;
 use cli::{
     AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, FontCommand,
-    GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand,
+    GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand, PageCommand,
     PaletteCommand, SkillCommand, SourceCommand,
 };
 use glyph_inspect::GlyphInspection;
@@ -90,6 +91,24 @@ fn main() -> miette::Result<()> {
             InstanceCommand::Remove(args) => {
                 let json = args.mutation.json;
                 write_authoring_result(remove_instance(&args), json)
+            }
+        },
+        Command::Page { command } => match command {
+            PageCommand::List(args) => {
+                let json = args.json;
+                write_report(&list_pages(&args)?, json)
+            }
+            PageCommand::Add(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(add_page(&args), json)
+            }
+            PageCommand::Rename(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(rename_page(&args), json)
+            }
+            PageCommand::Remove(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(remove_page(&args), json)
             }
         },
         Command::Color { command } => match command {

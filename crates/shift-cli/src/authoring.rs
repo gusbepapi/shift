@@ -29,6 +29,7 @@ mod input;
 mod instance;
 mod kerning;
 mod layer_payload;
+mod page;
 mod report;
 
 pub(crate) use axis::set_axis;
@@ -42,6 +43,7 @@ pub(crate) use kerning::{
     assign_kerning_group, create_kerning_group, delete_kerning_group, remove_kerning,
     rename_kerning_group, set_kerning, unassign_kerning_group,
 };
+pub(crate) use page::{add_page, list_pages, remove_page, rename_page};
 use report::report_changes;
 pub(crate) use report::{AuthoringChange, AuthoringReport};
 

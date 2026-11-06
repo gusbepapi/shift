@@ -3,9 +3,12 @@ use std::path::Path;
 use shift_font::Font;
 use shift_store::{DocumentId, ShiftStore};
 
-use crate::cli::{AddAxisArgs, AddSourceArgs, CreateFontArgs, MutationArgs};
+use crate::cli::{
+    AddAxisArgs, AddPageArgs, AddSourceArgs, CreateFontArgs, ListPagesArgs, MutationArgs,
+    RemovePageArgs, RenamePageArgs,
+};
 
-use super::{add_axis, add_source, create_font};
+use super::{add_axis, add_page, add_source, create_font, list_pages, remove_page, rename_page};
 
 fn mutation(dry_run: bool) -> MutationArgs {
     MutationArgs {
@@ -158,4 +161,127 @@ fn source_location_is_completed_with_axis_defaults() {
         .find(|source| source.name() == "Black")
         .unwrap();
     assert_eq!(source.location().get(&font.axes()[0].id()), Some(900.0));
+}
+
+fn page_names(path: &Path) -> Vec<String> {
+    list_pages(&ListPagesArgs {
+        path: path.to_path_buf(),
+        json: false,
+    })
+    .unwrap()
+    .pages
+    .into_iter()
+    .map(|page| page.name)
+    .collect()
+}
+
+fn add_named_page(path: &Path, name: &str, mutation: MutationArgs) -> super::AuthoringReport {
+    add_page(&AddPageArgs {
+        path: path.to_path_buf(),
+        name: name.to_string(),
+        mutation,
+    })
+    .unwrap()
+}
+
+#[test]
+fn new_document_lists_one_empty_page() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Pages.shift");
+    create_document(&path);
+
+    let report = list_pages(&ListPagesArgs { path, json: false }).unwrap();
+
+    assert_eq!(report.pages.len(), 1);
+    assert_eq!(report.pages[0].node_count, 0);
+    assert!(report.pages[0].text_runs.is_empty());
+}
+
+#[test]
+fn page_lifecycle_persists_add_rename_and_remove() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Pages.shift");
+    create_document(&path);
+
+    add_named_page(&path, "Proofs", mutation(false));
+    assert_eq!(page_names(&path), ["Page 1", "Proofs"]);
+
+    rename_page(&RenamePageArgs {
+        path: path.clone(),
+        page: "Proofs".to_string(),
+        name: "Specimens".to_string(),
+        mutation: mutation(false),
+    })
+    .unwrap();
+    assert_eq!(page_names(&path), ["Page 1", "Specimens"]);
+
+    remove_page(&RemovePageArgs {
+        path: path.clone(),
+        page: "Specimens".to_string(),
+        mutation: mutation(false),
+    })
+    .unwrap();
+    assert_eq!(page_names(&path), ["Page 1"]);
+}
+
+#[test]
+fn page_dry_run_validates_without_writing() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Pages.shift");
+    create_document(&path);
+
+    let report = add_named_page(&path, "Proofs", mutation(true));
+
+    assert!(!report.wrote);
+    assert_eq!(page_names(&path), ["Page 1"]);
+}
+
+#[test]
+fn page_output_leaves_the_input_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Pages.shift");
+    let output = temp.path().join("Copy.shift");
+    create_document(&path);
+
+    add_named_page(
+        &path,
+        "Proofs",
+        MutationArgs {
+            output: Some(output.clone()),
+            dry_run: false,
+            json: false,
+        },
+    );
+
+    assert_eq!(page_names(&path), ["Page 1"]);
+    assert_eq!(page_names(&output), ["Page 1", "Proofs"]);
+}
+
+#[test]
+fn page_commands_refuse_blank_unknown_and_last_pages() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Pages.shift");
+    create_document(&path);
+
+    let blank = add_page(&AddPageArgs {
+        path: path.clone(),
+        name: "  ".to_string(),
+        mutation: mutation(false),
+    });
+    let unknown = rename_page(&RenamePageArgs {
+        path: path.clone(),
+        page: "Missing".to_string(),
+        name: "Other".to_string(),
+        mutation: mutation(false),
+    });
+    let last = remove_page(&RemovePageArgs {
+        path: path.clone(),
+        page: "Page 1".to_string(),
+        mutation: mutation(false),
+    });
+
+    assert!(blank.is_err());
+    assert!(unknown.is_err());
+    assert!(last.unwrap_err().to_string().contains("last page"));
+    assert_eq!(page_names(&path), ["Page 1"]);
 }

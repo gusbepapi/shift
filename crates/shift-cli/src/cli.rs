@@ -15,6 +15,8 @@ pub(crate) use color::{
 };
 mod font;
 pub(crate) use font::{FontInfoArgs, SetFontArgs};
+mod page;
+pub(crate) use page::{AddPageArgs, ListPagesArgs, PageCommand, RemovePageArgs, RenamePageArgs};
 mod kerning;
 pub(crate) use kerning::{
     AssignKerningGroupArgs, CreateKerningGroupArgs, DeleteKerningGroupArgs, GetKerningArgs,
@@ -90,6 +92,12 @@ pub(crate) enum Command {
     Color {
         #[command(subcommand)]
         command: ColorCommand,
+    },
+
+    /// List and author the pages of the document's canvas.
+    Page {
+        #[command(subcommand)]
+        command: PageCommand,
     },
 
     /// Author master sources.
