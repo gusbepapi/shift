@@ -1,14 +1,28 @@
 /**
- * TextLayout — class facade over the segment → position → assemble pipeline.
+ * TextLayout — a run's text as Rust laid it out (`shift_text::layout::TextLayout`
+ * through the window's engine), indexed for drawing, hit testing, carets and
+ * selection. It applies no layout rule: lines, glyph positions, kerning,
+ * marks, cursive joins, bidi order and caret stops all come from Rust.
  *
  * Coordinates: y is negative-down from origin; line N baseline is
  * `origin.y - lineHeight * n`. Cluster is whole-buffer monotonic.
  */
 import type { Bounds as BoundsType } from "@shift/geo";
-import { EntityMap, type GlyphId, type ReadonlyEntityMap, type ShapedRun } from "@shift/types";
+import {
+  ascending,
+  EntityMap,
+  type GlyphId,
+  type GlyphName,
+  type ReadonlyEntityMap,
+} from "@shift/types";
+import type { CaretStop, LayoutWord, TextLayout as LaidOutText } from "@shift/wasm/protocol";
 import { Caret } from "./Caret";
+import { CaretStops } from "./CaretStops";
 import type {
+  CaretEdge,
+  CaretPlace,
   CaretPosition,
+  Direction,
   TextItem,
   SourceMetrics,
   Hit,
@@ -19,25 +33,16 @@ import type {
   PositionedRun,
   TextItemId,
 } from "./types";
-import { literalRun, shapedRuns, splitParagraphs } from "./paragraphs";
-import { Positioner } from "./Positioner";
-import type { Editor } from "../../editor/Editor";
 import type { Font } from "../../model/Font";
-import { track, type Signal } from "../../signals/signal";
-import type { ExternalAxisLocation } from "../../../types/variation";
-import type { TextSelectionRange } from "../../../types/text";
+import type { TextSelectionRange, WordEdge } from "../../../types/text";
 
 export interface TextLayoutParams {
   items: readonly TextItem[];
   origin: Point2D;
-  editor: Editor;
-  externalLocation: Signal<ExternalAxisLocation>;
-  /**
-   * Each paragraph's shaped runs, from shaping these same items and indexed
-   * like {@link splitParagraphs}; null lays every paragraph out literally,
-   * and a null paragraph lays out literally on its own.
-   */
-  shaped?: readonly (readonly ShapedRun[] | null)[] | null;
+  font: Font;
+  metrics: SourceMetrics;
+  /** The run's text as Rust laid it out. */
+  laidOut: LaidOutText;
 }
 
 /** One positioned glyph with its layout-local placement resolved. */
@@ -53,11 +58,7 @@ export interface PlacedGlyph {
   readonly origin: Point2D;
 }
 
-interface AssembledLayout {
-  lines: Line[];
-  totalAdvance: number;
-  bounds: BoundsType | null;
-}
+const NOTDEF = ".notdef" as GlyphName;
 
 export class TextLayout {
   readonly metrics: SourceMetrics;
@@ -65,48 +66,109 @@ export class TextLayout {
   readonly lines: readonly Line[];
   readonly totalAdvance: number;
   /** @knipclassignore — bbox union over positioned glyphs; populated when shapeHitTest lands */
-  readonly bounds: BoundsType | null;
+  readonly bounds: BoundsType | null = null;
   readonly bufferLength: number;
   /** Every positioned glyph in line, run, and glyph order. */
   readonly placedGlyphs: readonly PlacedGlyph[];
+  /** Why some of the text was laid out as typed rather than shaped, when it was. */
+  readonly unshaped: string | null;
+  /** How far apart baselines are, in font units, as Rust laid the lines out. */
+  readonly lineHeight: number;
   readonly #placedByItem: ReadonlyEntityMap<TextItemId, PlacedGlyph>;
+  /** Each line's caret stops, indexed for moves and hit tests. */
+  readonly #carets: readonly CaretStops[];
+  /** Every grapheme boundary Rust put a stop at, in reading order. */
+  readonly #boundaries: readonly number[];
+  /** The words Rust found, in reading order, with their screen edges. */
+  readonly #words: readonly LayoutWord[];
 
   constructor(params: TextLayoutParams) {
-    const { items, origin, editor, externalLocation, shaped = null } = params;
-    const activeSourceId = editor.activeSourceId;
-    // Built inside the run's layout computed: metrics between sources follow the engine.
-    if (!activeSourceId) track(editor.font.sourceMetricsRevisionCell);
-    this.metrics = activeSourceId
-      ? editor.font.metricsForSource(activeSourceId)
-      : editor.font.metricsAtLocation(externalLocation.peek());
+    const { items, origin, font, metrics, laidOut } = params;
+    this.metrics = metrics;
     this.origin = origin;
     this.bufferLength = items.length;
+    this.unshaped = laidOut.unshaped ?? null;
+    this.lineHeight = laidOut.lineHeight;
 
-    const positioner = new Positioner(editor, externalLocation);
-    const paragraphs: PositionedParagraph[] = [];
-    for (const [index, paragraph] of splitParagraphs(items).entries()) {
-      const runs = shaped?.[index];
-      paragraphs.push({
-        runs: runs
-          ? shapedRuns(paragraph, runs).map((run) => positioner.position(run, "anchors"))
-          : [positioner.position(literalRun(paragraph, editor.font), "literal")],
-        clusterStart: paragraph.clusterStart,
-        clusterEnd: paragraph.clusterStart + paragraph.items.length + 1,
+    const placed: PlacedGlyph[] = [];
+    const lines: Line[] = [];
+    for (const [lineIndex, line] of laidOut.lines.entries()) {
+      const nextStart = laidOut.lines[lineIndex + 1]?.start ?? null;
+      const runs: PositionedRun[] = [];
+      for (const [runIndex, run] of line.runs.entries()) {
+        const glyphs = laidOut.glyphs.slice(run.glyphStart, run.glyphEnd);
+        const runLeft = glyphs[0]?.left ?? line.left;
+        const positioned = glyphs.map(
+          (glyph): PositionedGlyph => ({
+            glyphId: glyph.glyphId ?? null,
+            glyphName: glyphName(font, items, glyph.glyphId ?? null, glyph.start),
+            sourceItemIds: items.slice(glyph.start, glyph.end).map((item) => item.id),
+            origin: { x: glyph.left - runLeft, y: 0 },
+            xAdvance: glyph.advance,
+            xKern: glyph.kern,
+            yAdvance: 0,
+            xOffset: glyph.xOffset,
+            yOffset: glyph.yOffset,
+            cluster: glyph.start,
+          }),
+        );
+        for (const [index, glyph] of glyphs.entries()) {
+          const left = origin.x + glyph.left;
+          const baseline = origin.y + glyph.baseline;
+          placed.push({
+            glyph: positioned[index]!,
+            lineIndex,
+            runIndex,
+            left,
+            baseline,
+            origin: { x: left + glyph.xOffset, y: baseline + glyph.yOffset },
+          });
+        }
+        runs.push({
+          glyphs: positioned,
+          direction: run.direction,
+          script: run.script,
+          advance: glyphs.reduce((sum, glyph) => sum + glyph.advance + glyph.kern, 0),
+        });
+      }
+      // A line ends where the next starts (after its line break, if any); the
+      // last line also holds the caret after its end.
+      const clusterEnd = nextStart === null ? line.end + 1 : line.end;
+      lines.push({
+        runs,
+        direction: line.direction,
+        y: origin.y + line.baseline,
+        ascent: line.ascent,
+        descent: line.descent,
+        clusterStart: line.start,
+        clusterEnd,
       });
     }
-
-    const { lines, totalAdvance, bounds } = assembleLayout(paragraphs, origin, this.metrics);
     this.lines = lines;
-    this.totalAdvance = totalAdvance;
-    this.bounds = bounds;
-    this.placedGlyphs = placeGlyphs(lines, origin);
+    const caretsByLine = Map.groupBy(laidOut.carets, (stop) => stop.line);
+    this.#carets = lines.map(
+      (_, lineIndex) =>
+        new CaretStops(
+          (caretsByLine.get(lineIndex) ?? []).map(
+            (stop): CaretStop => ({ ...stop, x: origin.x + stop.x }),
+          ),
+        ),
+    );
+    this.#words = laidOut.words;
+    this.#boundaries = new Set(laidOut.carets.map((stop) => stop.unit))
+      .values()
+      .toArray()
+      .toSorted(ascending);
+    this.placedGlyphs = placed;
+    this.totalAdvance = laidOut.lines.reduce((sum, line) => sum + line.advance, 0);
+
     const placedByItem = new EntityMap<TextItemId, PlacedGlyph>("placed glyph");
-    for (const placed of this.placedGlyphs) {
-      for (const itemId of placed.glyph.sourceItemIds) {
+    for (const glyph of placed) {
+      for (const itemId of glyph.glyph.sourceItemIds) {
         const current = placedByItem.get(itemId);
         // A character the font decomposes (a base and its dot) answers with the glyph that advances.
-        if (!current || placed.glyph.xAdvance > current.glyph.xAdvance) {
-          placedByItem.set(itemId, placed);
+        if (!current || glyph.glyph.xAdvance > current.glyph.xAdvance) {
+          placedByItem.set(itemId, glyph);
         }
       }
     }
@@ -141,13 +203,12 @@ export class TextLayout {
    *
    *   1. Find the line whose vertical band [y+descent, y+ascent] contains p.y
    *      (with optional padding for edge tolerance).
-   *   2. Walk that line's runs/glyphs, accumulating x from `origin.x`. Return
-   *      the glyph whose box [left, left + advance + kern) contains p.x, so a
-   *      kerned pair leaves no hole and its first glyph owns any overlap.
-   *   3. Within the hit glyph, "left" if p.x is in the left half of the
-   *      advance box, "right" otherwise.
+   *   2. Return the glyph on that line whose box [left, left + advance + kern)
+   *      contains p.x, so a kerned pair leaves no hole and its first glyph
+   *      owns any overlap.
    *
-   * Returns null when no line / no glyph contains the point.
+   * Returns null when no line / no glyph contains the point. Where a caret
+   * goes for the point is {@link caretAtPoint}'s answer, from Rust's stops.
    */
   hitTest(p: Point2D, padding: number = 0): Hit | null {
     const lineIndex = this.lines.findIndex(
@@ -160,13 +221,7 @@ export class TextLayout {
       const width = placed.glyph.xAdvance + placed.glyph.xKern;
       const right = placed.left + width;
       if (p.x < placed.left - padding || p.x >= right + padding) continue;
-      const mid = placed.left + width / 2;
-      return {
-        lineIndex,
-        runIndex: placed.runIndex,
-        cluster: placed.glyph.cluster,
-        side: p.x < mid ? "left" : "right",
-      };
+      return { lineIndex, runIndex: placed.runIndex, cluster: placed.glyph.cluster };
     }
     return null;
   }
@@ -177,14 +232,131 @@ export class TextLayout {
   }
 
   /**
-   * Inverse of hitTest: leading-edge canvas point of a positioned glyph at
-   * `cluster`. Returns null if the cluster has no positioned glyph (e.g.
-   * cluster falls on a linebreak, or past the buffer end).
+   * Returns the line a caret at `cluster` stands on: the line that holds
+   * the cluster, or for a line that wraps, the one it starts.
+   *
+   * @returns -1 for a cluster past the text.
    */
-  pointAt(cluster: number): CaretPosition | null {
+  lineIndexForCluster(cluster: number): number {
+    return this.lines.findIndex(
+      (line) => cluster >= line.clusterStart && cluster < line.clusterEnd,
+    );
+  }
+
+  /** The ISO 15924 scripts the text's runs are in, as layout itemized them, in order of first use. */
+  get scripts(): readonly string[] {
+    const scripts = new Set<string>();
+    for (const line of this.lines) {
+      for (const run of line.runs) if (run.script) scripts.add(run.script);
+    }
+    return [...scripts];
+  }
+
+  /** Returns the base direction of a line's paragraph; left to right for no line. */
+  lineDirection(lineIndex: number): Direction {
+    return this.lines[lineIndex]?.direction ?? "ltr";
+  }
+
+  /** Returns the direction of the text a caret at `cluster` stands in, as Rust's stop says. */
+  directionAt(cluster: number): Direction {
+    const lineIndex = this.lineIndexForCluster(cluster);
+    return this.#carets[lineIndex]?.at(cluster)?.direction ?? this.lineDirection(lineIndex);
+  }
+
+  /**
+   * Where a caret before `cluster` draws, at the stop Rust placed: the
+   * leading edge of the unit there, or the trailing edge of the one before
+   * it at a line's end; at a direction boundary with `edge` `secondary`,
+   * the stop's second place. A line with no stop for it, such as an empty
+   * line, puts it at the line's start.
+   */
+  caretPosition(cluster: number, edge: CaretEdge = "primary"): CaretPosition {
     const lineHeight = this.metrics.ascender - this.metrics.descender + (this.metrics.lineGap ?? 0);
-    const placed = this.placedGlyphs.find((candidate) => candidate.glyph.cluster === cluster);
-    return placed ? { x: placed.left, y: placed.baseline, lineHeight } : null;
+    const lineIndex = this.lineIndexForCluster(cluster);
+    const line = this.lines[lineIndex];
+    if (!line) return { x: this.origin.x, y: this.origin.y, lineHeight };
+
+    const stop = this.#carets[lineIndex]?.at(cluster);
+    const second = edge === "secondary" ? stop?.secondary : null;
+    return { x: second?.x ?? stop?.x ?? this.origin.x, y: line.y, lineHeight };
+  }
+
+  /**
+   * Returns the caret cluster nearest a point: on the line whose band holds
+   * it, the stop nearest its x.
+   *
+   * @param padding - how far above, below, and past a line's ends still counts.
+   * @returns null when the point is on no line or past a line's ends.
+   */
+  caretAtPoint(p: Point2D, padding: number = 0): number | null {
+    const lineIndex = this.lines.findIndex(
+      (line) => p.y <= line.y + line.ascent + padding && p.y >= line.y + line.descent - padding,
+    );
+    return this.#carets[lineIndex]?.nearest(p.x, padding)?.unit ?? null;
+  }
+
+  /** Returns the caret cluster on a line nearest `x`, as moving up or down a line lands. */
+  nearestCaretOnLine(lineIndex: number, x: number): number {
+    const line = this.lines[lineIndex];
+    return this.#carets[lineIndex]?.nearest(x)?.unit ?? line?.clusterStart ?? 0;
+  }
+
+  /**
+   * Returns the next caret place left (`-1`) or right (`1`) on screen of the
+   * caret at `cluster`'s `edge` place, skipping places `accept` refuses. A
+   * direction boundary has two places, its stop's and its second.
+   *
+   * @returns null at its line's edge in that direction.
+   */
+  visualStep(
+    cluster: number,
+    edge: CaretEdge,
+    side: -1 | 1,
+    accept?: (place: CaretPlace) => boolean,
+  ): CaretPlace | null {
+    const stops = this.#carets[this.lineIndexForCluster(cluster)];
+    return stops?.step(cluster, edge, side, accept) ?? null;
+  }
+
+  /**
+   * Returns the next grapheme boundary after (`1`) or before (`-1`)
+   * `cluster` in reading order, across lines, from the stops Rust placed at
+   * each one: a base and its marks, or an emoji sequence, are crossed whole.
+   *
+   * @returns `cluster` when there is none that way.
+   */
+  graphemeStep(cluster: number, direction: -1 | 1): number {
+    const boundary =
+      direction === 1
+        ? this.#boundaries.find((unit) => unit > cluster)
+        : this.#boundaries.findLast((unit) => unit < cluster);
+    return boundary ?? cluster;
+  }
+
+  /**
+   * Returns each word's left (`-1`) or right (`1`) edge on screen, as Rust
+   * found the words and their edges: the boundary there, and the direction
+   * the word reads in, which picks the caret place on the word's own side
+   * where directions meet.
+   */
+  wordEdges(side: -1 | 1): readonly WordEdge[] {
+    return this.#words.map((word) => ({
+      unit: side === 1 ? word.right : word.left,
+      direction: word.direction,
+    }));
+  }
+
+  /** Returns the end of the next word, or the start of the previous one, in reading order. */
+  wordStep(cluster: number, direction: -1 | 1): number {
+    if (direction === 1) {
+      return this.#words.find((word) => word.end > cluster)?.end ?? this.bufferLength;
+    }
+    return this.#words.findLast((word) => word.start < cluster)?.start ?? 0;
+  }
+
+  /** Returns the caret place at a line's left (`-1`) or right (`1`) end on screen. */
+  lineEdge(lineIndex: number, side: -1 | 1): CaretPlace | null {
+    return this.#carets[lineIndex]?.edge(side) ?? null;
   }
 
   /** @knipclassignore — convenience for caret construction at a cluster */
@@ -192,27 +364,20 @@ export class TextLayout {
     return Caret.atCluster(this, cluster);
   }
 
-  /** @knipclassignore — convenience for caret construction at a canvas point */
-  caretAtPoint(p: Point2D): Caret {
-    return Caret.atPoint(this, p);
-  }
-
   /** Returns advance-based highlight rectangles for a cluster range, one per line; line breaks own no fill. */
   selectionRects(range: TextSelectionRange): SelectionRect[] {
     const rects: SelectionRect[] = [];
-    for (const line of this.lines) {
-      let runBase = this.origin.x;
+    for (const [lineIndex, line] of this.lines.entries()) {
       let left: number | null = null;
-      let right = runBase;
-      for (const run of line.runs) {
-        for (const glyph of run.glyphs) {
-          if (glyph.cluster < range.start || glyph.cluster >= range.end) continue;
-          left ??= runBase + glyph.origin.x;
-          right = runBase + glyph.origin.x + glyph.xAdvance;
-        }
-        runBase += run.advance;
+      let right: number | null = null;
+      for (const placed of this.placedGlyphs) {
+        if (placed.lineIndex !== lineIndex) continue;
+        if (placed.glyph.cluster < range.start || placed.glyph.cluster >= range.end) continue;
+        const glyphRight = placed.left + placed.glyph.xAdvance;
+        left = left === null ? placed.left : Math.min(left, placed.left);
+        right = right === null ? glyphRight : Math.max(right, glyphRight);
       }
-      if (left !== null) {
+      if (left !== null && right !== null) {
         rects.push({
           x: left,
           width: right - left,
@@ -230,75 +395,17 @@ export class TextLayout {
 }
 
 /**
- * Stack positioned paragraphs into Lines and sum the total advance.
- *
- * One Line per paragraph. Line 0's baseline sits at `origin.y`; line N's at
- * `origin.y - lineHeight * n` (negative-down, matching font convention where
- * ascender > 0 and descender < 0).
- *
- *   origin.y = 0, lineHeight = 1000:
- *
- *     line 0  baseline y = 0       ──────────  [A B]
- *     line 1  baseline y = -1000   ──────────  [C D]
- *     line 2  baseline y = -2000   ──────────  []        ← empty paragraph still gets a line
- *
- * `totalAdvance` is summed from `run.advance` (which Positioner already
- * computed as the sum of its glyphs' xAdvance).
- *
- * `bounds` returns null for now; full bbox union over positioned glyphs is
- * a follow-up. No current test requires it.
+ * The name a glyph is drawn and listed by: its own, or for a character the
+ * font has no glyph for, the name it would take.
  */
-interface PositionedParagraph {
-  runs: PositionedRun[];
-  clusterStart: number;
-  clusterEnd: number;
-}
-
-function assembleLayout(
-  paragraphs: PositionedParagraph[],
-  origin: Point2D,
-  metrics: SourceMetrics,
-): AssembledLayout {
-  const lineHeight = metrics.ascender - metrics.descender + (metrics.lineGap ?? 0);
-
-  const lines: Line[] = paragraphs.map((p, i) => ({
-    runs: p.runs,
-    y: origin.y - lineHeight * i,
-    ascent: metrics.ascender,
-    descent: metrics.descender,
-    clusterStart: p.clusterStart,
-    clusterEnd: p.clusterEnd,
-  }));
-
-  let totalAdvance = 0;
-  for (const line of lines) {
-    for (const run of line.runs) {
-      totalAdvance += run.advance;
-    }
-  }
-
-  return { lines, totalAdvance, bounds: null };
-}
-
-function placeGlyphs(lines: readonly Line[], origin: Point2D): PlacedGlyph[] {
-  const placed: PlacedGlyph[] = [];
-  for (const [lineIndex, line] of lines.entries()) {
-    let runBase = origin.x;
-    for (const [runIndex, run] of line.runs.entries()) {
-      for (const glyph of run.glyphs) {
-        const left = runBase + glyph.origin.x;
-        const baseline = line.y + glyph.origin.y;
-        placed.push({
-          glyph,
-          lineIndex,
-          runIndex,
-          left,
-          baseline,
-          origin: { x: left + glyph.xOffset, y: baseline + glyph.yOffset },
-        });
-      }
-      runBase += run.advance;
-    }
-  }
-  return placed;
+function glyphName(
+  font: Font,
+  items: readonly TextItem[],
+  glyphId: GlyphId | null,
+  start: number,
+): GlyphName {
+  if (glyphId) return (font.glyphName(glyphId) as GlyphName | null) ?? NOTDEF;
+  const item = items[start];
+  if (item?.kind !== "character") return NOTDEF;
+  return font.nameForUnicode(item.codepoint as never);
 }

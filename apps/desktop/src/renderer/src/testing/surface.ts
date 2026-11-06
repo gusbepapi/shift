@@ -17,6 +17,7 @@
  * lint allows it only as a call argument, for code under test that takes an
  * `Editor`.
  */
+import type { ControlOperation } from "@/agent/AgentControl";
 import type { DeleteMode, Editor } from "@shift/editor";
 import type { GlyphOutlineTarget, PositionGuide, SourceSelectionMode } from "@shift/editor/types";
 import type { ToolName } from "@shift/editor/tools";
@@ -24,6 +25,7 @@ import type { AlignmentType, DistributeType } from "@shift/editor/transform";
 import type { Bounds, Point2D, Rect2D } from "@shift/geo";
 import type { LocalPoint, ScreenPoint, ScreenVector } from "@shift/editor/spaces";
 import type { EditorTool, KerningToolView, ResolvedGlyph } from "@shift/runtime";
+import type { AgentCallMap, DocumentOperation, TextOperation } from "@shared/agent/protocol";
 import type {
   AnchorId,
   ComponentId,
@@ -38,8 +40,8 @@ import type {
   SourceMetrics,
   Unicode,
 } from "@shift/types";
-import type { EditorCommandId } from "@shared/commands";
-import type { WorkspaceDocumentState } from "@shared/workspace/protocol";
+import type { CommandId, EditorCommandId } from "@shared/commands";
+import type { WorkspaceDocumentState } from "@shared/workspace/lanes";
 import type { DrawOptions, GlyphFixture, PointNames } from "./fixtures";
 import type { AxisFixture, AxisLocation, FontBuilder } from "./fonts";
 import type {
@@ -59,6 +61,7 @@ import type {
   LocationSummary,
   Outline,
   OutlinePoint,
+  PageEntry,
   SourceKerning,
   SourceLayer,
   SourceSelection,
@@ -67,6 +70,14 @@ import type {
 
 export type { DrawOptions } from "./fixtures";
 export type { AxisFixture, AxisLocation } from "./fonts";
+
+/** A feature the font defines, as the Features section lists it. */
+export interface TextFeature {
+  readonly tag: string;
+  readonly name: string | null;
+  readonly default: "required" | "on" | "off";
+  readonly group: string;
+}
 
 /** Keyboard modifiers held during a gesture. */
 export interface Modifiers {
@@ -97,6 +108,41 @@ export interface DrawnGlyph {
    * turn, an anchor a later one replaces by name keeping its place.
    */
   readonly anchors: readonly { readonly name: string; readonly x: number; readonly y: number }[];
+}
+
+/** One button of the tools pane: the tool it selects, and the tools its dropdown offers, in menu order. */
+export interface ToolbarButton {
+  readonly tool: ToolName;
+  /** Empty for a plain button without a dropdown. */
+  readonly menu: readonly ToolName[];
+}
+
+/** A single-key shortcut that selects a tool on the canvas. */
+export interface ToolShortcut {
+  readonly key: string;
+  readonly tool: ToolName;
+}
+
+/**
+ * What one recorded canvas frame draws, by outline id (see
+ * {@link EditorTestSurface.drawnOutlineIds}), in drawing order. Test-only.
+ */
+export interface CanvasFrame {
+  /** The outlines the frame fills. */
+  readonly fills: readonly number[];
+  /** The outlines the frame strokes. */
+  readonly strokes: readonly number[];
+}
+
+/**
+ * The ids of the outlines the canvas draws for one glyph at the current
+ * location: its closed contours, which it fills, and its open contours, which
+ * it strokes. An outline keeps its id while it is unchanged and gets a new one
+ * when it is rebuilt. Each is null until the glyph loads. Test-only.
+ */
+export interface DrawnOutlineIds {
+  readonly closed: number | null;
+  readonly open: number | null;
 }
 
 // The read types tests see beyond {@link EditorReads}'s. Each aliases the
@@ -143,6 +189,14 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   selectAll(): void;
   /** Clicks at a glyph-local position and waits for the edit it makes. */
   clickAt(position: Point2D, modifiers?: Modifiers): Promise<void>;
+  /**
+   * Clicks at a position in the canvas text's own units, as clicking the
+   * text in Text mode does, and waits for the edit it makes. Unlike
+   * {@link clickAt}, it needs no open glyph.
+   */
+  clickTextAt(position: Point2D, modifiers?: Modifiers): Promise<void>;
+  /** Clicks at a point in the viewport, in screen pixels, whatever the page shows. */
+  clickAtScreen(position: ScreenPoint, modifiers?: Modifiers): Promise<void>;
   /** Clicks twice at a glyph-local position and waits for the edit it makes. */
   doubleClickAt(position: Point2D, modifiers?: Modifiers): Promise<void>;
   /** Presses the pointer at a glyph-local position, starting a gesture. */
@@ -154,6 +208,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   movePointerTo(position: Point2D, modifiers?: Modifiers): void;
   /** Moves the pointer without a frame passing, so the move is still queued when the next event arrives. */
   queuePointerMove(position: Point2D, modifiers?: Modifiers): void;
+  /** Lets the next animation frame run, as the browser does, so a queued pointer move is applied. */
+  passFrame(): void;
   /** Releases the pointer at a glyph-local position and waits for the edit it makes. */
   releaseAt(position: Point2D, modifiers?: Modifiers): Promise<void>;
   /**
@@ -179,6 +235,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   cancelGesture(): void;
   /** Presses a key and waits for the edit it makes. */
   pressKey(key: string, modifiers?: Modifiers): Promise<void>;
+  /** Releases a key, with the modifiers still held after it, and waits for the editor to settle. */
+  releaseKey(key: string, modifiers?: Modifiers): Promise<void>;
   /** Switches to the Hand for as long as Space is held, as the Space key binding does. */
   holdSpaceForHand(): void;
   /** Lets go of Space, returning from the Hand to the tool before it. */
@@ -255,16 +313,44 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   resizeCanvas(width: number, height: number): void;
   /** Sets the zoom level around the viewport centre, as the zoom controls do. */
   setZoom(zoom: number): void;
+  /** Pans the canvas by a distance in screen pixels, as dragging with the hand does. */
+  panBy(by: ScreenVector): void;
   /** Frames all content, as View › Zoom to Fit does. */
   zoomToFit(): void;
   /** Frames the selection, as View › Zoom to Selection does. */
   zoomToSelection(): void;
   /** Frames the open glyph's metrics box, as opening a glyph does. */
   frameGlyph(): void;
-  /** Sets the size, in glyph units per em, of the text the open glyph is edited in. */
+  /** The ISO 15924 scripts the canvas text was laid out in, in order of first use. */
+  textScripts(): readonly string[];
+  /** The canvas text's size, in scene units per em. */
+  textSize(): number;
+  /** Sets the size, in glyph units per em, of the text the open glyph is edited in, as the Text section's size field does. */
   setTextSize(size: number): void;
   /** Moves the text the open glyph is edited in to a canvas position. */
   moveText(to: Point2D): void;
+  /** Turns shaping on or off for the canvas text, as the Text section's Shaping switch does. */
+  setTextShaping(shaping: boolean): void;
+  /** Turns a feature on or off for the canvas text, or back to the font's default with null. */
+  setTextFeature(tag: string, on: boolean | null): void;
+  /** Sets the BCP 47 language the canvas text is shaped as, as the Text section's Language picker does. */
+  setTextLanguage(language: string | null): void;
+  /** Sets the ISO 15924 script the canvas text is shaped in, as the Text section's Script picker does. */
+  setTextScript(script: string | null): void;
+  /** Sets the canvas text's line height in ems, or null for the font's, as the Line height field does. */
+  setTextLineHeight(lineHeight: number | null): void;
+  /** Lines the canvas text up left, centre or right, as the Alignment buttons do. */
+  setTextAlign(align: "left" | "center" | "right"): void;
+  /** The features the font defines, as the Features section lists them: tag, name, default and group. */
+  textFeatures(): readonly TextFeature[];
+  /** Each substitution a feature can make, as glyph names, as the feature preview lists them. */
+  featureSubstitutions(
+    tag: string,
+  ): readonly { readonly input: readonly string[]; readonly output: string }[];
+  /** Highlights what a feature changes in the canvas text, as hovering its tag does; null ends it. */
+  highlightFeature(tag: string | null): void;
+  /** The names of the glyphs the canvas text draws highlighted, in no particular order. */
+  highlightedGlyphs(): readonly string[];
 
   /** Types `text` at the caret in Text mode, as the keyboard does; `"\n"` is Enter. */
   typeText(text: string): void;
@@ -364,6 +450,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   deleteAxis(tag: string): Promise<void>;
   /** Renames the source `source` to `name`, as Settings › Sources does. */
   renameSource(source: string, name: string): Promise<void>;
+  /** Moves the source `source` along the axis tagged `tag` to `value`, as Settings › Sources does. */
+  setSourceLocation(source: string, tag: string, value: number): Promise<void>;
   /** Sets the source `source`'s italic angle, as Settings › Sources does. */
   setSourceItalicAngle(source: string, italicAngle: number): Promise<void>;
   /** Sets the source `source`'s line gap, as Settings › Sources does. */
@@ -380,7 +468,7 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   /**
    * Selects sources for editing, as clicking and Command-clicking rows in the
    * Sources panel does: the first becomes the active source, and edits apply
-   * to all of them once their layers match.
+   * to every one whose layer matches its layer.
    */
   editSources(names: readonly string[]): Promise<void>;
   /** Edits every source at once, or back to the active one, as the sources panel's edit-all does. */
@@ -437,6 +525,12 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   toolState(): ActiveTool | null;
   /** The canvas text as it shows now: items, placed glyphs, and caret; null when there is none. */
   canvasText(): CanvasText | null;
+  /**
+   * Why the canvas says proof text is not shown, as its notice reads it
+   * (`Text.layoutFailureCell`): the stage that failed and the error's
+   * message; null while every run lays out.
+   */
+  textLayoutFailure(): TextLayoutFailureRead | null;
   /** What the Spacing tool shows; null when it is not active. */
   spacingTool(): SpacingToolState | null;
   /** What the Kerning tool shows; null when it is not active. */
@@ -450,6 +544,15 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   /** The snap guides the active tool draws for the gesture in flight, in glyph units. */
   drawnSnapGuides(): readonly PositionGuide[];
   /**
+   * Returns where the active tool's snap feedback draws a cross for the gesture in flight.
+   *
+   * @remarks
+   * In glyph units: guide ends, snapped positions, and the box corners a guide
+   * passes through, each once: each guide's ends, then the crossings on its line. Empty when
+   * nothing snaps. Test-only: not agent data.
+   */
+  drawnSnapCrossings(): readonly Point2D[];
+  /**
    * One point of the open glyph as the canvas draws it now, a gesture not yet
    * released included, as {@link drawnOutline} draws it; null when it draws no
    * point with that id.
@@ -462,6 +565,27 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   editGhost(ids: readonly PointId[]): Record<PointId, LocalPoint> | null;
   /** A glyph as the canvas draws it at the current location; the open glyph when `glyph` is omitted. Test-only. */
   drawnGlyph(glyph?: string): Promise<DrawnGlyph>;
+  /**
+   * Draws the canvas onto recording surfaces from now on, as mounting the
+   * canvas does; {@link latestCanvasFrame} reads what they record. Test-only.
+   */
+  recordCanvas(): void;
+  /**
+   * What the latest frame since {@link recordCanvas} draws; empty before the
+   * first frame. Test-only.
+   */
+  latestCanvasFrame(): CanvasFrame;
+  /** The ids of the outlines the canvas draws for the glyph named `glyph` now. Test-only. */
+  drawnOutlineIds(glyph: string): DrawnOutlineIds;
+  /** Whether the glyph named `name` has loaded, so the canvas can draw it. Test-only: not agent data. */
+  glyphLoaded(name: string): boolean;
+  /**
+   * How many times the canvas text has been laid out since this was first
+   * read, the layout then counting as none: the same before and after a step
+   * that kept the layout. Reading it holds the layout the way the canvas does.
+   * Test-only: not agent data.
+   */
+  textLayoutCount(): number;
   /** The id selection uses for the segment from `start` to `end`. */
   segmentBetween(start: PointId, end: PointId): string;
   /** The selection's bounds in glyph units, or null when nothing is selected. */
@@ -476,6 +600,12 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   canDecomposeSelection(): boolean;
   /** Whether the session disables tool `name`. */
   toolDisabled(name: ToolName): boolean;
+  /** The tools pane's buttons, in order; a tool the pane does not show has none. Test-only. */
+  toolbar(): readonly ToolbarButton[];
+  /** The single-key shortcuts that select a tool on the canvas, as the keyboard routes them. Test-only. */
+  toolShortcuts(): readonly ToolShortcut[];
+  /** The text on the system clipboard, as another app would paste it. Test-only: not agent data. */
+  clipboardText(): string;
   /** The CSS cursor the editor shows. Test-only: not agent data. */
   shownCursor(): string;
   /** The cursor the active tool asks for, by name (`move`, `bend`, `nwse-resize`). Test-only. */
@@ -496,15 +626,86 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   screenPosition(position: Point2D): ScreenPoint;
   /** The viewport's centre, in screen pixels. Test-only: not agent data. */
   viewportCentre(): ScreenPoint;
+  /**
+   * Makes one window-control call as an agent does over MCP
+   * (`shift.commands.run`, `shift.editor.*`), on this editor and behind the
+   * same font-revision guard; only the window id is left out.
+   */
+  agentControl<K extends ControlOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]>;
+  /**
+   * Sends `commands.run` on to `run`, as the window's own command request
+   * sends a command to main's registry. Test-only: main is not in process.
+   */
+  connectAppCommands(run: (command: CommandId) => Promise<void>): void;
   /** The document's save state behind every edit made so far, as agents read it; null without a document. */
   documentState(): Promise<DocumentSaveState | null>;
+  /**
+   * Makes one proof-text call as an agent does over MCP (`shift.text.*`), on
+   * this editor and behind the same font-revision guard; only the window id is left out.
+   */
+  agentText<K extends TextOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]>;
+  /**
+   * Makes one page edit or undo/redo as an agent does over MCP
+   * (`shift.pages.*`, `shift.history.*`), on this editor and behind the same
+   * font-revision guard; only the window id is left out.
+   */
+  agentDocument<K extends DocumentOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]>;
+
+  /** The document's pages in list order, as agents read them (`EditorView.pages`). */
+  pageList(): readonly PageEntry[];
+  /** The page the canvas shows, as agents read it (`EditorView.shownPageId`). */
+  shownPageId(): string | null;
+  /** Whether a page with id `id` exists, glyph pages included. Test-only: not agent data. */
+  pageExists(id: string): boolean;
+  /**
+   * Closes the shown tab and shows its neighbour, as Close Tab does in the
+   * window's renderer; false when only the glyph overview is shown, so Close
+   * Tab closes the window instead.
+   */
+  closeTab(): boolean;
+  /** Adds a page after the last one, as the pages list's add button does, without showing it. */
+  addPage(name?: string): PageEntry;
+  /** Shows a page on the canvas, as choosing it in the pages list does. */
+  showPage(id: string): void;
+  /** Renames a page, as editing its name in the pages list does. */
+  renamePage(id: string, name: string): void;
+  /** Moves a page to `index` in the pages list, as dragging it there does. */
+  movePage(id: string, index: number): void;
+  /** Deletes a page and everything on it; false when it is the last page. */
+  deletePage(id: string): boolean;
 
   /** Adds a glyph to the font and loads it. */
   addGlyph(name: string, unicode: number | null): Promise<void>;
-  undo(): Promise<void>;
-  redo(): Promise<void>;
+  /** Edit › Undo; false when there was nothing to undo. */
+  undo(): Promise<boolean>;
+  /** Edit › Redo; false when there was nothing to redo. */
+  redo(): Promise<boolean>;
   /** Waits for every pending edit to be confirmed. */
   settle(): Promise<void>;
+  /** Makes the workspace refuse the next edit it is sent, as a failed write does. Test-only. */
+  failNextWorkspaceApply(): void;
+  /** Makes the window's engine fail its next text layout with `message`. Test-only. */
+  failNextTextLayout(message: string): void;
+  /** Makes the window's engine fail its next glyph preload with `message`. Test-only. */
+  failNextGlyphPreload(message: string): void;
+  /**
+   * Makes the window's engine fail to list the font's features as it does
+   * for a font with no shaper font, for `reason`. Test-only.
+   */
+  failFeatureLists(reason: string): void;
+  /** What the Features section says when the font's features cannot be listed; null when they can. */
+  featureListFailure(): string | null;
+  /** What a feature's preview says when its substitutions cannot be read; null when they can. */
+  featureSubstitutionsFailure(tag: string): string | null;
   /**
    * Saves the document, as File › Save does. A document never saved yet is
    * saved to a temporary file, as if Save As chose one; {@link close} removes it.
@@ -521,4 +722,10 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
 
   /** The editor itself, only to pass to code under test that takes an `Editor`. */
   asEditor(): Editor;
+}
+
+/** A text layout failure as the canvas notice shows it. */
+export interface TextLayoutFailureRead {
+  readonly stage: "layout" | "preload" | "module";
+  readonly message: string;
 }

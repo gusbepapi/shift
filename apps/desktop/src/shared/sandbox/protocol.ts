@@ -1,12 +1,24 @@
 import type {
   AuthoredLayer,
+  CommandListInput,
+  CommandRun,
+  CommandRunInput,
+  CommandSummary,
   EditorInspection,
+  EditorOpenGlyphInput,
+  EditorSelectInput,
+  EditorSetToolInput,
+  EditorSetViewInput,
+  EditorShowPageInput,
   FontOverview,
   GlyphGetInput,
   GlyphListInput,
   GlyphPage,
   GlyphResolveInput,
   GlyphSummary,
+  HistoryInput,
+  HistoryRedo,
+  HistoryUndo,
   KerningAtInput,
   KerningGroupsInput,
   KerningGroupSummary,
@@ -18,6 +30,10 @@ import type {
   LayerRenderInput,
   LayerResolveInput,
   LayerSvg,
+  PageChange,
+  PageCreateInput,
+  PageDeleteInput,
+  PageRenameInput,
   LocationResolveInput,
   ResolvedGlyphs,
   ResolvedKerningPairs,
@@ -30,6 +46,15 @@ import type {
   ShiftTarget,
   SourceGetInput,
   InstanceGetInput,
+  TextRunCreateInput,
+  TextRunDeleteInput,
+  TextRunGetInput,
+  TextRunSetCaretInput,
+  TextRunSetOptionsInput,
+  TextRunSetTextInput,
+  TextRunsInput,
+  TextRunSummary,
+  TextRunView,
 } from "@shift/runtime";
 import type { NamedInstance, Source } from "@shift/types";
 
@@ -55,6 +80,34 @@ export type SandboxHostCallMap = {
   };
   "shift.editor.inspect": {
     request: ShiftTarget;
+    response: ShiftObservation<EditorInspection>;
+  };
+  "shift.commands.list": {
+    request: CommandListInput;
+    response: CommandSummary[];
+  };
+  "shift.commands.run": {
+    request: CommandRunInput;
+    response: CommandRun;
+  };
+  "shift.editor.setTool": {
+    request: EditorSetToolInput;
+    response: ShiftObservation<EditorInspection>;
+  };
+  "shift.editor.showPage": {
+    request: EditorShowPageInput;
+    response: ShiftObservation<EditorInspection>;
+  };
+  "shift.editor.openGlyph": {
+    request: EditorOpenGlyphInput;
+    response: ShiftObservation<EditorInspection>;
+  };
+  "shift.editor.setView": {
+    request: EditorSetViewInput;
+    response: ShiftObservation<EditorInspection>;
+  };
+  "shift.editor.select": {
+    request: EditorSelectInput;
     response: ShiftObservation<EditorInspection>;
   };
   "shift.font.get": {
@@ -112,6 +165,54 @@ export type SandboxHostCallMap = {
   "shift.layers.render": {
     request: LayerRenderInput;
     response: ShiftObservation<LayerSvg>;
+  };
+  "shift.text.runs": {
+    request: TextRunsInput;
+    response: ShiftObservation<TextRunSummary[]>;
+  };
+  "shift.text.get": {
+    request: TextRunGetInput;
+    response: ShiftObservation<TextRunView>;
+  };
+  "shift.text.create": {
+    request: TextRunCreateInput;
+    response: ShiftObservation<TextRunView>;
+  };
+  "shift.text.setText": {
+    request: TextRunSetTextInput;
+    response: ShiftObservation<TextRunView>;
+  };
+  "shift.text.setCaret": {
+    request: TextRunSetCaretInput;
+    response: ShiftObservation<TextRunView>;
+  };
+  "shift.text.setOptions": {
+    request: TextRunSetOptionsInput;
+    response: ShiftObservation<TextRunView>;
+  };
+  "shift.text.delete": {
+    request: TextRunDeleteInput;
+    response: ShiftObservation<null>;
+  };
+  "shift.pages.create": {
+    request: PageCreateInput;
+    response: ShiftObservation<PageChange>;
+  };
+  "shift.pages.rename": {
+    request: PageRenameInput;
+    response: ShiftObservation<PageChange>;
+  };
+  "shift.pages.delete": {
+    request: PageDeleteInput;
+    response: ShiftObservation<PageChange>;
+  };
+  "shift.history.undo": {
+    request: HistoryInput;
+    response: ShiftObservation<HistoryUndo>;
+  };
+  "shift.history.redo": {
+    request: HistoryInput;
+    response: ShiftObservation<HistoryRedo>;
   };
 };
 

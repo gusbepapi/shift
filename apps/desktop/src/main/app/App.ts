@@ -41,6 +41,7 @@ import { FONT_FOLDER_EXTENSIONS, OPEN_FONT_EXTENSIONS } from "../../shared/openF
 import { ShiftMcpServer } from "@shift/mcp";
 import type {
   EditorInspection,
+  EditorView,
   FontRevision,
   ShiftCapture,
   ShiftCaptureInput,
@@ -48,9 +49,11 @@ import type {
   ShiftSession,
 } from "@shift/runtime";
 import type { RecentDocumentVisit } from "../../shared/recents";
+import type { CommandId } from "../../shared/commands";
 import { RecentDocuments } from "../recents/RecentDocuments";
 import { SandboxRuntimeProcess } from "../sandbox/SandboxRuntimeProcess";
 import { AgentConnections } from "../agent/AgentConnections";
+import { AgentCommands } from "../agent/AgentCommands";
 import { publishE2EHooks } from "../agent/e2eHooks";
 import { AppConfig } from "../config/AppConfig";
 import { configDirectory } from "../config/configDirectory";
@@ -96,6 +99,14 @@ export class App {
   readonly #updater: AppUpdater;
 
   #commands = new CommandRegistry();
+  /** The view commands agents may run, for the window each names. */
+  #agentCommands = new AgentCommands(this.#commands, (windowId) => {
+    const window = this.#windowForAgentRequest(windowId);
+    return {
+      context: () => this.#commandContext(window),
+      run: (command, ifFontRevision) => window.agent.runCommand(command, ifFontRevision),
+    };
+  });
   #agentConnections: AgentConnections | null = null;
   #config: AppConfig | null = null;
   #commandLineTool: CommandLineTool | null = null;
@@ -119,9 +130,7 @@ export class App {
   #appIcon = new AppIcon();
   #applicationMenu = new ApplicationMenu(
     (id, browserWindow) => {
-      const window = browserWindow
-        ? this.#windows.windowForBrowserWindow(browserWindow)
-        : undefined;
+      const window = browserWindow ? this.#windows.windowForBrowserWindow(browserWindow) : null;
       if (browserWindow && !window) return;
 
       // Menu/accelerator commands run detached, so a failure (e.g. a save that
@@ -136,9 +145,7 @@ export class App {
         });
     },
     (id, browserWindow) => {
-      const window = browserWindow
-        ? this.#windows.windowForBrowserWindow(browserWindow)
-        : undefined;
+      const window = browserWindow ? this.#windows.windowForBrowserWindow(browserWindow) : null;
       if (browserWindow && !window) return false;
 
       return this.#commands.isEnabled(id, this.#commandContext(window));
@@ -204,6 +211,12 @@ export class App {
     this.#updater = new AppUpdater({
       lifecycle: this.#lifecycle,
       activeWindow: () => this.#windows.activeWindow(),
+      broadcast: (notice) => {
+        for (const window of this.#windows.allWindows()) {
+          if (window.window.isDestroyed()) continue;
+          ipc.send(window.window.webContents, "update.noticeChanged", notice);
+        }
+      },
       log: createShiftLogger("app.update"),
     });
   }
@@ -274,7 +287,10 @@ export class App {
       this.#recents.onChanged(() => this.#publishRecents());
       await this.#startSandbox();
       await this.#startAgentConnections();
-      publishE2EHooks((windowId) => this.#windowForAgentRequest(windowId).agent);
+      publishE2EHooks({
+        agentFor: (windowId) => this.#windowForAgentRequest(windowId).agent,
+        runCommand: (windowId, id) => this.#runWindowCommand(this.#requireWindow(windowId), id),
+      });
       void this.#requireCommandLineTool()
         .refresh()
         .catch((error) => {
@@ -346,6 +362,7 @@ export class App {
     maximised = false,
     minWidth?: number,
     titleBarHeight?: number,
+    systemTrafficLights = false,
   ): Window {
     const window = new Window({
       preloadPath: path.join(__dirname, "preload.js"),
@@ -353,6 +370,7 @@ export class App {
       maximised,
       minWidth,
       titleBarHeight,
+      systemTrafficLights,
       width: bounds?.width,
       height: bounds?.height,
       browserWindowOptions: bounds === undefined ? undefined : { x: bounds.x, y: bounds.y },
@@ -396,6 +414,7 @@ export class App {
       false,
       LAUNCHER_MIN_WIDTH,
       LAUNCHER_TITLE_BAR_HEIGHT,
+      true,
     );
     this.#loadLauncher(window);
     setTimeout(() => this.#presentIfHidden(window), LAUNCHER_SHOW_FALLBACK_MS);
@@ -483,7 +502,7 @@ export class App {
     }
   }
 
-  #crashedWindows(session: FontSessionHost | null, failedWindow: Window | null): Window[] {
+  #crashedWindows(session: FontSessionHost | null, failedWindow: Window | null): readonly Window[] {
     if (failedWindow) return [failedWindow];
     return session?.allWindows() ?? [];
   }
@@ -570,12 +589,7 @@ export class App {
       return { e2eActions: process.env.NODE_ENV === "test" };
     });
     ipc.handle(ipcMain, "commands.run", async (event, id) => {
-      const window = this.#requireWindowForWebContents(event.sender);
-      try {
-        await this.#commands.run(id, this.#commandContext(window));
-      } finally {
-        this.#applicationMenu.updateCommandStates();
-      }
+      await this.#runWindowCommand(this.#requireWindowForWebContents(event.sender), id);
     });
     ipc.handle(ipcMain, "clipboard.readText", () => {
       return clipboard.readText();
@@ -583,11 +597,9 @@ export class App {
     ipc.handle(ipcMain, "clipboard.writeText", (_event, text) => {
       clipboard.writeText(text);
     });
+    ipc.handle(ipcMain, "update.notice", () => this.#updater.notice);
     ipc.handle(ipcMain, "update.startDownload", async () => {
       await this.#updater.startDownload();
-    });
-    ipc.handle(ipcMain, "update.cancelDownload", () => {
-      this.#updater.cancelDownload();
     });
     ipc.handle(ipcMain, "update.restartToUpdate", async () => {
       await this.#updater.restartToUpdate();
@@ -615,7 +627,7 @@ export class App {
         return;
       }
 
-      // About, Feedback, and Update windows are plain BrowserWindows.
+      // About and Feedback windows are plain BrowserWindows.
       if (process.platform !== "win32" || !browserWindow) return;
       browserWindow.setTitleBarOverlay({
         color: colors.background,
@@ -774,15 +786,15 @@ export class App {
     }
   }
 
-  #commandContext(window?: Window): CommandContext {
-    window ??= this.#windows.activeWindow() ?? undefined;
+  #commandContext(requested: Window | null): CommandContext {
+    const window = requested ?? this.#windows.activeWindow();
     const session = window ? this.#workspaces.getForBrowserWindow(window.window) : null;
     const document = session?.document ?? null;
 
     return {
       commandLineTool: {
         available: () => this.#commandLineTool?.available ?? false,
-        install: () => this.#installCommandLineTool(window ?? null),
+        install: () => this.#installCommandLineTool(window),
       },
       update: {
         checkForUpdates: async () => {
@@ -791,15 +803,15 @@ export class App {
       },
       document: {
         create: async () => {
-          await this.#createWorkspaceFromWindow(window ?? null);
+          await this.#createWorkspaceFromWindow(window);
         },
         open: async () => {
-          await this.#openWorkspaceFromWindow(window ?? null, (opener) =>
+          await this.#openWorkspaceFromWindow(window, (opener) =>
             this.#nativeDialogs.openFont(opener),
           );
         },
         openFolder: async () => {
-          await this.#openWorkspaceFromWindow(window ?? null, (opener) =>
+          await this.#openWorkspaceFromWindow(window, (opener) =>
             this.#nativeDialogs.openFontFolder(opener),
           );
         },
@@ -828,7 +840,7 @@ export class App {
         },
       },
       windows: {
-        active: () => window ?? null,
+        active: () => window,
         showAbout: () => {
           this.#aboutWindow.show();
         },
@@ -1038,6 +1050,10 @@ export class App {
       this.#recents?.setSpecimen(visit, specimen);
     } catch (error) {
       this.#log.warn("building recent file specimen failed", visit.path, error);
+      this.#recents?.setSpecimenFailure(
+        visit,
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -1114,8 +1130,22 @@ export class App {
       sessions: {
         list: () => Promise.resolve(this.#agentSessions()),
       },
+      commands: {
+        list: async ({ windowId }) => this.#agentCommands.list(windowId),
+        run: (input) => this.#agentCommands.run(input),
+      },
       editor: {
         inspect: ({ windowId, ifFontRevision }) => this.#inspectEditor(windowId, ifFontRevision),
+        setTool: ({ windowId, ...input }) =>
+          this.#controlEditor(windowId, (agent) => agent.controlEditor("editor.setTool", input)),
+        showPage: ({ windowId, ...input }) =>
+          this.#controlEditor(windowId, (agent) => agent.controlEditor("editor.showPage", input)),
+        openGlyph: ({ windowId, ...input }) =>
+          this.#controlEditor(windowId, (agent) => agent.controlEditor("editor.openGlyph", input)),
+        setView: ({ windowId, ...input }) =>
+          this.#controlEditor(windowId, (agent) => agent.controlEditor("editor.setView", input)),
+        select: ({ windowId, ...input }) =>
+          this.#controlEditor(windowId, (agent) => agent.controlEditor("editor.select", input)),
       },
       font: {
         get: ({ windowId, ifFontRevision }) =>
@@ -1162,6 +1192,36 @@ export class App {
           this.#windowForAgentRequest(windowId).agent.resolveKerning(input),
         at: ({ windowId, ...input }) =>
           this.#windowForAgentRequest(windowId).agent.kerningAt(input),
+      },
+      text: {
+        runs: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.runs", input),
+        get: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.get", input),
+        create: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.create", input),
+        setText: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.setText", input),
+        setCaret: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.setCaret", input),
+        setOptions: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.setOptions", input),
+        delete: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.text("text.delete", input),
+      },
+      pages: {
+        create: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.edit("pages.create", input),
+        rename: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.edit("pages.rename", input),
+        delete: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.edit("pages.delete", input),
+      },
+      history: {
+        undo: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.edit("history.undo", input),
+        redo: ({ windowId, ...input }) =>
+          this.#windowForAgentRequest(windowId).agent.edit("history.redo", input),
       },
     });
     this.#sandbox = sandbox;
@@ -1273,17 +1333,26 @@ export class App {
     return sessions;
   }
 
-  async #inspectEditor(
+  #inspectEditor(
     windowId: number,
     ifFontRevision?: FontRevision,
   ): Promise<ShiftObservation<EditorInspection>> {
-    const window = this.#windows.windowForId(windowId);
-    if (!window) throw new Error(`Shift window ${windowId} is not open`);
+    return this.#controlEditor(windowId, (agent) => agent.inspectEditor(ifFontRevision));
+  }
 
+  /**
+   * Makes one editor call in window `windowId`'s renderer and pairs the view
+   * it answers with the window and font session it came from.
+   */
+  async #controlEditor(
+    windowId: number,
+    call: (agent: Window["agent"]) => Promise<ShiftObservation<EditorView>>,
+  ): Promise<ShiftObservation<EditorInspection>> {
+    const window = this.#windowForAgentRequest(windowId);
     const session = this.#workspaces.getForBrowserWindow(window.window);
     if (!session) throw new Error(`Shift window ${windowId} has no font session`);
 
-    const { fontRevision, value: editor } = await window.agent.inspectEditor(ifFontRevision);
+    const { fontRevision, value: editor } = await call(window.agent);
     return {
       fontRevision,
       value: {
@@ -1351,9 +1420,23 @@ export class App {
     };
   }
 
-  #windowForAgentRequest(windowId: number): Window {
+  /** Runs `id` for `window`, as a command the window's renderer requests, then refreshes the menu. */
+  async #runWindowCommand(window: Window, id: CommandId): Promise<void> {
+    try {
+      await this.#commands.run(id, this.#commandContext(window));
+    } finally {
+      this.#applicationMenu.updateCommandStates();
+    }
+  }
+
+  #requireWindow(windowId: number): Window {
     const window = this.#windows.windowForId(windowId);
     if (!window) throw new Error(`Shift window ${windowId} is not open`);
+    return window;
+  }
+
+  #windowForAgentRequest(windowId: number): Window {
+    const window = this.#requireWindow(windowId);
     if (!this.#workspaces.getForBrowserWindow(window.window)) {
       throw new Error(`Shift window ${windowId} has no font session`);
     }

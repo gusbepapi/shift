@@ -17,9 +17,17 @@
 		<string>noon-ar</string>
 		<string>noonDotless-ar</string>
 		<string>dotabove-ar</string>
+		<string>alefabove-ar</string>
+		<string>tick</string>
+		<string>one</string>
+		<string>one.arab</string>
+		<string>i.loclTRK</string>
+		<string>hamzabelow-ar</string>
 	</array>
 	<key>public.openTypeCategories</key>
 	<dict>
+		<key>alefabove-ar</key>
+		<string>mark</string>
 		<key>beh-ar</key>
 		<string>base</string>
 		<key>beh-ar.fina</key>
@@ -30,6 +38,8 @@
 		<string>base</string>
 		<key>dotabove-ar</key>
 		<string>mark</string>
+		<key>hamzabelow-ar</key>
+		<string>mark</string>
 		<key>f_i</key>
 		<string>ligature</string>
 		<key>fatha-ar</key>
@@ -39,6 +49,8 @@
 		<key>noonDotless-ar</key>
 		<string>base</string>
 		<key>shadda-ar</key>
+		<string>mark</string>
+		<key>tick</key>
 		<string>mark</string>
 	</dict>
 </dict>

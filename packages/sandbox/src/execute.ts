@@ -46,6 +46,18 @@ export async function executeShiftCode(
   installAsyncJsonFunction(vm, "__shiftInspectEditor", deadline, (input) =>
     validated.editor.inspect(input as never),
   );
+  const controlCalls = {
+    __shiftListCommands: validated.commands.list,
+    __shiftRunCommand: validated.commands.run,
+    __shiftSetTool: validated.editor.setTool,
+    __shiftShowPage: validated.editor.showPage,
+    __shiftOpenGlyph: validated.editor.openGlyph,
+    __shiftSetView: validated.editor.setView,
+    __shiftSelect: validated.editor.select,
+  } satisfies Record<string, (input: never) => Promise<unknown>>;
+  for (const [name, call] of Object.entries(controlCalls)) {
+    installAsyncJsonFunction(vm, name, deadline, (input) => call(input as never));
+  }
   installAsyncJsonFunction(vm, "__shiftGetFont", deadline, (input) =>
     validated.font.get(input as never),
   );
@@ -88,6 +100,23 @@ export async function executeShiftCode(
   installAsyncJsonFunction(vm, "__shiftKerningAt", deadline, (input) =>
     validated.kerning.at(input as never),
   );
+  const documentCalls = {
+    __shiftTextRuns: validated.text.runs,
+    __shiftTextGet: validated.text.get,
+    __shiftTextCreate: validated.text.create,
+    __shiftTextSetText: validated.text.setText,
+    __shiftTextSetCaret: validated.text.setCaret,
+    __shiftTextSetOptions: validated.text.setOptions,
+    __shiftTextDelete: validated.text.delete,
+    __shiftPagesCreate: validated.pages.create,
+    __shiftPagesRename: validated.pages.rename,
+    __shiftPagesDelete: validated.pages.delete,
+    __shiftHistoryUndo: validated.history.undo,
+    __shiftHistoryRedo: validated.history.redo,
+  } satisfies Record<string, (input: never) => Promise<unknown>>;
+  for (const [name, call] of Object.entries(documentCalls)) {
+    installAsyncJsonFunction(vm, name, deadline, (input) => call(input as never));
+  }
   installAsyncJsonFunction(vm, "__shiftReadOpen", deadline, async (target) => {
     const scope = await ShiftReadScope.open(validated, shiftInputSchemas.read.parse(target));
     const scopeId = scopes.size + 1;
@@ -110,8 +139,17 @@ export async function executeShiftCode(
       sessions: Object.freeze({
         list: async () => JSON.parse(await __shiftListSessions()),
       }),
+      commands: Object.freeze({
+        list: async (input) => JSON.parse(await __shiftListCommands(input)),
+        run: async (input) => JSON.parse(await __shiftRunCommand(input)),
+      }),
       editor: Object.freeze({
         inspect: async (input) => JSON.parse(await __shiftInspectEditor(input)),
+        setTool: async (input) => JSON.parse(await __shiftSetTool(input)),
+        showPage: async (input) => JSON.parse(await __shiftShowPage(input)),
+        openGlyph: async (input) => JSON.parse(await __shiftOpenGlyph(input)),
+        setView: async (input) => JSON.parse(await __shiftSetView(input)),
+        select: async (input) => JSON.parse(await __shiftSelect(input)),
       }),
       font: Object.freeze({
         get: async (input) => JSON.parse(await __shiftGetFont(input)),
@@ -140,6 +178,24 @@ export async function executeShiftCode(
         pairs: async (input) => JSON.parse(await __shiftKerningPairs(input)),
         resolve: async (input) => JSON.parse(await __shiftResolveKerning(input)),
         at: async (input) => JSON.parse(await __shiftKerningAt(input)),
+      }),
+      text: Object.freeze({
+        runs: async (input) => JSON.parse(await __shiftTextRuns(input)),
+        get: async (input) => JSON.parse(await __shiftTextGet(input)),
+        create: async (input) => JSON.parse(await __shiftTextCreate(input)),
+        setText: async (input) => JSON.parse(await __shiftTextSetText(input)),
+        setCaret: async (input) => JSON.parse(await __shiftTextSetCaret(input)),
+        setOptions: async (input) => JSON.parse(await __shiftTextSetOptions(input)),
+        delete: async (input) => JSON.parse(await __shiftTextDelete(input)),
+      }),
+      pages: Object.freeze({
+        create: async (input) => JSON.parse(await __shiftPagesCreate(input)),
+        rename: async (input) => JSON.parse(await __shiftPagesRename(input)),
+        delete: async (input) => JSON.parse(await __shiftPagesDelete(input)),
+      }),
+      history: Object.freeze({
+        undo: async (input) => JSON.parse(await __shiftHistoryUndo(input)),
+        redo: async (input) => JSON.parse(await __shiftHistoryRedo(input)),
       }),
       read: async (target, callback) => {
         if (typeof callback !== "function") throw new TypeError("shift.read requires a callback");
@@ -174,6 +230,10 @@ export async function executeShiftCode(
             pairs: call("kerning.pairs"),
             resolve: call("kerning.resolve"),
             at: call("kerning.at"),
+          }),
+          text: Object.freeze({
+            runs: call("text.runs"),
+            get: call("text.get"),
           }),
         });
         try {
@@ -227,9 +287,23 @@ function validatedCapabilities(capabilities: ShiftCapabilities): ShiftCapabiliti
   return {
     capture: (input) => capabilities.capture(shiftInputSchemas.capture.parse(input)),
     sessions: { list: () => capabilities.sessions.list() },
+    commands: {
+      list: (input) => capabilities.commands.list(shiftInputSchemas["commands.list"].parse(input)),
+      run: (input) => capabilities.commands.run(shiftInputSchemas["commands.run"].parse(input)),
+    },
     editor: {
       inspect: (input) =>
         capabilities.editor.inspect(shiftInputSchemas["editor.inspect"].parse(input)),
+      setTool: (input) =>
+        capabilities.editor.setTool(shiftInputSchemas["editor.setTool"].parse(input)),
+      showPage: (input) =>
+        capabilities.editor.showPage(shiftInputSchemas["editor.showPage"].parse(input)),
+      openGlyph: (input) =>
+        capabilities.editor.openGlyph(shiftInputSchemas["editor.openGlyph"].parse(input)),
+      setView: (input) =>
+        capabilities.editor.setView(shiftInputSchemas["editor.setView"].parse(input)),
+      select: (input) =>
+        capabilities.editor.select(shiftInputSchemas["editor.select"].parse(input)),
     },
     font: { get: (input) => capabilities.font.get(shiftInputSchemas["font.get"].parse(input)) },
     locations: {
@@ -262,6 +336,26 @@ function validatedCapabilities(capabilities: ShiftCapabilities): ShiftCapabiliti
       resolve: (input) =>
         capabilities.kerning.resolve(shiftInputSchemas["kerning.resolve"].parse(input)),
       at: (input) => capabilities.kerning.at(shiftInputSchemas["kerning.at"].parse(input)),
+    },
+    text: {
+      runs: (input) => capabilities.text.runs(shiftInputSchemas["text.runs"].parse(input)),
+      get: (input) => capabilities.text.get(shiftInputSchemas["text.get"].parse(input)),
+      create: (input) => capabilities.text.create(shiftInputSchemas["text.create"].parse(input)),
+      setText: (input) => capabilities.text.setText(shiftInputSchemas["text.setText"].parse(input)),
+      setCaret: (input) =>
+        capabilities.text.setCaret(shiftInputSchemas["text.setCaret"].parse(input)),
+      setOptions: (input) =>
+        capabilities.text.setOptions(shiftInputSchemas["text.setOptions"].parse(input)),
+      delete: (input) => capabilities.text.delete(shiftInputSchemas["text.delete"].parse(input)),
+    },
+    pages: {
+      create: (input) => capabilities.pages.create(shiftInputSchemas["pages.create"].parse(input)),
+      rename: (input) => capabilities.pages.rename(shiftInputSchemas["pages.rename"].parse(input)),
+      delete: (input) => capabilities.pages.delete(shiftInputSchemas["pages.delete"].parse(input)),
+    },
+    history: {
+      undo: (input) => capabilities.history.undo(shiftInputSchemas["history.undo"].parse(input)),
+      redo: (input) => capabilities.history.redo(shiftInputSchemas["history.redo"].parse(input)),
     },
   };
 }
@@ -306,6 +400,10 @@ function callReadScope(scope: ShiftReadScope, method: unknown, input: unknown): 
       return scope.kerning.resolve(args);
     case "kerning.at":
       return scope.kerning.at(args);
+    case "text.runs":
+      return scope.text.runs(args);
+    case "text.get":
+      return scope.text.get(args);
     default:
       throw new Error(`Unknown shift.read method: ${String(method)}`);
   }

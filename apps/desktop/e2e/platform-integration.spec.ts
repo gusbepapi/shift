@@ -43,7 +43,9 @@ platformTest(
     const customWindowControls = page.getByRole("toolbar", { name: "Window controls" });
 
     expect(rendererPlatform).toBe(platform);
-    await expect(customWindowControls).toHaveCount(platform === "darwin" ? 1 : 0);
+    // The launcher draws no traffic lights of its own: macOS draws them, and
+    // Windows and Linux use the system's caption buttons or the launcher's row.
+    await expect(customWindowControls).toHaveCount(0);
   },
 );
 
@@ -84,9 +86,9 @@ async function persistEvidence(
   exportTtfPath: string,
   testInfo: TestInfo,
 ): Promise<void> {
-  await runCommand(page, electronApp, "file.save");
+  await runCommand(page, "file.save");
   await expect.poll(() => fs.existsSync(saveShiftPath)).toBe(true);
-  await runCommand(page, electronApp, "file.exportTtf");
+  await runCommand(page, "file.exportTtf");
   await expect.poll(() => fs.existsSync(exportTtfPath)).toBe(true);
 
   await testInfo.attach("saved-document", {

@@ -1,3 +1,4 @@
+import type { SceneDocument, SceneIntent } from "./sceneDocument";
 import type {
   AppliedChange,
   FontIntent,
@@ -10,15 +11,14 @@ import type {
   GlyphSnapshot,
   GlyphSnapshotRequest,
   LayerId,
-  LayerMatch,
   LayerRead,
   Location,
-  ShaperFont,
   WorkspaceDocumentState,
   WorkspaceSnapshot,
   GlyphName,
   Unicode,
   ReadonlyEntityMap,
+  SlugWeightSet,
   SourceId,
 } from "@shift/types";
 import type { FontStore } from "../lib/model/FontStore";
@@ -29,7 +29,18 @@ import type {
   EngineKerningPair,
   InterpolatedMetrics,
   MissingKerningOrigin,
+  SourceSetWeights,
 } from "../lib/wasm/engine";
+import type {
+  Counterparts,
+  FeatureSubstitution,
+  EditLocation,
+  FontChangeFlag,
+  FontFeature,
+  GlyphIdentityChange,
+  TextRun,
+  PlacedText,
+} from "@shift/wasm/protocol";
 import type { PendingEditId } from "./editing";
 import type { WorkspaceEditListener } from "./history";
 import type { GlyphReader } from "./glyph";
@@ -93,12 +104,20 @@ export type KerningPlace =
  */
 export interface FontEngine {
   /**
-   * Changes whenever {@link kerningRun}, {@link kerningPairs},
-   * {@link kerningPairsNaming} or {@link missingKerningOrigin} may answer differently.
+   * Changes whenever an edit, undo, redo or staged frame sets `flag` in its
+   * impact, and on every open: a reader of what that flag covers (kerning,
+   * source metrics, the glyph directory, …) tracks it to read again.
    */
-  readonly kerningRevisionCell: Signal<number>;
-  /** Changes whenever {@link sourceMetricsAt} may answer differently. */
-  readonly sourceMetricsRevisionCell: Signal<number>;
+  revision(flag: FontChangeFlag): Signal<number>;
+  /** The flags whose change may change what {@link layoutText} returns. */
+  layoutInputs(): readonly FontChangeFlag[];
+  /** The flags whose change may change the engine's shaper font, and so {@link fontFeatures}. */
+  shaperInputs(): readonly FontChangeFlag[];
+  /**
+   * Stops showing a gesture's preview in text: {@link layoutText} reads the
+   * font as it stands again.
+   */
+  endPreview(): void;
 
   /**
    * Reads the kerning between glyph pairs at one place, in one call.
@@ -135,12 +154,49 @@ export interface FontEngine {
   missingKerningOrigin(sourceId: SourceId): MissingKerningOrigin;
 
   /**
+   * What renaming a glyph to `name` does, as shift-font decides
+   * (`Font::glyph_rename`): the name and codepoints it would have, nothing,
+   * or why it is refused. Null for a glyph the engine's font lacks.
+   */
+  glyphRename(glyphId: GlyphId, name: string): GlyphIdentityChange | null;
+
+  /**
+   * What making `codepoint` a glyph's primary codepoint does, or removing it
+   * with null, as shift-font decides (`Font::glyph_primary_codepoint`). Null
+   * for a glyph the engine's font lacks.
+   */
+  glyphPrimaryCodepoint(glyphId: GlyphId, codepoint: number | null): GlyphIdentityChange | null;
+
+  /**
    * Interpolates the masters' source metrics at a design location.
    *
    * @param location - Design coordinates in the font's axis order, NaN for an axis default.
    * @returns null for a font whose masters do not interpolate, or while the engine is not open.
    */
   sourceMetricsAt(location: readonly number[]): InterpolatedMetrics | null;
+
+  /**
+   * The open session's variation reads, a new value for each session it
+   * opens; null while the engine is not open.
+   */
+  readonly variationCell: Signal<EngineVariation | null>;
+
+  /**
+   * A Slug atlas's weights at an external location, from the bases the
+   * engine's font gives its weight sets: weight 0 is 1, and each set's
+   * weights sit at its `sourceWeightIndices`. Pass the atlas's same `sets`
+   * array every frame: the engine interns it once.
+   *
+   * @param external - External coordinates in the font's axis order, NaN for an axis default.
+   * @returns null while the engine is not open, when a set's sources are
+   * missing from the font or form no model, or a set names an index past
+   * `weightCount`.
+   */
+  atlasWeights(
+    sets: readonly SlugWeightSet[],
+    weightCount: number,
+    external: readonly number[],
+  ): readonly number[] | null;
 
   /**
    * The name a new glyph asked to be called `name` takes: `name` trimmed, or
@@ -157,6 +213,98 @@ export interface FontEngine {
    * @throws When the engine is not open.
    */
   newAnchorName(layerIds: readonly LayerId[]): string;
+
+  /**
+   * Lays a run's text out over the engine's font, unsaved edits included,
+   * with the options Rust builds from its settings: shaped
+   * with its shaper, positioned with live kerning, marks and cursive joins,
+   * broken into lines and given caret stops, at a source or a design
+   * location. Text that cannot be shaped is laid out as typed, with the
+   * reason. A pure read: glyphs whose layers the engine has not loaded lay
+   * out from placeholders and are listed in `unloaded`, for
+   * {@link preload}.
+   *
+   * @returns null only while the engine is not open.
+   */
+  layoutText(run: TextRun, place: KerningPlace): PlacedText | null;
+
+  /**
+   * Loads the layers of glyphs a layout listed as unloaded, then bumps the
+   * revisions layout reads, so readers lay the text out again.
+   *
+   * @throws When the store's reader cannot answer.
+   */
+  preload(glyphIds: readonly GlyphId[]): void;
+
+  /**
+   * The `target` layer's ids for `ids` in `reference`, two layers of
+   * `glyphId`, as shift-font matches them (`LayerMatch::counterparts`),
+   * unsaved edits included. Loads the glyph first if the engine has not:
+   * loading changes no answer a reader holds, so it bumps no revision.
+   *
+   * @returns null when the layers don't match completely.
+   * @throws When the engine is not open, the store's reader cannot answer, or
+   * the engine cannot match the layers (`CounterpartsReadError`: an unknown
+   * layer, layers of two glyphs, or an id `reference` lacks).
+   */
+  counterparts(
+    glyphId: GlyphId,
+    reference: LayerId,
+    target: LayerId,
+    ids: Counterparts,
+  ): Counterparts | null;
+
+  /**
+   * The features the engine's shaper font defines, in tag order, each with
+   * the name it is shown by, its default and its group.
+   *
+   * @returns null only while the engine is not open.
+   * @throws When the engine has no shaper font, saying why, or it cannot be read.
+   */
+  fontFeatures(): readonly FontFeature[] | null;
+
+  /**
+   * Every substitution a feature can make in the engine's shaper font,
+   * ordered by output glyph then input.
+   *
+   * @returns null only while the engine is not open; empty for a feature that substitutes nothing.
+   * @throws When `tag` is no feature tag, the engine has no shaper font, or
+   * its `GSUB` cannot be read.
+   */
+  featureSubstitutions(tag: string): readonly FeatureSubstitution[] | null;
+
+  /**
+   * Whether shaping applies a feature when a run turns it on or off (`on`,
+   * null when it leaves it), as Rust decides: the setting wins, else the
+   * feature's default.
+   *
+   * @returns false while the engine is not open, or for a tag its shaper font does not define.
+   * @throws When the engine has no shaper font, or it cannot be read.
+   */
+  featureApplies(tag: string, on: boolean | null): boolean;
+}
+
+/**
+ * One engine session's variation reads, from the session's font as it
+ * stands, unsaved edits included: axis mapping, and the weights of the source
+ * sets it interned.
+ *
+ * @remarks
+ * Locations cross as numbers in the font's axis order, NaN for an axis the
+ * location omits. Reads on a released session answer empty.
+ */
+export interface EngineVariation {
+  /**
+   * The number the session interned the ordered source set `sourceIds` as,
+   * interning it when new; a set's number stays its own for the session's life.
+   */
+  sourceSetNumber(sourceIds: readonly SourceId[]): number;
+  /** Every interned source set's weights at a design location, in one read. */
+  sourceSetWeights(location: readonly number[]): SourceSetWeights;
+  /** An external location's design location, through the font's axis mappings, once. */
+  designLocation(external: readonly number[]): readonly number[];
+  /** The external location a design location's mapping came from; NaN on internal axes. */
+  externalLocation(design: readonly number[]): readonly number[];
 }
 
 /**
@@ -172,13 +320,29 @@ export interface OpenEdit {
    * @throws When the engine rejects the intents; the edit is then as it was.
    */
   stage(intents: readonly FontIntent[]): void;
+  /**
+   * Applies scene `intents` in place of what this edit applied so far, as a
+   * drag of a text run does each frame.
+   *
+   * @throws As {@link OpenEdit.stage}.
+   */
+  stageScene(intents: readonly SceneIntent[]): void;
   /** Closes the edit as one undo step and persists it; an edit that staged nothing commits nothing. */
   commit(label: string): void;
   /** Closes the edit, leaving the font as it was before it began. */
   cancel(): void;
 }
 
+/**
+ * What an undo or redo persisted, and where the edit it replayed was made:
+ * the page it was made on and what it changed, so the editor can show that
+ * page first; null when the engine kept no location.
+ */
+export type ReplayedChange = AppliedChange & { readonly location: EditLocation | null };
+
 export interface WorkspaceEditCoordinator {
+  /** The document's scene, in the window's editing engine beside the font. */
+  readonly scene: SceneDocument;
   push(intent: FontIntent): PendingEditId;
   /**
    * Applies `intents` as {@link WorkspaceEditCoordinator.push} applies one,
@@ -190,6 +354,13 @@ export interface WorkspaceEditCoordinator {
    * the edit; a layer whose structure they keep comes with values only.
    */
   preview(intents: readonly FontIntent[]): readonly LayerUpdate[];
+  /**
+   * Lays text out as `intents` would leave the font, without keeping them
+   * or returning the layers: a drag frame the editor already draws.
+   *
+   * @throws When the engine rejects the intents.
+   */
+  showPreview(intents: readonly FontIntent[]): void;
   transaction<TResult>(label: string, body: () => TResult): TResult;
   /**
    * Opens an edit that stays open across frames until committed or cancelled.
@@ -200,14 +371,12 @@ export interface WorkspaceEditCoordinator {
   apply(intents: FontIntent[], label?: string): Promise<AppliedChange>;
   readGlyphSnapshots(requests: readonly GlyphSnapshotRequest[]): Promise<GlyphSnapshot[]>;
   readGlyphPreviews(glyphIds: readonly GlyphId[], location: Location): Promise<GlyphPreview[]>;
-  readLayers(layerIds: readonly LayerId[]): Promise<GlyphLayerSnapshot[]>;
+  readLayers(layerIds: readonly LayerId[]): Promise<readonly GlyphLayerSnapshot[]>;
   resolveLayers(layerIds: readonly LayerId[]): Promise<LayerRead[]>;
-  matchLayers(referenceLayerId: LayerId, targetLayerId: LayerId): Promise<LayerMatch>;
   mapLocation(location: Location): Promise<Location>;
-  shaperFont(knownRevision: number | null): Promise<ShaperFont | null>;
   settled(): Promise<void>;
-  undo(): Promise<AppliedChange | null>;
-  redo(): Promise<AppliedChange | null>;
+  undo(): Promise<ReplayedChange | null>;
+  redo(): Promise<ReplayedChange | null>;
   discardRedo(): Promise<void>;
   onEdit(listener: WorkspaceEditListener): () => void;
   state(): Promise<WorkspaceDocumentState | null>;

@@ -1,6 +1,7 @@
 import type {
   AuthoredContour,
   DocumentState,
+  EditorPage,
   EditorView,
   KerningGapView,
   KerningPairSideView,
@@ -10,16 +11,27 @@ import type {
   SpacingToolView,
   TextRunGlyph,
   TextRunItem,
+  TextRunOptions,
   TextRunView,
 } from "@shift/runtime";
 import type { Editor } from "@shift/editor";
+import type { Point2D } from "@shift/geo";
+import { snapFeedback } from "@shift/editor/rendering";
 import type { ScenePoint } from "@shift/editor/spaces";
 import { isGroupSide, type KerningPairPosition } from "@shift/editor/model";
 import type { GlyphOutlineTarget, PositionGuide } from "@shift/editor/types";
-import { ascending, comparing, type PointId, type Source, type SourceId } from "@shift/types";
-import type { TextItem } from "@shift/editor/text";
+import {
+  ascending,
+  comparing,
+  type NodeId,
+  type PointId,
+  type Source,
+  type SourceId,
+} from "@shift/types";
+import type { TextItem, TextRunRecord } from "@shift/editor/text";
 import type { KerningPair, SpacingTool } from "@shift/editor/tools";
 import type { WorkspaceEditCoordinator } from "@/lib/workspace/WorkspaceEditCoordinator";
+import { ShiftViewport } from "./ShiftViewport";
 
 /** One point handle the canvas draws, and how it is styled. */
 export interface DrawnHandle {
@@ -64,6 +76,7 @@ export interface MatchedPoint {
 export class ShiftEditorReader {
   readonly #editor: Editor;
   readonly #edits: WorkspaceEditCoordinator | null;
+  readonly #viewport: ShiftViewport;
 
   /**
    * @param edits - The workspace's edit coordinator; null for a session
@@ -72,6 +85,7 @@ export class ShiftEditorReader {
   constructor(editor: Editor, edits: WorkspaceEditCoordinator | null) {
     this.#editor = editor;
     this.#edits = edits;
+    this.#viewport = new ShiftViewport(editor);
   }
 
   /**
@@ -95,15 +109,23 @@ export class ShiftEditorReader {
     return {
       route,
       glyph,
+      pages: this.pages(),
+      shownPageId: editor.scene.shownPageIdCell.peek(),
       activeSourceId: editor.activeSourceId,
       editingSourceIds: [...editor.editingSourceIds],
       externalLocation: [...editor.externalLocation].map(([axisId, value]) => ({ axisId, value })),
       selectionIds: [...editor.selection.ids],
       tool: tool ? { id: tool.id, state: tool.state.type } : null,
+      viewport: this.#viewport.read(),
       dragging: editor.isDragging,
       editing: editor.isEditing,
       applyStatus: this.#edits?.applyStatusCell.peek() ?? null,
     };
+  }
+
+  /** The document's pages in list order, as the pages list shows them. */
+  pages(): EditorPage[] {
+    return this.#editor.pages.list.map(({ id, name }) => ({ id, name }));
   }
 
   /** The canvas camera: its zoom level and pan. */
@@ -283,17 +305,35 @@ export class ShiftEditorReader {
   }
 
   /**
-   * The canvas text run as it shows now: its items, the glyphs they lay out
+   * Where the active tool's snap feedback draws a cross for the gesture in
+   * flight, in glyph units: guide ends, snapped positions, and the crossings a
+   * guide passes through, in `snapFeedback`'s marker order. Empty when
+   * nothing snaps or no gesture is in flight.
+   */
+  drawnSnapCrossings(): Point2D[] {
+    const tool = this.#editor.toolManager.activeTool;
+    if (!tool) return [];
+    return snapFeedback(tool.snapGuides, tool.snapCrossings).markers.map(({ x, y }) => ({ x, y }));
+  }
+
+  /**
+   * A canvas text run as it shows now: its items, the glyphs they lay out
    * to, and the caret.
    *
-   * @returns null when the canvas shows no text run.
+   * @param nodeId - The run's text run node, on any page; the shown page's
+   * first run when omitted.
+   * @returns null when there is no such run, or it cannot lay out.
    */
-  textRun(): TextRunView | null {
+  textRun(nodeId?: NodeId): TextRunView | null {
     const editor = this.#editor;
-    const node = editor.scene.first("textRun");
+    const node =
+      nodeId === undefined
+        ? editor.scene.first("textRun")
+        : editor.scene.nodeOfKind(nodeId, "textRun");
     const run = node ? editor.text.run(node.runId) : null;
     const layout = node ? editor.text.layout(node.runId) : null;
-    if (!node || !run || !layout) return null;
+    const page = node ? editor.scene.pageOf(node.id) : null;
+    if (!node || !run || !layout || !page) return null;
 
     const itemIds = new Set(run.items.map((item) => item.id));
     const open = editor.nodeDefinition("textRun").childGlyph(node);
@@ -302,7 +342,11 @@ export class ShiftEditorReader {
     const caret = editor.textEditing.caretIn(node.id);
 
     return {
-      items: run.items.map((item) => this.#textRunItem(item)),
+      id: node.id,
+      pageId: page.id,
+      at: { x: node.position.x, y: node.position.y },
+      options: this.textRunOptions(run),
+      items: run.items.map((item) => this.textRunItem(item)),
       glyphs: layout.placedGlyphs.map(
         (placed): TextRunGlyph => ({
           glyphId: placed.glyph.glyphId,
@@ -378,11 +422,18 @@ export class ShiftEditorReader {
     };
   }
 
-  #textRunItem(item: TextItem): TextRunItem {
+  /** A run's options as agents read them: its settings, as the Text section shows them. */
+  textRunOptions(run: TextRunRecord): TextRunOptions {
+    const { shaping, features, language, script, lineHeight, align } = run;
+    return { shaping, features: { ...features }, language, script, lineHeight, align };
+  }
+
+  /** An item's text: the character, `"\n"` for a line break, or `/name` for a glyph picked by name. */
+  textRunItem(item: TextItem): TextRunItem {
     if (item.kind === "linebreak") return { id: item.id, text: "\n" };
     if (item.kind === "character")
       return { id: item.id, text: String.fromCodePoint(item.codepoint) };
-    return { id: item.id, text: `/${this.#editor.font.glyphName(item.glyphId) ?? ""}` };
+    return { id: item.id, text: this.#editor.text.formatItems([item]) };
   }
 
   #spacingHalf(half: NonNullable<SpacingTool["currentHalf"]>): SpacingHalfView {

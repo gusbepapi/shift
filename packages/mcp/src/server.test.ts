@@ -6,6 +6,10 @@ import { ShiftMcpServer } from "./server";
 import type { ShiftCapabilities } from "@shift/runtime";
 import type { ShiftMcpConnection } from "./types";
 
+async function noWindow(): Promise<never> {
+  throw new Error("No open Shift window");
+}
+
 const capabilities: ShiftCapabilities = {
   async capture({ windowId, target, scale = 1 }) {
     return {
@@ -28,10 +32,19 @@ const capabilities: ShiftCapabilities = {
       return [];
     },
   },
+  commands: {
+    list: noWindow,
+    run: noWindow,
+  },
   editor: {
     async inspect() {
       throw new Error("No open Shift window");
     },
+    setTool: noWindow,
+    showPage: noWindow,
+    openGlyph: noWindow,
+    setView: noWindow,
+    select: noWindow,
   },
   font: {
     async get() {
@@ -86,6 +99,48 @@ const capabilities: ShiftCapabilities = {
       throw new Error("No open Shift window");
     },
     async at() {
+      throw new Error("No open Shift window");
+    },
+  },
+  text: {
+    async runs() {
+      throw new Error("No open Shift window");
+    },
+    async get() {
+      throw new Error("No open Shift window");
+    },
+    async create() {
+      throw new Error("No open Shift window");
+    },
+    async setText() {
+      throw new Error("No open Shift window");
+    },
+    async setCaret() {
+      throw new Error("No open Shift window");
+    },
+    async setOptions() {
+      throw new Error("No open Shift window");
+    },
+    async delete() {
+      throw new Error("No open Shift window");
+    },
+  },
+  pages: {
+    async create() {
+      throw new Error("No open Shift window");
+    },
+    async rename() {
+      throw new Error("No open Shift window");
+    },
+    async delete() {
+      throw new Error("No open Shift window");
+    },
+  },
+  history: {
+    async undo() {
+      throw new Error("No open Shift window");
+    },
+    async redo() {
       throw new Error("No open Shift window");
     },
   },
@@ -220,6 +275,31 @@ describe("Shift MCP local connection", () => {
     });
   });
 
+  it("tells agents they write proof text and pages, and undo the window's own steps", async () => {
+    const connection = await startServer().start();
+
+    const initialized = await mcpRequest(connection, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "shift-test", version: "1.0.0" },
+    });
+    const described = await mcpRequest(connection, "tools/call", {
+      name: "shift.describe",
+      arguments: {},
+    });
+
+    expect(initialized).toMatchObject({
+      result: {
+        instructions: expect.stringMatching(/does not edit a font.*shift\.pages.*shift\.history/),
+      },
+    });
+    const [{ text }] = (described as { result: { content: [{ text: string }] } }).result.content;
+    expect(text).toContain("setCaret(input: TextRunSetCaretInput)");
+    expect(text).toContain("create(input: PageCreateInput): Promise<ShiftObservation<PageChange>>");
+    expect(text).toContain("undo(input: HistoryInput): Promise<ShiftObservation<HistoryUndo>>");
+    expect(text).toContain("redo(input: HistoryInput): Promise<ShiftObservation<HistoryRedo>>");
+  });
+
   it("names a non-release build's command-line tool in the guide", async () => {
     const release = await startServer().start();
     const nightly = await startServer({ commandLineTool: "shift-cli-nightly" }).start();
@@ -235,6 +315,39 @@ describe("Shift MCP local connection", () => {
     expect(await guideText(nightly)).toMatch(
       /^This build installs its command-line tool as `shift-cli-nightly`/,
     );
+  });
+
+  it("tells agents they can control the window's view but not fonts or files", async () => {
+    const connection = await startServer().start();
+
+    const initialized = await mcpRequest(connection, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "shift-test", version: "1.0.0" },
+    });
+    const described = await mcpRequest(connection, "tools/call", {
+      name: "shift.describe",
+      arguments: {},
+    });
+
+    expect(initialized).toMatchObject({
+      result: {
+        instructions: expect.stringMatching(
+          /does not edit a font or a file directly.*shift\.commands/,
+        ),
+      },
+    });
+    expect(described).toMatchObject({
+      result: {
+        content: [
+          {
+            text: expect.stringMatching(
+              /commands: \{\s*list\(input: CommandListInput\)[\s\S]*setView\(input: EditorSetViewInput\)/,
+            ),
+          },
+        ],
+      },
+    });
   });
 
   it("connects with a native MCP client", async () => {

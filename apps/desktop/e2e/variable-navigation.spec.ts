@@ -58,10 +58,7 @@ async function createVariableNavigationFixture(page: Page): Promise<VariableNavi
       tag: "navw",
       name: "Navigation Weight",
       role: "external",
-      axisType: "continuous",
-      minimum: 100,
-      default: 400,
-      maximum: 900,
+      kind: { kind: "continuous", minimum: 100, default: 400, maximum: 900 },
       labels: [],
       hidden: false,
     });
@@ -89,7 +86,7 @@ async function createVariableNavigationFixture(page: Page): Promise<VariableNavi
       name: "Navigation Preview",
       location: {
         values: Object.fromEntries(
-          font.getAxes().map((axis) => [axis.id, axis.id === axisId ? 700 : axis.default]),
+          font.getAxes().map((axis) => [axis.id, axis.id === axisId ? 700 : axis.kind.default]),
         ),
       },
     });
@@ -203,7 +200,7 @@ test("keeps variable preview and exact-source editability coherent across Grid n
     })
     .toBe(400);
 
-  await editorShell(page).getByLabel("Font overview").click();
+  await editorShell(page).getByRole("tab", { name: "Glyphs", exact: true }).click();
   await page.waitForURL(/#\/home$/);
   await expect
     .poll(() => editor.editorView())
@@ -213,7 +210,7 @@ test("keeps variable preview and exact-source editability coherent across Grid n
       ]),
     });
 
-  await openCatalogGlyph(page, "navigationSparse", fixture.secondGlyphId);
+  await openCatalogGlyph(page, "navigationSparse", fixture.secondGlyphId, "open");
   await openVariationControls(page);
   await expect
     .poll(async () => (await editor.glyphNamed("navigationSparse"))?.layers)
@@ -235,9 +232,9 @@ test("keeps variable preview and exact-source editability coherent across Grid n
   await expect.poll(() => editor.editorView()).toMatchObject({ activeSourceId: null });
   await expect(glyphProperties(page).getByLabel("Advance width", { exact: true })).toBeDisabled();
 
-  await editorShell(page).getByLabel("Font overview").click();
+  await editorShell(page).getByRole("tab", { name: "Glyphs", exact: true }).click();
   await page.waitForURL(/#\/home$/);
-  await openCatalogGlyph(page, "navigationVariable", fixture.firstGlyphId);
+  await openCatalogGlyph(page, "navigationVariable", fixture.firstGlyphId, "open");
   await expectPreview(page, fixture, {
     location: 650,
     activeSourceId: null,

@@ -1,4 +1,19 @@
-import type { FontIntent, GlyphId, GlyphName, LayerId, SourceId } from "@shift/types";
+import type {
+  EngineFontHeader,
+  EngineFontRecords,
+  EngineStorelessRecords,
+  FontIntent,
+  FontReplacement,
+  GlyphId,
+  GlyphName,
+  GlyphSnapshot,
+  KerningGroupId,
+  KerningSide,
+  LayerId,
+  NodeId,
+  SlugWeightSet,
+  SourceId,
+} from "@shift/types";
 import {
   engineApply,
   engineBeginEdit,
@@ -6,40 +21,76 @@ import {
   engineDiscardRedo,
   engineEndEdit,
   engineGlyphNumbers,
-  engineKerningPairsNaming,
+  engineEdits,
   engineMarkSaved,
-  engineMissingKerningOrigin,
   engineNewAnchorName,
   engineNextGlyphName,
   engineOpen,
   enginePreload,
+  engineEndPreview,
   enginePreview,
+  engineShowPreview,
   engineRedo,
   engineRelease,
+  engineReads,
   engineRewindEdit,
   engineSourceNumbers,
+  engineSourceSetNumber,
   engineStage,
   engineUndo,
-  type EngineEdit,
-  type EngineKerningPair,
+  type EngineEditLayers,
   type EngineLayer,
-  type EngineLayerSource,
+  type StoreRequest,
+  type StoreReply,
   type EngineStage,
-  type MissingKerningOrigin,
 } from "@shift/wasm/engine";
-import {
-  engineKerningPairs,
-  engineKerningRun,
-  engineSourceMetricsAt,
-  type EditablePair,
-  type InterpolatedMetrics,
-} from "./generated/engineLayouts";
+import type {
+  Counterparts,
+  EditLocation,
+  EditablePair,
+  EngineEdits,
+  EngineReads,
+  GlyphIdentityChange,
+  InterpolatedMetrics,
+  MissingKerningOrigin,
+  FeatureSubstitution,
+  FontChangeFlag,
+  FontFeature,
+  TextRun,
+  RevisedNode,
+  SceneIntent,
+  SourceSetWeights,
+  PlacedText,
+} from "@shift/wasm/protocol";
 
-export { svgPathContours, type ContourPoints } from "./generated/engineLayouts";
+export { initEngine, svgPaths, typedText } from "@shift/wasm/engine";
+export type { ContourPoints } from "@shift/wasm/protocol";
 import type { KerningPlace } from "../../types/font";
 import { unkerned } from "../model/Kerning";
 
 const released = new FinalizationRegistry<number>(engineRelease);
+
+/** An authored kerning pair, its sides by id, and its value at a source. */
+export interface EngineKerningPair {
+  readonly first: GlyphId | KerningGroupId;
+  readonly second: GlyphId | KerningGroupId;
+  /** Font units added after the first glyph's advance. */
+  readonly amount: number;
+}
+
+/**
+ * What one edit did: the layers it touched, and each font-level collection it
+ * changed, whole, as the workspace's echo carries it (`next`, absent when it
+ * changed none), with the records of the glyphs it changed as they now stand.
+ */
+export type EngineEdit = EngineEditLayers & {
+  readonly next?: FontReplacement;
+  /** For an undo or redo: where the edit it replayed was made, and what it changed. */
+  readonly location?: EditLocation;
+};
+
+/** Whether a closed edit becomes an undo step, as shift-engine's `Recording` says. */
+export type EditRecording = "undoable" | "unrecorded";
 
 /**
  * An editing session in `@shift/wasm/engine`: shift-engine over the open
@@ -48,29 +99,39 @@ const released = new FinalizationRegistry<number>(engineRelease);
  * @remarks
  * Loaded through `loadEngine` so this module, and the engine module it
  * imports, load only when a font opens for editing. Layers load on demand
- * through the `EngineLayerSource` it opens with. The module's copy is
+ * from the store, through the `StoreRequest` it opens with. The module's copy is
  * released by `dispose`, or when this object is collected.
  */
 export class EngineSession {
   readonly #handle: number;
+  readonly #reads: EngineReads;
+  readonly #intents: EngineEdits;
   // non-reactive: numbers the session interned for each id; an id's number never changes
   readonly #glyphNumbers = new Map<GlyphId, number>();
   // non-reactive: as #glyphNumbers, for sources
   readonly #sourceNumbers = new Map<SourceId, number>();
+  // non-reactive: as #glyphNumbers, for ordered source sets, keyed by their joined ids
+  readonly #sourceSetNumbers = new Map<string, number>();
+  // non-reactive: each atlas's weight set numbers, keyed by the atlas's own sets array
+  readonly #weightSetNumbers = new WeakMap<readonly SlugWeightSet[], number[]>();
 
   private constructor(handle: number) {
     this.#handle = handle;
+    this.#reads = engineReads(handle);
+    this.#intents = engineEdits(handle);
     released.register(this, handle, this);
   }
 
   /**
    * Opens a session over a font directory, as the workspace's `encodedDirectory`
-   * returns it.
+   * returns it, and the document's scene, as the store's `sceneNodes` returns
+   * it; with no scene the session's scene is empty, for reading the font's
+   * records alone.
    *
-   * @throws When `directory` does not decode to a font.
+   * @throws When `directory` does not decode to a font, or `scene` to scene nodes.
    */
-  static open(directory: Uint8Array, source: EngineLayerSource): EngineSession {
-    return new EngineSession(engineOpen(directory, source));
+  static open(directory: Uint8Array, source: StoreRequest, scene?: Uint8Array): EngineSession {
+    return new EngineSession(engineOpen(directory, source, scene));
   }
 
   /**
@@ -81,7 +142,8 @@ export class EngineSession {
    * as loading left it.
    */
   apply(intents: readonly FontIntent[]): EngineEdit {
-    return engineApply(this.#handle, [...intents]);
+    this.#intents.hold(intents);
+    return this.#withReplacement(engineApply(this.#handle));
   }
 
   /**
@@ -101,15 +163,60 @@ export class EngineSession {
    * @throws As {@link EngineSession.apply}.
    */
   preview(intents: readonly FontIntent[]): EngineLayer[] {
-    return enginePreview(this.#handle, [...intents]);
+    this.#intents.hold(intents);
+    return enginePreview(this.#handle);
+  }
+
+  /** Lays text out from what `intents` would leave, returning nothing. */
+  showPreview(intents: readonly FontIntent[]): void {
+    this.#intents.hold(intents);
+    engineShowPreview(this.#handle);
+  }
+
+  /** Stops laying text out from the last preview's font. */
+  endPreview(): void {
+    engineEndPreview(this.#handle);
   }
 
   /**
    * Opens an edit: the applies until {@link EngineSession.endEdit} become one
    * undo step and one change set.
+   *
+   * @param pageId - The page the editor shows, which the undo step records as
+   * where the edit was made; null with no page shown.
    */
-  beginEdit(): void {
-    engineBeginEdit(this.#handle);
+  beginEdit(pageId: NodeId | null): void {
+    engineBeginEdit(this.#handle, pageId ?? undefined);
+  }
+
+  /**
+   * Applies scene `intents` within the open edit, after any font intents held
+   * with them, and returns what the edit did.
+   *
+   * @throws When an intent is refused; the scene is then unchanged.
+   */
+  applyScene(intents: readonly SceneIntent[]): EngineEdit {
+    this.#intents.holdScene(intents);
+    return this.#withReplacement(engineApply(this.#handle));
+  }
+
+  /**
+   * Applies scene `intents` within the open edit as one frame of a gesture,
+   * as {@link EngineSession.stage} does for font intents.
+   *
+   * @throws As {@link EngineSession.applyScene}.
+   */
+  stageScene(intents: readonly SceneIntent[]): EngineStage {
+    this.#intents.holdScene(intents);
+    return engineStage(this.#handle);
+  }
+
+  /**
+   * Every node of the document's scene, each parent before its children,
+   * siblings in order, with when it last changed.
+   */
+  sceneNodes(): readonly RevisedNode[] {
+    return this.#reads.sceneNodes();
   }
 
   /**
@@ -131,7 +238,8 @@ export class EngineSession {
    * @throws As {@link EngineSession.apply}.
    */
   stage(intents: readonly FontIntent[]): EngineStage {
-    return engineStage(this.#handle, [...intents]);
+    this.#intents.hold(intents);
+    return engineStage(this.#handle);
   }
 
   /**
@@ -147,7 +255,7 @@ export class EngineSession {
         ? this.#numbers([place.sourceId], this.#sourceNumbers, engineSourceNumbers)[0]
         : null;
     const location = place.kind === "location" ? place.location : [];
-    const values = engineKerningRun({ engine: this.#handle, source, location, glyphs });
+    const values = this.#reads.kerningRun(source ?? null, location, glyphs);
     return values ?? unkerned(pairs);
   }
 
@@ -160,7 +268,7 @@ export class EngineSession {
   kerningPairs(sourceId: SourceId, pairs: readonly GlyphId[]): readonly EditablePair[] {
     const [source] = this.#numbers([sourceId], this.#sourceNumbers, engineSourceNumbers);
     const glyphs = this.#numbers(pairs, this.#glyphNumbers, engineGlyphNumbers);
-    return engineKerningPairs({ engine: this.#handle, source: source ?? 0, glyphs });
+    return this.#reads.kerningPairs(source ?? 0, glyphs);
   }
 
   /**
@@ -170,13 +278,111 @@ export class EngineSession {
   kerningPairsNaming(sourceId: SourceId, glyphId: GlyphId): EngineKerningPair[] {
     const [source] = this.#numbers([sourceId], this.#sourceNumbers, engineSourceNumbers);
     const [glyph] = this.#numbers([glyphId], this.#glyphNumbers, engineGlyphNumbers);
-    return engineKerningPairsNaming(this.#handle, source!, glyph!);
+    return this.#reads.kerningPairsNaming(source!, glyph!).map(({ pair, value }) => ({
+      first: sideId(pair.first),
+      second: sideId(pair.second),
+      amount: value,
+    }));
+  }
+
+  /**
+   * The `target` layer's ids for `ids` in `reference`, as shift-font's
+   * `Font::counterparts` pairs them; null when the layers don't match
+   * completely.
+   *
+   * @throws A `CounterpartsReadError` for a layer not loaded or unknown,
+   * layers of two glyphs, or an id `reference` lacks.
+   */
+  counterparts(reference: LayerId, target: LayerId, ids: Counterparts): Counterparts | null {
+    return this.#reads.counterparts(reference, target, ids.points, ids.anchors, ids.components);
+  }
+
+  /** What renaming a glyph to `name` does, as shift-font's `Font::glyph_rename` decides. */
+  glyphRename(glyphId: GlyphId, name: string): GlyphIdentityChange | null {
+    return this.#reads.glyphRename(glyphId, name);
+  }
+
+  /** What making `codepoint` a glyph's primary codepoint does: `Font::glyph_primary_codepoint`. */
+  glyphPrimaryCodepoint(glyphId: GlyphId, codepoint: number | null): GlyphIdentityChange | null {
+    return this.#reads.glyphPrimaryCodepoint(glyphId, codepoint);
   }
 
   /** Where a pair's value comes from at `sourceId` when that source authors no pair for it. */
   missingKerningOrigin(sourceId: SourceId): MissingKerningOrigin {
     const [source] = this.#numbers([sourceId], this.#sourceNumbers, engineSourceNumbers);
-    return engineMissingKerningOrigin(this.#handle, source!);
+    return this.#reads.missingKerningOrigin(source!);
+  }
+
+  /**
+   * The number the session interned the ordered source set `sourceIds` as,
+   * interning it when new; a set's number stays its own for the session's life.
+   */
+  sourceSetNumber(sourceIds: readonly SourceId[]): number {
+    const key = sourceIds.join("\u0000");
+    let set = this.#sourceSetNumbers.get(key);
+    if (set === undefined) {
+      set = engineSourceSetNumber(this.#handle, [...sourceIds]);
+      this.#sourceSetNumbers.set(key, set);
+    }
+    return set;
+  }
+
+  /**
+   * Every interned source set's weights at a design location, from the basis
+   * the session's font gives each set: set `n`'s weights are
+   * `weights[starts[n]]` up to `weights[starts[n + 1]]`, NaN for a set whose
+   * sources the font lacks or form no model.
+   *
+   * @param location - Design coordinates in the font's axis order, NaN for an axis default.
+   */
+  sourceSetWeights(location: readonly number[]): SourceSetWeights {
+    return this.#reads.sourceSetWeights(location);
+  }
+
+  /**
+   * A Slug atlas's weights at an external location, from the bases the
+   * session's font gives its weight sets: weight 0 is 1, and each set's
+   * weights sit at its `sourceWeightIndices`.
+   *
+   * @remarks
+   * Each `sets` array is interned once, so a frame sends only the sets'
+   * numbers and the location: pass the atlas's same array every frame.
+   *
+   * @param external - External coordinates in the font's axis order, NaN for an axis default.
+   * @returns null when a set's sources are missing from the font or form no
+   * model, or a set names an index past `weightCount`.
+   */
+  atlasWeights(
+    sets: readonly SlugWeightSet[],
+    weightCount: number,
+    external: readonly number[],
+  ): readonly number[] | null {
+    let numbers = this.#weightSetNumbers.get(sets);
+    if (!numbers) {
+      numbers = sets.map((set) => this.sourceSetNumber(set.basis.sourceIds));
+      this.#weightSetNumbers.set(sets, numbers);
+    }
+    const values = this.#reads.atlasWeights(numbers, external);
+    if (!values) return null;
+
+    return placeAtlasWeights(sets, weightCount, values);
+  }
+
+  /**
+   * An external location's design location, through the session's font's
+   * axis mappings, both as numbers in the font's axis order, NaN for an axis
+   * the location omits.
+   */
+  designLocation(external: readonly number[]): readonly number[] {
+    return this.#reads.designLocation(external);
+  }
+
+  /**
+   * The external location a design location's mapping came from, both as
+   * numbers in the font's axis order; NaN on internal axes.
+   */
+  externalLocation(design: readonly number[]): readonly number[] {
+    return this.#reads.externalLocation(design);
   }
 
   /**
@@ -186,7 +392,114 @@ export class EngineSession {
    * @returns null when the font's masters do not interpolate, as for a static font.
    */
   sourceMetricsAt(location: readonly number[]): InterpolatedMetrics | null {
-    return engineSourceMetricsAt({ engine: this.#handle, location });
+    return this.#reads.sourceMetricsAt(location);
+  }
+
+  /**
+   * The session's font's axes, master sources, kerning and glyph records,
+   * unsaved edits included.
+   *
+   * @throws When the store's reader cannot answer for the glyph records.
+   */
+  fontRecords(): EngineFontRecords {
+    return { ...this.storelessRecords(), glyphs: this.#reads.glyphRecords() };
+  }
+
+  /**
+   * Lays a run's text out over the session's font, unsaved edits included,
+   * with the options Rust builds from the run's settings: shaping,
+   * kerning, marks, cursive joins, lines, bidi order, carets and boxes, all
+   * in Rust (`shift_text::layout::TextLayout`), at a source or a design location.
+   */
+  layoutText(run: TextRun, place: KerningPlace): PlacedText {
+    const source =
+      place.kind === "source"
+        ? this.#numbers([place.sourceId], this.#sourceNumbers, engineSourceNumbers)[0]
+        : null;
+    const location = place.kind === "location" ? place.location : [];
+    return this.#reads.layoutText({ run, location, source: source ?? null });
+  }
+
+  /** The change flags whose change may change what {@link layoutText} returns. */
+  layoutInputs(): readonly FontChangeFlag[] {
+    return this.#reads.layoutInputs();
+  }
+
+  /**
+   * The features the session's shaper font defines, in tag order, as
+   * shift-text lists them: name, default and group.
+   *
+   * @throws When the session has no shaper font, saying why, or it cannot be read.
+   */
+  fontFeatures(): readonly FontFeature[] {
+    return this.#reads.fontFeatures();
+  }
+
+  /**
+   * Every substitution feature `tag` can make in the session's shaper font,
+   * as shift-text reads them from its `GSUB`.
+   *
+   * @throws When `tag` is no feature tag, the session has no shaper font, or
+   * its `GSUB` cannot be read.
+   */
+  featureSubstitutions(tag: string): readonly FeatureSubstitution[] {
+    return this.#reads.featureSubstitutions(tag);
+  }
+
+  /**
+   * Whether shaping applies feature `tag` when text sets it to `setting`
+   * (null when it leaves it), as shift-text decides: the setting wins, else
+   * the feature's default. False for a tag the shaper font does not define.
+   *
+   * @throws When the session has no shaper font, or it cannot be read.
+   */
+  featureApplies(tag: string, on: boolean | null): boolean {
+    return this.#reads.featureApplies(tag, on);
+  }
+
+  /** The change flags whose change may change the session's shaper font. */
+  shaperInputs(): readonly FontChangeFlag[] {
+    return this.#reads.shaperInputs();
+  }
+
+  /**
+   * The session's font's metadata, metrics and metric rows, how its source
+   * metrics interpolate, its axis mappings and their compiled bases, its
+   * named instances and tracked languages: the records a store answers at
+   * open beside {@link fontRecords}.
+   *
+   * @throws When the font's axis mappings cannot be compiled.
+   */
+  fontHeader(): EngineFontHeader {
+    const header = this.#reads.fontHeader();
+    return {
+      ...header,
+      sourceMetricsInterpolation: header.sourceMetricsInterpolation ?? null,
+      languageIds: header.languageIds ?? null,
+    };
+  }
+
+  /**
+   * Each of `glyphIds`, then the glyphs their components use, transitively:
+   * its projection and master layers, as the native workspace's glyph
+   * snapshots give them. Load the glyphs first ({@link preload}).
+   *
+   * @throws When a glyph's layers are not loaded, or its projection cannot be built.
+   */
+  glyphSnapshots(glyphIds: readonly GlyphId[]): readonly GlyphSnapshot[] {
+    return this.#reads.glyphSnapshots(glyphIds);
+  }
+
+  /**
+   * The session's font's axes, master sources and kerning, unsaved edits
+   * included: the records it reads without asking its store.
+   */
+  storelessRecords(): EngineStorelessRecords {
+    return {
+      axes: this.#reads.axes(),
+      sources: this.#reads.sources(),
+      kerning: this.#reads.kerning(),
+    };
   }
 
   /**
@@ -221,13 +534,14 @@ export class EngineSession {
   }
 
   /**
-   * Closes the open edit as one undo step.
+   * Closes the open edit, as one undo step unless `recording` is
+   * `"unrecorded"`.
    *
-   * @returns Its change set, as named MessagePack, to persist; `undefined`
-   * when it changed nothing.
+   * @returns Its document change set, font and scene, as named MessagePack, to
+   * persist; `undefined` when it changed nothing.
    */
-  endEdit(): Uint8Array | undefined {
-    return engineEndEdit(this.#handle);
+  endEdit(recording: EditRecording = "undoable"): Uint8Array | undefined {
+    return engineEndEdit(this.#handle, recording);
   }
 
   /** Drops the open edit; the session goes back to where it began. */
@@ -243,7 +557,7 @@ export class EngineSession {
    * @throws When the inverse no longer applies; the edit stays undoable.
    */
   undo(): EngineEdit | undefined {
-    return engineUndo(this.#handle);
+    return this.#withLocation(this.#withReplacement(engineUndo(this.#handle)));
   }
 
   /**
@@ -253,7 +567,7 @@ export class EngineSession {
    * to redo.
    */
   redo(): EngineEdit | undefined {
-    return engineRedo(this.#handle);
+    return this.#withLocation(this.#withReplacement(engineRedo(this.#handle)));
   }
 
   /** Forgets every undone edit. */
@@ -269,6 +583,18 @@ export class EngineSession {
     engineMarkSaved(this.#handle);
   }
 
+  /** `edit` with the font-level records it changed, which cross packed beside it. */
+  #withReplacement<E extends EngineEditLayers | undefined>(edit: E): E & EngineEdit {
+    const next = edit && this.#intents.replacement();
+    return next ? { ...edit, next } : (edit as E & EngineEdit);
+  }
+
+  /** An undo or redo with where its edit was made, which crosses packed beside it. */
+  #withLocation(edit: EngineEdit | undefined): EngineEdit | undefined {
+    const location = edit && this.#intents.replayedLocation();
+    return location ? { ...edit, location } : edit;
+  }
+
   /** Releases the session; it applies nothing afterwards. */
   dispose(): void {
     released.unregister(this);
@@ -276,13 +602,41 @@ export class EngineSession {
   }
 }
 
+/**
+ * Places each set's weights, read one set after another, at its atlas
+ * indices, with weight 0 at 1; null when a set names an index past
+ * `weightCount` or `values` does not hold one weight per set source.
+ */
+function placeAtlasWeights(
+  sets: readonly SlugWeightSet[],
+  weightCount: number,
+  values: readonly number[],
+): number[] | null {
+  const weights = Array.from({ length: weightCount }, (_, index): number => (index === 0 ? 1 : 0));
+  let next = 0;
+  for (const set of sets) {
+    for (const index of set.sourceWeightIndices) {
+      if (index >= weightCount || next >= values.length) return null;
+      weights[index] = values[next]!;
+      next += 1;
+    }
+  }
+
+  return next === values.length ? weights : null;
+}
+
+/** A kerning side by its id: a glyph's or a group's. */
+function sideId(side: KerningSide): GlyphId | KerningGroupId {
+  return side.kind === "glyph" ? side.glyph : side.group;
+}
+
 export type {
   EditablePair,
-  EngineEdit,
-  EngineKerningPair,
   EngineLayer,
-  EngineLayerSource,
+  StoreRequest,
+  StoreReply,
   EngineStage,
   InterpolatedMetrics,
   MissingKerningOrigin,
+  SourceSetWeights,
 };

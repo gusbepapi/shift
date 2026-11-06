@@ -271,6 +271,14 @@ export function asSegmentId(id: string): SegmentId {
 }
 
 /**
+ * Converts an id from outside the editor, such as an agent's request, to a
+ * {@link SelectableId}. It names nothing until the editor resolves it.
+ */
+export function asSelectableId(id: string): SelectableId {
+  return id as SelectableId;
+}
+
+/**
  * Convert a string ID from Rust to a typed SourceId.
  * Use this when receiving IDs from Rust snapshots.
  */
@@ -494,3 +502,6 @@ export function mintTextItemId(): TextItemId {
 export function mintSourceId(): SourceId {
   return mintPrefixedId("source");
 }
+
+/** A glyph's authored name, such as `A` or `uni0041`. */
+export type GlyphName = string;

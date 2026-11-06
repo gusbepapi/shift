@@ -22,6 +22,10 @@ concurrency:
 # main's Rust caches, so macOS builds compiled the workspace from scratch.
 env:
   CARGO_INCREMENTAL: 0
+  # Every turbo run writes .turbo/runs/<id>.json (each task's hash, cache hit or
+  # miss, timings and inputs). The ci-telemetry artifacts carry them off the
+  # runner so cache misses and task times can be tracked across runs.
+  TURBO_RUN_SUMMARY: "true"
   CARGO_PROFILE_TEST_DEBUG: 0
   RUSTFLAGS: "-D warnings"
 
@@ -38,6 +42,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      integration: ${{ steps.filter.outputs.integration }}
       typescript: ${{ steps.filter.outputs.typescript }}
       release: ${{ steps.filter.outputs.release }}
       skills: ${{ steps.filter.outputs.skills }}
@@ -60,11 +65,28 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
+            # shift-bridge's tests also run the packages it imports.
+            integration:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'packages/wasm/**'
+              - 'packages/pack/**'
+              - 'packages/types/**'
+              - '.github/actions/wasm-toolchain/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
             typescript:
               - 'apps/**'
               # The editor runs these through packages/wasm.
               - 'crates/shift-font/**'
               - 'crates/shift-wasm/**'
+              # Its vocabulary crosses into @shift/wasm/protocol with the scene.
+              - 'crates/shift-layout/**'
+              # They generate @shift/wasm/protocol.
+              - 'crates/pack/**'
+              - 'crates/pack-derive/**'
               - 'Cargo.lock'
               - '.github/actions/wasm-toolchain/**'
               - 'packages/**'
@@ -75,6 +97,8 @@ jobs:
               - '.oxlintrc.json'
               - 'tsconfig*.json'
               - 'turbo.json'
+              # A change to this workflow runs the jobs it may have changed.
+              - '.github/workflows/ci.yml'
             release:
               - '.github/workflows/**'
               - '.release-please-manifest.json'
@@ -363,6 +387,20 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-typecheck
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
+
       - name: Save Typecheck Turbo results
         if: github.ref == 'refs/heads/main' && steps.typecheck-turbo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -440,9 +478,24 @@ jobs:
         with:
           shared-key: shift-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Run unit tests
-        run: pnpm test:unit
+        run: pnpm test:unit -- --reporter=default --reporter=json --outputFile.json=vitest-report.json
+
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-unit-test
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Save native Turbo build
         if: github.ref == 'refs/heads/main' && steps.native-turbo-cache.outputs.cache-hit != 'true'
@@ -601,18 +654,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
           shared-key: shift-rust
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Check WebAssembly font core
-        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown -p fontsrc -p rumil -p rumil-build -p shift-backends -p shift-engine -p shift-font -p shift-slug -p shift-wasm -p shift-wire
+        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown -p fontsrc -p rumil -p rumil-build -p shift-backends -p shift-engine -p shift-font -p shift-layout -p shift-slug -p shift-wasm -p shift-wire
 
-      # The workspace clippy run leaves features off, so the test-only
-      # reference exports are linted here, for the target they build for.
-      - name: Lint the reference module
-        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo clippy -p shift-wasm --features reference,engine --target wasm32-unknown-unknown -- -D warnings
+      # The workspace clippy run leaves features off, so the editing engine's
+      # exports are linted here, for the target they build for.
+      - name: Lint the engine module
+        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo clippy -p shift-wasm --features engine --target wasm32-unknown-unknown -- -D warnings
 
       - name: Check Shift-independent crate boundaries
         run: |
@@ -626,6 +680,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude shift-bridge
 
+      # The workspace run leaves features off, so the engine module's own
+      # tests (text and page layout over the session's shaper) run here.
+      - name: Run the engine module's tests
+        run: cargo test -p shift-wasm --features engine --lib
+
       # Time budgets hold for optimised code, so they are only asserted here.
       - name: Check performance budgets
         run: cargo test --release -p shift-font --lib -- perf_mark
@@ -633,7 +692,7 @@ jobs:
   integration:
     name: Integration Tests
     needs: detect-changes
-    if: needs.detect-changes.outputs.rust == 'true'
+    if: needs.detect-changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -657,6 +716,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
           shared-key: shift-rust
 
       - name: Restore node_modules
@@ -689,7 +749,21 @@ jobs:
         run: pnpm build:native
 
       - name: Run shift-bridge tests
-        run: pnpm test:native
+        run: pnpm test:native -- --reporter=default --reporter=json --outputFile.json=vitest-report.json
+
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-integration
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
 
   # ---------------------------------------------------------------------------
   # Required end-to-end correctness
@@ -730,9 +804,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-app-${{ github.run_id }}-${{ runner.os }}
+          # The fixtures open documents through @shift/bridge, whose generated
+          # clients are not committed.
           path: |
             apps/desktop/.vite/
             crates/shift-bridge/*.node
+            packages/types/src/bridge/protocol.ts
           include-hidden-files: true
           retention-days: 1
 
@@ -741,9 +818,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-app-${{ github.run_id }}-${{ runner.os }}
+          # The fixtures open documents through @shift/bridge, whose generated
+          # clients are not committed.
           path: |
             apps/desktop/.vite/
             crates/shift-bridge/*.node
+            packages/types/src/bridge/protocol.ts
           include-hidden-files: true
           retention-days: 1
           overwrite: true
@@ -1069,11 +1149,38 @@ jobs:
         with:
           name: playwright-report-${{ github.run_id }}
           path: playwright-report/
-          retention-days: 14
+          # results.json is the E2E history the CI dashboard reads; keep a quarter of it.
+          retention-days: 90
 
   # ---------------------------------------------------------------------------
   # Gate: all required checks must pass
   # ---------------------------------------------------------------------------
+  # Pushes to main save the Rust caches; delete the ones they replaced, so
+  # main's caches stay under GitHub's 10 GB and the Nightly's, read once a
+  # day, are not evicted first.
+  prune-caches:
+    name: Prune superseded Rust caches
+    needs:
+      - unit-test
+      - rust-check
+      - integration
+      - e2e-build
+      - e2e-windows
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Delete superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/prune-superseded-caches.sh
+
   ci-passed:
     name: CI Passed
     if: always()

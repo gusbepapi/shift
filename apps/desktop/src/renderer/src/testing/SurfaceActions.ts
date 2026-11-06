@@ -9,7 +9,7 @@
  * before it answers.
  */
 import type { Editor } from "@shift/editor";
-import { sourceMetricValue, withSourceMetricValue } from "@shift/editor/model";
+import { Source } from "@shift/editor/model";
 import type { SourceSelectionMode } from "@shift/editor/types";
 import { externalAxisLocationFromRecord } from "@shift/editor/variation";
 import type { Point2D } from "@shift/geo";
@@ -19,7 +19,7 @@ import type {
   GlyphName,
   PointId,
   SelectableId,
-  Source,
+  Source as SourceRecord,
   Unicode,
 } from "@shift/types";
 import { drawFixture } from "./drawFixture";
@@ -72,10 +72,12 @@ export class SurfaceActions {
       tag: axis.tag,
       name: axis.name ?? axis.tag,
       role: axis.role ?? "external",
-      axisType: "continuous",
-      minimum: axis.minimum,
-      default: axis.default,
-      maximum: axis.maximum,
+      kind: {
+        kind: "continuous",
+        minimum: axis.minimum,
+        default: axis.default,
+        maximum: axis.maximum,
+      },
       labels: [],
       hidden: false,
     });
@@ -111,27 +113,38 @@ export class SurfaceActions {
 
   /** Renames the source `source` to `name`, as Settings › Sources does. */
   async renameSource(source: string, name: string): Promise<void> {
-    await this.#editor.font.updateSource({ ...this.#sourceNamed(source), name });
+    await this.#editor.font.updateSource(new Source(this.#sourceNamed(source)).withName(name));
+  }
+
+  /** Moves the source `source` along the axis tagged `tag` to `value`, as Settings › Sources does. */
+  async setSourceLocation(source: string, tag: string, value: number): Promise<void> {
+    await this.#editor.font.updateSource(
+      new Source(this.#sourceNamed(source)).withLocationValue(this.#axisTagged(tag), value),
+    );
   }
 
   /** Sets the source `source`'s italic angle, as Settings › Sources does. */
   async setSourceItalicAngle(source: string, italicAngle: number): Promise<void> {
-    await this.#editor.font.updateSource({ ...this.#sourceNamed(source), italicAngle });
+    await this.#editor.font.updateSource(
+      new Source(this.#sourceNamed(source)).withItalicAngle(italicAngle),
+    );
   }
 
   /** Sets the source `source`'s line gap, as Settings › Sources does. */
   async setSourceLineGap(source: string, lineGap: number): Promise<void> {
-    await this.#editor.font.updateSource({ ...this.#sourceNamed(source), lineGap });
+    await this.#editor.font.updateSource(
+      new Source(this.#sourceNamed(source)).withLineGap(lineGap),
+    );
   }
 
   /** Moves the metric named `metric` (`Ascender`, `x-Height`, …) in the source `source` to `position`. */
   async setSourceMetric(source: string, metric: string, position: number): Promise<void> {
     const font = this.#editor.font;
-    const current = this.#sourceNamed(source);
+    const current = new Source(this.#sourceNamed(source));
     const definition = font.metricDefinitions.find((candidate) => candidate.name === metric);
     if (!definition) throw new Error(`The font has no metric named ${metric}`);
-    const value = sourceMetricValue(current, definition.id);
-    await font.updateSource(withSourceMetricValue(current, { ...value, position }));
+    const value = current.metricValue(definition.id);
+    await font.updateSource(current.withMetricValue(definition.id, { ...value, position }));
   }
 
   /** Adds a named instance at `location`, keyed by axis tag, as Settings › Instances does. */
@@ -152,17 +165,13 @@ export class SurfaceActions {
     this.#editor.selectSourceForEditing(this.#sourceNamed(name).id, mode);
   }
 
-  /**
-   * Edits the sources `names` together, as clicking the first and Cmd-clicking the rest does,
-   * and waits until their layers are matched to the active one.
-   */
-  async editSources(names: readonly string[]): Promise<void> {
+  /** Edits the sources `names` together, as clicking the first and Cmd-clicking the rest does. */
+  editSources(names: readonly string[]): void {
     const [first, ...rest] = names.map((name) => this.#sourceNamed(name).id);
     if (!first) throw new Error("editSources needs at least one source");
 
     this.#editor.selectSourceForEditing(first);
     for (const sourceId of rest) this.#editor.selectSourceForEditing(sourceId, "toggle");
-    await this.#editor.editingLayersMatched();
   }
 
   /** Selects the objects `ids`, replacing the selection, as clicking them in the Objects tab does. */
@@ -180,7 +189,7 @@ export class SurfaceActions {
     this.#editor.zoomToFit();
   }
 
-  #sourceNamed(name: string): Source {
+  #sourceNamed(name: string): SourceRecord {
     const source = this.#editor.font.sourceNamed(name);
     if (!source) throw new Error(`The font has no source named ${name}`);
     return source;

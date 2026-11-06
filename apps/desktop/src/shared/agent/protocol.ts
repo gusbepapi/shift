@@ -1,12 +1,20 @@
 import type {
   AuthoredLayer,
   AxisCoordinate,
+  EditorOpenGlyphInput,
+  EditorSelectInput,
+  EditorSetToolInput,
+  EditorSetViewInput,
+  EditorShowPageInput,
   EditorView,
   FontOverview,
   FontRevision,
   GlyphPage,
   GlyphSelector,
   GlyphSummary,
+  HistoryInput,
+  HistoryRedo,
+  HistoryUndo,
   KerningAtInput,
   KerningGroupSummary,
   KerningMasterValue,
@@ -16,6 +24,10 @@ import type {
   LayerOverlays,
   LayerSelector,
   LayerSvg,
+  PageChange,
+  PageCreateInput,
+  PageDeleteInput,
+  PageRenameInput,
   ResolvedGlyphs,
   ResolvedKerningPairs,
   ResolvedLayer,
@@ -24,8 +36,18 @@ import type {
   ShiftReadInput,
   SourceSelector,
   InstanceSelector,
+  TextRunCreateInput,
+  TextRunDeleteInput,
+  TextRunGetInput,
+  TextRunSetCaretInput,
+  TextRunSetOptionsInput,
+  TextRunSetTextInput,
+  TextRunsInput,
+  TextRunSummary,
+  TextRunView,
 } from "@shift/runtime";
 import type { GlyphId, KerningPosition, NamedInstance, Source } from "@shift/types";
+import type { CommandId } from "../commands";
 
 /** Main-to-renderer calls for live agent inspection of one explicit window. */
 export interface EditorCaptureBounds {
@@ -46,6 +68,34 @@ export type AgentCallMap = {
   };
   "editor.inspect": {
     request: { ifFontRevision?: FontRevision };
+    response: ShiftObservation<EditorView>;
+  };
+  /**
+   * Runs an app command main has already checked agents may run, through the
+   * window's own command request, once `ifFontRevision` still matches.
+   */
+  "commands.run": {
+    request: { command: CommandId; ifFontRevision?: FontRevision };
+    response: ShiftObservation<null>;
+  };
+  "editor.setTool": {
+    request: ShiftReadInput<EditorSetToolInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<EditorView>;
+  };
+  "editor.showPage": {
+    request: ShiftReadInput<EditorShowPageInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<EditorView>;
+  };
+  "editor.openGlyph": {
+    request: ShiftReadInput<EditorOpenGlyphInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<EditorView>;
+  };
+  "editor.setView": {
+    request: ShiftReadInput<EditorSetViewInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<EditorView>;
+  };
+  "editor.select": {
+    request: ShiftReadInput<EditorSelectInput> & { ifFontRevision?: FontRevision };
     response: ShiftObservation<EditorView>;
   };
   "font.get": {
@@ -129,6 +179,54 @@ export type AgentCallMap = {
     };
     response: ShiftObservation<LayerSvg>;
   };
+  "text.runs": {
+    request: ShiftReadInput<TextRunsInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunSummary[]>;
+  };
+  "text.get": {
+    request: ShiftReadInput<TextRunGetInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunView>;
+  };
+  "text.create": {
+    request: ShiftReadInput<TextRunCreateInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunView>;
+  };
+  "text.setText": {
+    request: ShiftReadInput<TextRunSetTextInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunView>;
+  };
+  "text.setCaret": {
+    request: ShiftReadInput<TextRunSetCaretInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunView>;
+  };
+  "text.setOptions": {
+    request: ShiftReadInput<TextRunSetOptionsInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<TextRunView>;
+  };
+  "text.delete": {
+    request: ShiftReadInput<TextRunDeleteInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<null>;
+  };
+  "pages.create": {
+    request: ShiftReadInput<PageCreateInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<PageChange>;
+  };
+  "pages.rename": {
+    request: ShiftReadInput<PageRenameInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<PageChange>;
+  };
+  "pages.delete": {
+    request: ShiftReadInput<PageDeleteInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<PageChange>;
+  };
+  "history.undo": {
+    request: ShiftReadInput<HistoryInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<HistoryUndo>;
+  };
+  "history.redo": {
+    request: ShiftReadInput<HistoryInput> & { ifFontRevision?: FontRevision };
+    response: ShiftObservation<HistoryRedo>;
+  };
   /**
    * Calls one agent reader's method with `args` once pending edits settle,
    * returning its plain result. Only the E2E read hook sends it.
@@ -138,6 +236,23 @@ export type AgentCallMap = {
     response: unknown;
   };
 };
+
+/** The agent lane's proof-text calls, `text.runs` to `text.delete`. */
+export type TextOperation = Extract<keyof AgentCallMap, `text.${string}`>;
+
+/** The agent lane's document edits: the pages list's (`pages.*`) and Edit › Undo and Redo (`history.*`). */
+export type DocumentOperation = Extract<
+  keyof AgentCallMap,
+  `pages.${string}` | `history.${string}`
+>;
+
+/** The agent-lane calls that change what the editor shows, each answering with its view. */
+export type EditorControlOperation =
+  | "editor.setTool"
+  | "editor.showPage"
+  | "editor.openGlyph"
+  | "editor.setView"
+  | "editor.select";
 
 /**
  * Test actions the renderer serves on the agent lane only when main enables

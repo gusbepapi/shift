@@ -8,7 +8,11 @@ use std::{
 use shift_backends::{
     FontExportRequest, FontExportResult, FontExporter, ImportBatchLimit, font_loader::FontLoader,
 };
-use shift_engine::{ApplyError, EngineError, EngineSession, LayerSource, LoadError, StagedEdit};
+use shift_engine::scene::{Scene, SceneError};
+use shift_engine::{
+    ApplyError, CompactDocumentChangeSet, EngineError, EngineSession, LayerSource, LoadError,
+    StagedEdit,
+};
 use shift_font::{
     AppliedIntents, FontChangeSet, FontIntentSet, GlyphId, GlyphLayer, LayerId, error::CoreError,
 };
@@ -47,6 +51,9 @@ pub enum WorkspaceError {
     #[error("refusing to persist unloaded glyph layer {0}")]
     UnloadedLayerMutation(LayerId),
 
+    #[error(transparent)]
+    Scene(#[from] SceneError),
+
     #[error("invalid UTF-8 in workspace path: {0}")]
     InvalidPathUtf8(PathBuf),
 
@@ -75,18 +82,25 @@ pub struct FontWorkspace {
 }
 
 impl FontWorkspace {
+    /// A workspace over `store`, its session holding the store's scene. A
+    /// working store whose scene has no page gets one first.
     fn from_store(
         session: EngineSession,
         source: WorkspaceSource,
-        store: ShiftStore,
+        mut store: ShiftStore,
         save_state: SaveState,
-    ) -> Self {
-        Self {
-            session,
+    ) -> Result<Self, WorkspaceError> {
+        // A working store is the workspace's own; a document gets its page
+        // when it is created or upgraded, and opening never writes it.
+        if !matches!(source, WorkspaceSource::Document { .. }) {
+            store.ensure_scene_page()?;
+        }
+        Ok(Self {
+            session: session.with_scene(store.load_scene()?),
             source,
             store,
             ledger: Ledger::new(save_state),
-        }
+        })
     }
 
     /// Creates a workspace for a new, untitled font in a store at `store_path`.
@@ -102,16 +116,16 @@ impl FontWorkspace {
         let mut store = ShiftStore::open(store_path)?;
         store.set_font_info(&new_workspace.font_info())?;
 
-        let font = new_font(new_workspace);
+        let font = shift_font::Font::from(new_workspace);
         store.replace_font_state(&font)?;
         store.set_workspace_state(&WorkspaceState::untitled(None))?;
 
-        Ok(Self::from_store(
+        Self::from_store(
             EngineSession::open_loaded(font),
             WorkspaceSource::Untitled,
             store,
             SaveState::MatchesSaved,
-        ))
+        )
     }
 
     /// Imports the font at `source_path` into a working store at `store_path`.
@@ -159,14 +173,14 @@ impl FontWorkspace {
         };
         let session = EngineSession::open_directory(store.load_font_directory()?);
 
-        Ok(Self::from_store(
+        Self::from_store(
             session,
             WorkspaceSource::Document {
                 path: document_path.to_path_buf(),
             },
             store,
             save_state,
-        ))
+        )
     }
 
     /// Reads the identity of the document at `document_path` without opening it.
@@ -231,7 +245,8 @@ impl FontWorkspace {
     /// font cannot be loaded.
     pub fn discard_recovery(&mut self) -> Result<(), WorkspaceError> {
         self.store.discard_recovery()?;
-        self.session = EngineSession::open_directory(self.store.load_font_directory()?);
+        self.session = EngineSession::open_directory(self.store.load_font_directory()?)
+            .with_scene(self.store.load_scene()?);
         self.ledger = Ledger::default();
         Ok(())
     }
@@ -263,7 +278,7 @@ impl FontWorkspace {
         let session = EngineSession::open_directory(store.load_font_directory()?);
         let source = source_from_workspace_state(&state)?;
 
-        Ok(Self::from_store(
+        Self::from_store(
             session,
             source,
             store,
@@ -272,7 +287,7 @@ impl FontWorkspace {
             } else {
                 SaveState::MatchesSaved
             },
-        ))
+        )
     }
 
     /// Loads every layer and exports the font as `request` describes.
@@ -317,23 +332,55 @@ impl FontWorkspace {
         Ok(outcome)
     }
 
-    /// Persists a change set another process sent compacted, loading the
-    /// layers it sent as values and rebuilding them from this font first.
+    /// Persists a document change set another process sent compacted: its
+    /// font changes, loading the layers it sent as values and rebuilding them
+    /// from this font first, and its scene changes, in one write.
     ///
     /// # Errors
     ///
-    /// As [`Self::persist_change_set`], and [`WorkspaceError::Font`] when a
-    /// layer sent as values no longer has the change's before values.
+    /// As [`Self::persist_change_set`], [`WorkspaceError::Font`] when a layer
+    /// sent as values no longer has the change's before values, and
+    /// [`WorkspaceError::Scene`] when a scene node is no longer what the
+    /// change found. Nothing is kept on failure.
     pub fn persist_compact_change_set(
         &mut self,
-        change_set: shift_font::CompactChangeSet,
+        change_set: CompactDocumentChangeSet,
         save_state: SaveState,
     ) -> Result<AppliedIntents, WorkspaceError> {
         self.session
-            .load_layers(&mut StoreLayers(&self.store), change_set.value_layer_ids())
+            .load_layers(
+                &mut StoreLayers(&self.store),
+                change_set.font.value_layer_ids(),
+            )
             .map_err(WorkspaceError::from_load)?;
-        let change_set = change_set.expand(self.session.font())?;
-        self.persist_change_set(change_set, save_state)
+        let font_changes = change_set.font.expand(self.session.font())?;
+        self.session
+            .load_changed(&mut StoreLayers(&self.store), &font_changes)
+            .map_err(WorkspaceError::from_load)?;
+        let staged = self.session.stage_change_set(font_changes)?;
+        let mut scene = self.session.scene().clone();
+        scene.apply_change_set(&change_set.scene)?;
+        // Opening or closing a glyph page is navigation: kept, never unsaved.
+        let navigation =
+            staged.changes().is_empty() && scene.changes_only_glyph_pages(&change_set.scene);
+        let save_state = if navigation {
+            SaveState::Unchanged
+        } else {
+            save_state
+        };
+        self.store.apply_document_change_set(
+            staged.changes(),
+            staged.font(),
+            &change_set.scene,
+            save_state,
+        )?;
+        self.session.replace_scene(scene);
+        Ok(self.session.commit(staged))
+    }
+
+    /// The document's scene as this session holds it, unsaved edits included.
+    pub fn scene(&self) -> &Scene {
+        self.session.scene()
     }
 
     /// Persists a change set already applied to a session over this font,
@@ -483,14 +530,14 @@ impl FontWorkspace {
                 install_import_store(staged_path, store_path)?;
                 let store = ShiftStore::open(store_path)?;
 
-                return Ok(Self::from_store(
+                return Self::from_store(
                     session,
                     WorkspaceSource::Imported {
                         original_path: import_path.to_path_buf(),
                     },
                     store,
                     SaveState::MatchesSaved,
-                ));
+                );
             }
             Err(shift_backends::BackendError::StreamingUnsupported { .. }) => {}
             Err(error) => return Err(error.into()),
@@ -502,14 +549,14 @@ impl FontWorkspace {
         store.replace_font_state(&font)?;
         store.set_workspace_state(&WorkspaceState::imported(import_path, None))?;
 
-        Ok(Self::from_store(
+        Self::from_store(
             EngineSession::open_loaded(font),
             WorkspaceSource::Imported {
                 original_path: import_path.to_path_buf(),
             },
             store,
             SaveState::MatchesSaved,
-        ))
+        )
     }
 
     /// Explicitly acquires requested glyph payloads. Component closure expands
@@ -726,15 +773,15 @@ impl LayerSource for StoreLayers<'_> {
         Ok(layers)
     }
 
-    fn component_closure(&mut self, roots: &[GlyphId]) -> Result<Vec<GlyphId>, Self::Error> {
+    fn bases_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, Self::Error> {
         let started = Instant::now();
-        let closure = self.0.referenced_glyph_closure(roots.iter().copied())?;
+        let bases = self.0.bases_of(glyph_ids)?;
         profile_acquisition("component-closure", started);
-        Ok(closure)
+        Ok(bases)
     }
 
-    fn dependents(&mut self, layer_ids: &[LayerId]) -> Result<Vec<GlyphId>, Self::Error> {
-        self.0.dependent_glyph_ids_for_layers(layer_ids)
+    fn composites_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, Self::Error> {
+        self.0.composites_of(glyph_ids)
     }
 }
 
@@ -768,6 +815,7 @@ impl From<EngineError> for WorkspaceError {
         match error {
             EngineError::Font(error) => Self::Font(error),
             EngineError::UnloadedLayerMutation(layer_id) => Self::UnloadedLayerMutation(layer_id),
+            EngineError::Scene(error) => Self::Scene(error),
         }
     }
 }
@@ -801,13 +849,6 @@ fn font_info_from_font(font: &shift_font::Font) -> shift_store::FontInfo {
         units_per_em: metrics.units_per_em,
         default_source_id: font.default_source_id().map(|id| id.to_string()),
     }
-}
-
-fn new_font(new_workspace: NewWorkspace) -> shift_font::Font {
-    let mut font = shift_font::Font::new();
-    font.metadata_mut().family_name = Some(new_workspace.family_name);
-    font.metrics_mut().units_per_em = new_workspace.units_per_em as f64;
-    font
 }
 
 fn source_from_workspace_state(state: &WorkspaceState) -> Result<WorkspaceSource, WorkspaceError> {

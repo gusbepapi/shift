@@ -24,7 +24,9 @@ import {
   type ScreenVector,
 } from "@shift/editor/spaces";
 import { Editor } from "@shift/editor";
+import { featureReadMessage } from "@shift/editor/text";
 import { externalAxisLocationFromRecord } from "@shift/editor/variation";
+import { effect } from "@shift/editor/signals";
 import type { AlignmentType, DistributeType } from "@shift/editor/transform";
 import {
   kerningValueEdit,
@@ -34,6 +36,8 @@ import {
 } from "@shift/editor/model";
 import type { KerningTool, SpacingTool, ToolName } from "@shift/editor/tools";
 import { registerBuiltInTools } from "@/lib/tools/tools";
+import { AuthoredGlyphAtlasSource } from "@/lib/graphics/backends/AuthoredGlyphAtlasSource";
+import type { GlyphAtlasPage } from "@/types/glyphAtlas";
 import { runRendererCommand } from "@/lib/commands/rendererCommands";
 import {
   alignSelection,
@@ -42,7 +46,7 @@ import {
   flipSelection,
   rotateSelection,
 } from "@/lib/editor/sidebarActions";
-import type { EditorCommandId } from "@shared/commands";
+import type { CommandId, EditorCommandId } from "@shared/commands";
 import { Bounds, Rect, type Point2D, type Rect2D } from "@shift/geo";
 import {
   mintAxisMappingId,
@@ -62,6 +66,7 @@ import {
   type SourceId,
   type SourceMetrics,
   type Unicode,
+  asNodeId,
 } from "@shift/types";
 import { segmentIdFor, type Contour } from "@shift/glyph-state";
 import type { SystemClipboard } from "@shift/editor/clipboard";
@@ -73,7 +78,7 @@ import type {
   SourceSelectionMode,
   TextRunNode,
 } from "@shift/editor/types";
-import type { FontSessionMode, WorkspaceDocumentState } from "@shared/workspace/protocol";
+import type { FontSessionMode, WorkspaceDocumentState } from "@shared/workspace/lanes";
 import type { GlyphFixture, PointNames } from "./fixtures";
 import type {
   AuthoredAnchor,
@@ -93,19 +98,37 @@ import type {
   SpacingToolView,
   TextRunView,
 } from "@shift/runtime";
+import { AgentControl, type ControlCall, type ControlOperation } from "@/agent/AgentControl";
+import { AgentRevisions } from "@/agent/AgentRevisions";
+import { ShiftEditorControl } from "@/agent/ShiftEditorControl";
+import { WindowNavigation, type WindowRouter } from "@/lib/tabs/WindowNavigation";
 import { ShiftEditorReader, type DrawnHandle } from "@/agent/ShiftEditorReader";
+import { AgentText, type TextCall } from "@/agent/AgentText";
+import { AgentDocument, type DocumentCall } from "@/agent/AgentDocument";
+import { ShiftPages } from "@/agent/ShiftPages";
+import { ShiftHistory } from "@/agent/ShiftHistory";
+import type { AgentCallMap, DocumentOperation, TextOperation } from "@shared/agent/protocol";
+import { ShiftTextRuns } from "@/agent/ShiftTextRuns";
 import { ShiftFontReader } from "@/agent/ShiftFontReader";
 import { ShiftKerningReader } from "@/agent/ShiftKerningReader";
 import type {
   AxisFixture,
   AxisLocation,
+  CanvasFrame,
   DrawnGlyph,
+  DrawnOutlineIds,
   DrawOptions,
   EditorTestSurface,
+  TextLayoutFailureRead,
   Modifiers,
+  TextFeature,
+  ToolbarButton,
+  ToolShortcut,
 } from "./surface";
 import { drawFixture } from "./drawFixture";
+import { createStubContext } from "./stubCanvas";
 import { SurfaceActions } from "./SurfaceActions";
+import { WindowTabs } from "@/lib/tabs/WindowTabs";
 import type {
   AnchorReadOptions,
   AxisSelection,
@@ -113,6 +136,7 @@ import type {
   InstanceSelection,
   Outline,
   PointReadOptions,
+  PageEntry,
   SourceSelection,
 } from "./reads";
 
@@ -137,6 +161,23 @@ interface DragResult {
  * readable via {@link TestEditor.clipboardBuffer} so tests can assert on
  * what the Editor wrote without needing a round-trip.
  */
+/**
+ * A stand-in canvas the renderer can draw to, 1000 by 800 screen pixels,
+ * whose context records nothing until a caller replaces its methods.
+ */
+function recordingSurface() {
+  const rect = { x: 0, y: 0, width: 1000, height: 800, left: 0, top: 0, right: 1000, bottom: 800 };
+  const canvas = {
+    width: 1000,
+    height: 800,
+    getBoundingClientRect: () => rect,
+    getContext: () => null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as HTMLCanvasElement;
+  return { canvas, rect, dpr: 1, ctx: createStubContext(), width: 1000, height: 800 };
+}
+
 class InMemorySystemClipboard implements SystemClipboard {
   buffer = "";
   async writeText(text: string): Promise<void> {
@@ -168,9 +209,50 @@ export async function openTestEditor(
   return new TestEditor().openSession(sourcePath, glyphName);
 }
 
+/**
+ * The glyph atlas over `editor`'s workspace, wired as the workspace runtime
+ * wires it, for subject tests of desktop parts built with one.
+ *
+ * @throws {Error} when `editor` did not come from {@link startTestEditor} or
+ * {@link openTestEditor}.
+ */
+export function authoredGlyphAtlas(editor: EditorTestSurface): AuthoredGlyphAtlasSource {
+  if (!(editor instanceof TestEditor)) throw new Error("Expected an editor from startTestEditor");
+  const font = editor.font;
+  return new AuthoredGlyphAtlasSource(
+    editor.workspaceEditCoordinator,
+    () => font.getAxes(),
+    () => font.getAxisMappingBases(),
+  );
+}
+
+/**
+ * The authored atlas page over every glyph of `editor`'s workspace, as the
+ * glyph grid prepares a one-page atlas, for subject tests of the atlas.
+ *
+ * @throws {Error} when `editor` did not come from {@link startTestEditor} or
+ * {@link openTestEditor}.
+ */
+export async function authoredAtlasPage(editor: EditorTestSurface): Promise<GlyphAtlasPage> {
+  if (!(editor instanceof TestEditor)) throw new Error("Expected an editor from startTestEditor");
+  const glyphIds = editor.font.glyphRecords().map((record) => record.id);
+  return authoredGlyphAtlas(editor).preparePage(
+    { glyphIds, pageIndex: 0, pageCount: 1, replacementPageIndices: [], coordinates: [] },
+    256,
+  );
+}
+
 export class TestEditor extends Editor implements EditorTestSurface {
   readonly #clipboard: InMemorySystemClipboard;
   readonly #stack: WorkspaceStack;
+  /** The window's tabs, which open glyphs as the editor route does. */
+  readonly #tabs: WindowTabs;
+  /** The window's route, which agents' navigation moves; no view follows it here. */
+  readonly #route: { path: string } & WindowRouter;
+  /** The window-control calls agents make, over this editor's tabs, readers and edit coordinator. */
+  readonly #agentControl: AgentControl;
+  /** Where `commands.run` sends a command, as the window's command request sends it to main. */
+  #appCommands: ((command: CommandId) => Promise<void>) | null = null;
   /** Temporary directories this editor's document was saved into, removed on {@link close}. */
   readonly #temporaryDirectories: string[] = [];
   /**
@@ -184,6 +266,17 @@ export class TestEditor extends Editor implements EditorTestSurface {
   };
   /** The surface's actions, shared with the E2E hook. */
   readonly #actions = new SurfaceActions(this);
+  /** The proof-text calls agents make, over this editor's readers and edit coordinator. */
+  readonly #agentText: AgentText;
+  /** The page edits and undo/redo agents make, over this editor and its edit coordinator. */
+  readonly #agentDocument: AgentDocument;
+  /** The frames {@link recordCanvas} has recorded, each the paths it fills and strokes. */
+  readonly #canvasFrames: { fills: Path2D[]; strokes: Path2D[] }[] = [];
+  /** The overlay frames {@link recordCanvas} has recorded, each the lines it strokes. */
+  /** The ids outlines go by in {@link latestCanvasFrame} and {@link drawnOutlineIds}. */
+  readonly #outlineIds = new Map<Path2D, number>();
+  /** How many times the canvas text was laid out, once {@link textLayoutCount} first counts. */
+  #textLayouts: { count: number } | null = null;
   /** The Kerning tool's uncommitted preview, discarded by {@link cancelGesture}. */
   #kerningPreview: ReturnType<Editor["font"]["beginKerningEdit"]> | null = null;
 
@@ -197,14 +290,40 @@ export class TestEditor extends Editor implements EditorTestSurface {
     const clipboard = new InMemorySystemClipboard();
     super({ font: stack.font, fontStore: stack.store, clipboard, sessionMode });
     this.#stack = stack;
+    this.#tabs = new WindowTabs(this);
     this.#clipboard = clipboard;
     this.#reads = {
       font: new ShiftFontReader(stack.font, sessionMode),
       kerning: new ShiftKerningReader(stack.font),
       editor: new ShiftEditorReader(this, stack.editCoordinator),
     };
+    this.#agentText = new AgentText(
+      new ShiftTextRuns(this, this.#reads.editor),
+      new AgentRevisions(stack.editCoordinator),
+    );
+    this.#agentDocument = new AgentDocument(
+      new ShiftPages(this, this.#reads.editor),
+      new ShiftHistory(this),
+      new AgentRevisions(stack.editCoordinator),
+    );
     registerBuiltInTools(this);
     this.setActiveTool("select");
+    this.#route = {
+      path: "",
+      pathname() {
+        return this.path;
+      },
+      navigate(path) {
+        this.path = path;
+      },
+    };
+    this.#agentControl = new AgentControl(
+      new ShiftEditorControl(this, stack.font, this.#tabs, this.#route),
+      this.#reads.editor,
+      new AgentRevisions(stack.editCoordinator),
+      this.#route,
+      (command) => this.#runAppCommand(command),
+    );
   }
 
   /**
@@ -219,6 +338,8 @@ export class TestEditor extends Editor implements EditorTestSurface {
     const record = this.font.recordForName(glyph.handle.name);
     if (!record) throw new Error("created glyph did not appear in the font directory");
     this.#placeGlyph(record.id);
+    // Placing the glyph is a document edit, persisted like any other.
+    await this.settle();
     return this;
   }
 
@@ -231,6 +352,8 @@ export class TestEditor extends Editor implements EditorTestSurface {
     if (!record) throw new Error(`Opened package has no ${glyphName} glyph`);
     await this.font.loadGlyph(record.id);
     this.#placeGlyph(record.id);
+    // Placing the glyph is a document edit, persisted like any other.
+    await this.settle();
     return this;
   }
 
@@ -249,6 +372,35 @@ export class TestEditor extends Editor implements EditorTestSurface {
     this.#stack.failNextPersist();
   }
 
+  failNextTextLayout(message: string): void {
+    this.#stack.engine.failNextLayout(new Error(message));
+  }
+
+  failNextGlyphPreload(message: string): void {
+    this.#stack.engine.failNextPreload(new Error(message));
+  }
+
+  failFeatureLists(reason: string): void {
+    this.#stack.engine.failFeatureLists(reason);
+  }
+
+  featureSubstitutionsFailure(tag: string): string | null {
+    const listing = this.text.featureSubstitutionsCell(tag).peek();
+    return listing.kind === "failed" ? featureReadMessage(listing.error) : null;
+  }
+
+  featureListFailure(): string | null {
+    const listing = this.text.featuresCell.peek();
+    return listing.kind === "failed" ? featureReadMessage(listing.error) : null;
+  }
+
+  textLayoutFailure(): TextLayoutFailureRead | null {
+    const failure = this.text.layoutFailureCell.peek();
+    if (!failure) return null;
+    const message = failure.error instanceof Error ? failure.error.message : String(failure.error);
+    return { stage: failure.stage, message };
+  }
+
   /**
    * Flushes pending edits and saves to the current target; a document never
    * saved yet goes to a temporary file, removed on {@link close}.
@@ -260,14 +412,6 @@ export class TestEditor extends Editor implements EditorTestSurface {
     const directory = mkdtempSync(join(tmpdir(), "shift-saved-"));
     this.#temporaryDirectories.push(directory);
     return this.saveAs(join(directory, "Saved.shift"));
-  }
-
-  /** Closes the clean workspace and permanently disposes this test stack. */
-  async closeSession(): Promise<void> {
-    await this.settle();
-    await this.#stack.closeWorkspace();
-    this.destroy();
-    this.#stack.dispose();
   }
 
   /** Adds another glyph to the workspace font and loads its local model. */
@@ -305,7 +449,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
     return this.font.loadGlyph(record.id);
   }
 
-  /** The canvas's text run; the editor route creates it on the first open. */
+  /** The active page's text run; the editor route creates it on the first open. */
   get textRun(): TextRunNode | null {
     return this.scene.first("textRun");
   }
@@ -316,20 +460,10 @@ export class TestEditor extends Editor implements EditorTestSurface {
     return run ? this.nodeDefinition("textRun").childGlyph(run) : null;
   }
 
-  /** Opens a glyph as the editor route does: the canvas run becomes that glyph, edited in place. */
+  /** Opens a glyph as the editor route does: in its window tab, on a glyph page of its own. */
   #placeGlyph(glyphId: GlyphId): void {
-    const item = this.text.glyphItem(glyphId);
-    if (!item || !this.glyphForId(glyphId)) throw new Error("placed glyph is not loaded");
-    const record = this.text.createRun([item]);
-    const run = this.scene.createNode<TextRunNode>({
-      kind: "textRun",
-      runId: record.id,
-      size: this.font.metricsCell.peek().unitsPerEm,
-      position: { x: 0, y: 0 },
-    });
-    const child = this.nodeDefinition("textRun").editItem(run, item.id);
-    if (!child) throw new Error("placed glyph is not loaded");
-    this.enterNode(child.id);
+    if (!this.glyphForId(glyphId)) throw new Error("placed glyph is not loaded");
+    if (!this.#tabs.openGlyph(glyphId).node) throw new Error("placed glyph is not loaded");
   }
 
   /**
@@ -341,10 +475,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
       tag: "wght",
       name: "Weight",
       role: "external",
-      axisType: "continuous",
-      minimum: 100,
-      default: 400,
-      maximum: 900,
+      kind: { kind: "continuous", minimum: 100, default: 400, maximum: 900 },
       labels: [],
       hidden: false,
     });
@@ -577,21 +708,18 @@ export class TestEditor extends Editor implements EditorTestSurface {
   }
 
   keyDown(key: string, options?: Partial<typeof DEFAULT_MODIFIERS>): this {
-    const mods = { ...DEFAULT_MODIFIERS, ...options };
-    this.toolManager.handleKeyDown({
-      key,
-      code: key,
-      shiftKey: mods.shiftKey,
-      altKey: mods.altKey,
-      metaKey: mods.metaKey,
-      ctrlKey: false,
-      preventDefault: () => {},
-    } as KeyboardEvent);
+    this.toolManager.handleKeyDown(keyEvent(key, options));
     return this;
   }
 
   async pressKey(key: string, options?: Partial<typeof DEFAULT_MODIFIERS>): Promise<void> {
     this.keyDown(key, options);
+
+    await this.settle();
+  }
+
+  async releaseKey(key: string, options?: Partial<typeof DEFAULT_MODIFIERS>): Promise<void> {
+    this.toolManager.handleKeyUp(keyEvent(key, options));
 
     await this.settle();
   }
@@ -618,6 +746,21 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   async clickAt(position: Point2D, modifiers?: Modifiers): Promise<void> {
     await this.clickLocal(position.x, position.y, modifiers);
+  }
+
+  async clickTextAt(position: Point2D, modifiers?: Modifiers): Promise<void> {
+    const run = this.#requireTextRun();
+    const screen = this.sceneToScreen(this.toScene(run, localPoint(position.x, position.y)));
+    await this.click(screen.x, screen.y, modifiers);
+  }
+
+  async clickAtScreen(position: ScreenPoint, modifiers?: Modifiers): Promise<void> {
+    await this.click(position.x, position.y, modifiers);
+  }
+
+  panBy(by: ScreenVector): void {
+    const { x, y } = this.pan;
+    this.setPan({ x: x + by.x, y: y + by.y });
   }
 
   async dragPoint(id: PointId, by: Point2D, modifiers?: Modifiers): Promise<void> {
@@ -677,6 +820,10 @@ export class TestEditor extends Editor implements EditorTestSurface {
       ...DEFAULT_MODIFIERS,
       ...modifiers,
     });
+  }
+
+  passFrame(): void {
+    this.toolManager.flushPointerMoves();
   }
 
   async releaseAt(position: Point2D, modifiers?: Modifiers): Promise<void> {
@@ -781,7 +928,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
   async openGlyph(name: string): Promise<void> {
     const glyphId = this.#glyphNamed(name);
     await this.font.loadGlyph(glyphId);
-    if (!this.openGlyphInText(glyphId)) throw new Error(`openGlyph could not open ${name}`);
+    if (!this.#tabs.openGlyph(glyphId).node) throw new Error(`openGlyph could not open ${name}`);
     await this.settle();
   }
 
@@ -809,12 +956,85 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   setTextSize(size: number): void {
     const run = this.#requireTextRun();
-    this.scene.updateNode({ id: run.id, size });
+    this.history.capture("Set font size", () => this.text.setSize(run.id, size));
+  }
+
+  textScripts(): readonly string[] {
+    return this.text.scriptsCell(this.#requireTextRun().runId).peek();
+  }
+
+  textSize(): number {
+    return this.#requireTextRun().size;
   }
 
   moveText(to: Point2D): void {
     const run = this.#requireTextRun();
     this.scene.updateNode({ id: run.id, position: to });
+  }
+
+  setTextShaping(shaping: boolean): void {
+    const run = this.#requireTextRun();
+    this.history.capture(shaping ? "Turn shaping on" : "Turn shaping off", () =>
+      this.text.setShaping(run.runId, shaping),
+    );
+  }
+
+  setTextFeature(tag: string, on: boolean | null): void {
+    const run = this.#requireTextRun();
+    this.history.capture(`Set ${tag}`, () => this.text.setFeature(run.runId, tag, on));
+  }
+
+  setTextLanguage(language: string | null): void {
+    const run = this.#requireTextRun();
+    this.history.capture("Set text language", () => this.text.setLanguage(run.runId, language));
+  }
+
+  setTextScript(script: string | null): void {
+    const run = this.#requireTextRun();
+    this.history.capture("Set text script", () => this.text.setScript(run.runId, script));
+  }
+
+  setTextLineHeight(lineHeight: number | null): void {
+    const run = this.#requireTextRun();
+    this.history.capture("Set line height", () => this.text.setLineHeight(run.runId, lineHeight));
+  }
+
+  setTextAlign(align: "left" | "center" | "right"): void {
+    const run = this.#requireTextRun();
+    this.history.capture("Align text", () => this.text.setAlign(run.runId, align));
+  }
+
+  textFeatures(): readonly TextFeature[] {
+    const listing = this.text.featuresCell.peek();
+    if (listing.kind === "failed") throw listing.error;
+    return listing.features.map(({ tag, name, default: shown, group }) => ({
+      tag,
+      name: name ?? null,
+      default: shown,
+      group,
+    }));
+  }
+
+  featureSubstitutions(
+    tag: string,
+  ): readonly { readonly input: readonly string[]; readonly output: string }[] {
+    const name = (id: GlyphId) => this.font.glyphName(id) ?? id;
+    const listing = this.text.featureSubstitutionsCell(tag).peek();
+    if (listing.kind === "failed") throw listing.error;
+    return listing.substitutions.map(({ input, output }) => ({
+      input: input.map(name),
+      output: name(output),
+    }));
+  }
+
+  highlightFeature(tag: string | null): void {
+    const run = this.#requireTextRun();
+    this.text.setFeatureHighlight(tag === null ? null : { runId: run.runId, tag });
+  }
+
+  highlightedGlyphs(): readonly string[] {
+    const glyphs = this.text.highlightCell.peek()?.glyphs ?? new Set<GlyphId>();
+    return [...glyphs].map((id) => this.font.glyphName(id) ?? id);
   }
 
   #requireTextRun(): TextRunNode {
@@ -1017,6 +1237,11 @@ export class TestEditor extends Editor implements EditorTestSurface {
     await this.settle();
   }
 
+  async setSourceLocation(source: string, tag: string, value: number): Promise<void> {
+    await this.#actions.setSourceLocation(source, tag, value);
+    await this.settle();
+  }
+
   async setSourceItalicAngle(source: string, italicAngle: number): Promise<void> {
     await this.#actions.setSourceItalicAngle(source, italicAngle);
     await this.settle();
@@ -1041,7 +1266,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
   }
 
   async editSources(names: readonly string[]): Promise<void> {
-    await this.#actions.editSources(names);
+    this.#actions.editSources(names);
     await this.settle();
   }
 
@@ -1121,12 +1346,14 @@ export class TestEditor extends Editor implements EditorTestSurface {
     if (!glyph) throw new Error("Expected an open glyph");
     const shown = { glyph: { glyphId: glyph.glyphId }, source: { sourceId: glyph.sourceId } };
     const other = { glyph: { glyphId: glyph.glyphId }, source };
-    const match = await this.#reads.font.matchLayers(shown, other);
-    if (!match.complete) return null;
-
-    const counterpart = match.points.find(({ referenceId }) => referenceId === id);
+    const counterparts = this.#reads.font.counterparts(shown, other, {
+      points: [id],
+      anchors: [],
+      components: [],
+    });
+    const counterpart = counterparts?.points[0];
     if (!counterpart) return null;
-    return this.#pointIn((await this.#reads.font.getLayer(other)).contours, counterpart.targetId);
+    return this.#pointIn((await this.#reads.font.getLayer(other)).contours, counterpart);
   }
 
   #pointIn(outline: Outline, id: PointId): AuthoredPoint | null {
@@ -1166,6 +1393,22 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   documentState(): Promise<DocumentSaveState | null> {
     return this.#reads.editor.documentState();
+  }
+
+  agentText<K extends TextOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]> {
+    const call: TextCall<K> = this.#agentText.calls[operation];
+    return call(input);
+  }
+
+  agentDocument<K extends DocumentOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]> {
+    const call: DocumentCall<K> = this.#agentDocument.calls[operation];
+    return call(input);
   }
   async pointAt(position: Point2D): Promise<AuthoredPoint | null> {
     const outline = await this.outline();
@@ -1276,7 +1519,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
   }
 
   editorView(): EditorView {
-    return this.#reads.editor.inspect("");
+    return this.#reads.editor.inspect(this.#route.pathname());
   }
 
   toolState(): EditorTool | null {
@@ -1309,6 +1552,10 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   drawnSnapGuides(): readonly PositionGuide[] {
     return this.#reads.editor.drawnSnapGuides();
+  }
+
+  drawnSnapCrossings(): readonly Point2D[] {
+    return this.#reads.editor.drawnSnapCrossings();
   }
 
   drawnPoint(id: PointId): AuthoredPoint | null {
@@ -1352,6 +1599,73 @@ export class TestEditor extends Editor implements EditorTestSurface {
     };
   }
 
+  recordCanvas(): void {
+    const scene = recordingSurface();
+    // The renderer clears a layer at the start of each frame it draws.
+    scene.ctx.clearRect = () => this.#canvasFrames.push({ fills: [], strokes: [] });
+    scene.ctx.fill = ((path: Path2D) => {
+      this.#canvasFrames.at(-1)?.fills.push(path);
+    }) as typeof scene.ctx.fill;
+    scene.ctx.stroke = ((path?: Path2D) => {
+      if (path) this.#canvasFrames.at(-1)?.strokes.push(path);
+    }) as typeof scene.ctx.stroke;
+    const { canvas, rect, dpr, width, height } = recordingSurface();
+    this.attachRenderSurfaces(recordingSurface(), scene, recordingSurface(), {
+      canvas,
+      rect,
+      dpr,
+      width,
+      height,
+    });
+  }
+
+  latestCanvasFrame(): CanvasFrame {
+    const frame = this.#canvasFrames.at(-1);
+    return {
+      fills: (frame?.fills ?? []).map((path) => this.#outlineId(path)),
+      strokes: (frame?.strokes ?? []).map((path) => this.#outlineId(path)),
+    };
+  }
+
+  drawnOutlineIds(glyph: string): DrawnOutlineIds {
+    const model = this.glyphForId(this.#glyphNamed(glyph))?.renderModelAt(
+      this.externalLocationCell,
+      this.activeSourceIdCell,
+    );
+    return {
+      closed: model ? this.#outlineId(model.closedContoursPath) : null,
+      open: model ? this.#outlineId(model.openContoursPath) : null,
+    };
+  }
+
+  /** The id {@link drawnOutlineIds} and {@link latestCanvasFrame} give `path`. */
+  #outlineId(path: Path2D): number {
+    let id = this.#outlineIds.get(path);
+    if (id === undefined) {
+      id = this.#outlineIds.size + 1;
+      this.#outlineIds.set(path, id);
+    }
+    return id;
+  }
+
+  glyphLoaded(name: string): boolean {
+    return this.glyphForId(this.#glyphNamed(name)) !== null;
+  }
+
+  textLayoutCount(): number {
+    if (!this.#textLayouts) {
+      const layout = this.text.layoutCell(this.#requireTextRun().runId);
+      const counter = { count: -1 };
+      const watcher = effect(() => {
+        void layout.value;
+        counter.count++;
+      });
+      this.on("destroying", () => watcher.dispose());
+      this.#textLayouts = counter;
+    }
+    return this.#textLayouts.count;
+  }
+
   segmentBetween(start: PointId, end: PointId): string {
     return segmentIdFor(start, end);
   }
@@ -1366,6 +1680,23 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   toolDisabled(name: ToolName): boolean {
     return this.toolRegistry.get(name)?.disabled ?? false;
+  }
+
+  toolbar(): readonly ToolbarButton[] {
+    return [...this.toolRegistry]
+      .filter(([, item]) => !item.hidden)
+      .map(([tool, item]) => ({
+        tool,
+        menu: (item.menuItems ?? []).map((menuItem) => menuItem.toolId ?? tool),
+      }));
+  }
+
+  toolShortcuts(): readonly ToolShortcut[] {
+    return this.getToolShortcuts().map(({ shortcut, toolId }) => ({ key: shortcut, tool: toolId }));
+  }
+
+  clipboardText(): string {
+    return this.#clipboard.buffer;
   }
 
   toolCursor(): string {
@@ -1408,6 +1739,23 @@ export class TestEditor extends Editor implements EditorTestSurface {
     return screenPoint(x, y);
   }
 
+  agentControl<K extends ControlOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]> {
+    const call: ControlCall<K> = this.#agentControl.calls[operation];
+    return call(input);
+  }
+
+  connectAppCommands(run: (command: CommandId) => Promise<void>): void {
+    this.#appCommands = run;
+  }
+
+  #runAppCommand(command: CommandId): Promise<void> {
+    if (!this.#appCommands) throw new Error("connectAppCommands before running app commands");
+    return this.#appCommands(command);
+  }
+
   async reopen(): Promise<EditorTestSurface> {
     const glyphName = this.glyphRecord?.name;
     if (!glyphName) throw new Error("reopen needs an open glyph");
@@ -1430,6 +1778,43 @@ export class TestEditor extends Editor implements EditorTestSurface {
     }
   }
 
+  pageList(): readonly PageEntry[] {
+    return this.editorView().pages;
+  }
+
+  shownPageId(): string | null {
+    return this.editorView().shownPageId;
+  }
+
+  pageExists(id: string): boolean {
+    return this.scene.nodeOfKind(asNodeId(id), "page") !== null;
+  }
+
+  closeTab(): boolean {
+    return new WindowNavigation(this, this.#tabs, this.#route).closeShown();
+  }
+
+  addPage(name?: string): PageEntry {
+    const { id, name: pageName } = this.pages.create(name);
+    return { id, name: pageName };
+  }
+
+  showPage(id: string): void {
+    this.pages.activate(asNodeId(id));
+  }
+
+  renamePage(id: string, name: string): void {
+    this.pages.rename(asNodeId(id), name);
+  }
+
+  movePage(id: string, index: number): void {
+    this.pages.move(asNodeId(id), index);
+  }
+
+  deletePage(id: string): boolean {
+    return this.pages.delete(asNodeId(id));
+  }
+
   asEditor(): Editor {
     return this;
   }
@@ -1443,4 +1828,16 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
 function plainBounds(bounds: Bounds | null): Bounds | null {
   return bounds && { min: { ...bounds.min }, max: { ...bounds.max } };
+}
+
+/** A key event as the tool manager reads it, with `options` overriding the default modifiers. */
+function keyEvent(key: string, options?: Partial<typeof DEFAULT_MODIFIERS>): KeyboardEvent {
+  const modifiers = { ...DEFAULT_MODIFIERS, ...options };
+  return {
+    key,
+    code: key,
+    ...modifiers,
+    ctrlKey: false,
+    preventDefault: () => {},
+  } as KeyboardEvent;
 }

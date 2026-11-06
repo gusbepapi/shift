@@ -4,6 +4,7 @@ import { LeftSidebar } from "@/components/home/LeftSidebar";
 import { RightSidebar } from "@/components/editor/RightSidebar";
 import { Toolbar } from "@/components/chrome/Toolbar";
 import { useSidebarLayout } from "@/components/chrome/useSidebarLayout";
+import { UpdateStrip } from "@/components/chrome/UpdateStrip";
 
 export const Home = () => {
   const {
@@ -13,13 +14,20 @@ export const Home = () => {
     sidebarPanelProps,
     toggleLeftSidebar,
     toggleRightSidebar,
+    leftSidebarOpen,
+    rightSidebarOpen,
     resetLeftSidebar,
     resetRightSidebar,
   } = useSidebarLayout("home");
 
   return (
     <main className="grid h-screen w-full grid-rows-[auto_minmax(0,1fr)]">
-      <Toolbar toggleLeftSidebar={toggleLeftSidebar} toggleRightSidebar={toggleRightSidebar} />
+      <Toolbar
+        toggleLeftSidebar={toggleLeftSidebar}
+        toggleRightSidebar={toggleRightSidebar}
+        leftSidebarOpen={leftSidebarOpen}
+        rightSidebarOpen={rightSidebarOpen}
+      />
       <ResizablePanelGroup
         id="home-layout-panels"
         orientation="horizontal"
@@ -38,7 +46,10 @@ export const Home = () => {
           onDoubleClick={resetLeftSidebar}
         />
         <ResizablePanel id="grid" minSize={300}>
-          <GlyphGrid />
+          <div className="relative h-full">
+            <GlyphGrid />
+            <UpdateStrip className="right-3 bottom-3" />
+          </div>
         </ResizablePanel>
         <ResizableHandle
           aria-label="Resize right sidebar"

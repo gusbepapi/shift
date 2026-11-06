@@ -14,26 +14,24 @@ use shift_font::composite::{
     ComponentGlyph as IrComponentGlyph, GlyphComponents as IrGlyphComponents,
 };
 use shift_font::{
-    Anchor as IrAnchor, AnchorId, Axis as IrAxis, AxisId, AxisKind as IrAxisKind, AxisLabelId,
-    AxisMapping as IrAxisMapping, AxisMappingBasis as IrAxisMappingBasis, AxisMappingId,
-    AxisRole as IrAxisRole, Component as IrComponent, ComponentAlignment, ComponentId,
-    Contour as IrContour, ContourId, Font as IrFont, FontMetadata as IrFontMetadata,
-    FontMetrics as IrFontMetrics, Glyph as IrGlyph, GlyphId,
+    Anchor as IrAnchor, AnchorId, AxisId, AxisMapping as IrAxisMapping,
+    AxisMappingBasis as IrAxisMappingBasis, AxisMappingId, Component as IrComponent,
+    ComponentAlignment, ComponentId, Contour as IrContour, ContourId, Font as IrFont,
+    FontMetadata as IrFontMetadata, FontMetrics as IrFontMetrics, GlyphId,
     GlyphInterpolation as IrGlyphInterpolation, GlyphLayer, GlyphName,
     GlyphProjection as IrGlyphProjection, GlyphSourceComponents as IrGlyphSourceComponents,
     GuidelineId, InterpolationBasis as IrInterpolationBasis, KerningPosition as IrKerningPosition,
-    KerningSide as IrKerningSide, LayerDifference as IrLayerDifference, LayerId,
-    Location as IrLocation, MetricDefinition as IrMetricDefinition, MetricId,
+    LayerId, Location as IrLocation, MetricDefinition as IrMetricDefinition, MetricId,
     MetricKind as IrMetricKind, NamedInstance as IrNamedInstance, NamedInstanceId,
-    Point as IrPoint, PointId, PointType as IrPointType, Source as IrSource, SourceId,
+    Point as IrPoint, PointId, PointType as IrPointType, SourceId,
     SourceMetricField as IrSourceMetricField,
     SourceMetricInterpolation as IrSourceMetricInterpolation, VariationBasis as IrVariationBasis,
 };
 
 pub mod bridges;
-pub mod intents;
 pub mod replacement;
 pub mod state;
+pub mod values;
 
 /// Flat numeric glyph values ordered to match `GlyphStructure`.
 ///
@@ -53,6 +51,7 @@ pub type GlyphValues = Vec<GlyphValue>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct FontMetadata {
     pub family_name: Option<String>,
     pub style_name: Option<String>,
@@ -93,6 +92,7 @@ impl From<&IrFontMetadata> for FontMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct FontMetrics {
     pub units_per_em: f64,
 }
@@ -116,6 +116,7 @@ impl From<&IrFontMetrics> for FontMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct MetricDefinition {
     pub id: MetricId,
     pub kind: MetricKind,
@@ -124,6 +125,7 @@ pub struct MetricDefinition {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum MetricKind {
     Ascender,
     CapHeight,
@@ -158,85 +160,11 @@ impl From<&IrMetricDefinition> for MetricDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceMetricValue {
-    pub metric_id: MetricId,
-    pub position: f64,
-    pub overshoot: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Axis {
-    pub id: AxisId,
-    pub tag: String,
-    pub name: String,
-    pub role: String,
-    pub axis_type: String,
-    pub minimum: Option<f64>,
-    pub default: f64,
-    pub maximum: Option<f64>,
-    pub values: Option<Vec<f64>>,
-    pub labels: Vec<AxisLabel>,
-    pub hidden: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-/// Wire projection of a stable external-axis label.
-pub struct AxisLabel {
-    pub id: AxisLabelId,
-    pub name: String,
-    pub value: f64,
-    pub minimum: Option<f64>,
-    pub maximum: Option<f64>,
-    pub linked_value: Option<f64>,
-    pub elidable: bool,
-}
-
-impl From<&IrAxis> for Axis {
-    fn from(axis: &IrAxis) -> Self {
-        Self {
-            id: axis.id(),
-            tag: axis.tag().to_string(),
-            name: axis.name().to_string(),
-            role: match axis.role() {
-                IrAxisRole::External => "external",
-                IrAxisRole::Internal => "internal",
-            }
-            .to_string(),
-            axis_type: match axis.kind() {
-                IrAxisKind::Continuous { .. } => "continuous",
-                IrAxisKind::Discrete { .. } => "discrete",
-            }
-            .to_string(),
-            minimum: matches!(axis.kind(), IrAxisKind::Continuous { .. }).then(|| axis.minimum()),
-            default: axis.default(),
-            maximum: matches!(axis.kind(), IrAxisKind::Continuous { .. }).then(|| axis.maximum()),
-            values: axis.discrete_values().map(<[f64]>::to_vec),
-            labels: axis
-                .labels()
-                .iter()
-                .map(|label| AxisLabel {
-                    id: label.id(),
-                    name: label.name.clone(),
-                    value: label.value,
-                    minimum: label.range.as_ref().map(|range| range.minimum),
-                    maximum: label.range.as_ref().map(|range| range.maximum),
-                    linked_value: label.linked_value,
-                    elidable: label.elidable,
-                })
-                .collect(),
-            hidden: axis.is_hidden(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 /// Wire projection of an explicit named product preset.
 ///
 /// `location` is complete external authoring state, not a normalized or
 /// compiler-owned coordinate record.
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct NamedInstance {
     pub id: NamedInstanceId,
     pub name: String,
@@ -257,6 +185,7 @@ impl From<&IrNamedInstance> for NamedInstance {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct AxisMappingPoint {
     pub description: Option<String>,
     pub input: Location,
@@ -265,6 +194,7 @@ pub struct AxisMappingPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct AxisMapping {
     pub id: AxisMappingId,
     pub name: String,
@@ -298,6 +228,7 @@ impl From<&IrAxisMapping> for AxisMapping {
 /// Fontdrasil-compiled contribution basis for one authored axis mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct AxisMappingBasis {
     pub mapping_id: AxisMappingId,
     pub input_axis_ids: Vec<AxisId>,
@@ -318,418 +249,13 @@ impl From<&IrAxisMappingBasis> for AxisMappingBasis {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Source {
-    pub id: SourceId,
-    pub name: String,
-    pub location: Location,
-    pub filename: Option<String>,
-    pub metric_values: Vec<SourceMetricValue>,
-    pub italic_angle: Option<f64>,
-    pub line_gap: Option<f64>,
-    pub underline_position: Option<f64>,
-    pub underline_thickness: Option<f64>,
-}
-
-impl From<&IrSource> for Source {
-    fn from(source: &IrSource) -> Self {
-        Self {
-            id: source.id(),
-            name: source.name().to_string(),
-            location: source.location().as_untyped().into(),
-            filename: source.filename().map(str::to_string),
-            metric_values: source
-                .metric_values()
-                .iter()
-                .map(|(metric_id, value)| SourceMetricValue {
-                    metric_id: *metric_id,
-                    position: value.position,
-                    overshoot: value.overshoot,
-                })
-                .collect(),
-            italic_angle: source.italic_angle(),
-            line_gap: source.line_gap(),
-            underline_position: source.underline_position(),
-            underline_thickness: source.underline_thickness(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GlyphRecord {
-    pub id: GlyphId,
-    pub name: GlyphName,
-    pub unicodes: Vec<u32>,
-    pub component_base_glyph_ids: Vec<GlyphId>,
-    pub layers: Vec<GlyphLayerRecord>,
-    /// In the Mark category or classed `mark`: anchor propagation keeps its own anchors.
-    pub mark: bool,
-    /// A nonspacing mark (Mark category, Nonspacing subcategory): export
-    /// compiles it with no advance.
-    pub nonspacing_mark: bool,
-    /// `"explicit"` when classed a ligature, `"subcategory"` when a ligature
-    /// once it has an attaching anchor.
-    pub ligature: Option<String>,
-}
-
-impl From<&IrGlyph> for GlyphRecord {
-    fn from(glyph: &IrGlyph) -> Self {
-        let mut component_base_glyph_ids: Vec<_> = glyph
-            .layers()
-            .values()
-            .flat_map(|layer| layer.components_iter())
-            .map(shift_font::Component::base_glyph_id)
-            .collect();
-        component_base_glyph_ids.sort();
-        component_base_glyph_ids.dedup();
-        let mut layers: Vec<_> = glyph
-            .layers()
-            .values()
-            .map(|layer| GlyphLayerRecord::from(layer.as_ref()))
-            .collect();
-        layers.sort_by(|a, b| {
-            a.source_id
-                .as_str()
-                .cmp(b.source_id.as_str())
-                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
-        });
-
-        Self {
-            id: glyph.id(),
-            name: glyph.glyph_name().clone(),
-            unicodes: glyph.unicodes().to_vec(),
-            component_base_glyph_ids,
-            layers,
-            mark: false,
-            nonspacing_mark: false,
-            ligature: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GlyphLayerRecord {
-    pub id: LayerId,
-    pub source_id: SourceId,
-}
-
-impl From<&GlyphLayer> for GlyphLayerRecord {
-    fn from(layer: &GlyphLayer) -> Self {
-        Self {
-            id: layer.id(),
-            source_id: layer.source_id(),
-        }
-    }
-}
-
-/// Cross-layer identity pair for one structurally matched contour.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContourMatch {
-    pub reference_id: ContourId,
-    pub target_id: ContourId,
-}
-
-/// Cross-layer identity pair for one structurally matched point.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PointMatch {
-    pub reference_id: PointId,
-    pub target_id: PointId,
-}
-
-/// Cross-layer identity pair for one structurally matched anchor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AnchorMatch {
-    pub reference_id: AnchorId,
-    pub target_id: AnchorId,
-}
-
-/// Cross-layer identity pair for one structurally matched component.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComponentMatch {
-    pub reference_id: ComponentId,
-    pub target_id: ComponentId,
-}
-
-/// Stable discriminator for one transported structural mismatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LayerDifferenceKind {
-    ContourCount,
-    ContourClosed,
-    PointCount,
-    PointType,
-    AnchorCount,
-    AnchorSequence,
-    ComponentSequence,
-}
-
-/// Transport-safe structural mismatch evidence.
-///
-/// Only fields relevant to `kind` are populated. Indices and counts are
-/// zero-based `u32` values so every NAPI consumer receives ordinary numbers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LayerDifference {
-    pub kind: LayerDifferenceKind,
-    pub contour: Option<u32>,
-    pub point: Option<u32>,
-    pub reference_count: Option<u32>,
-    pub target_count: Option<u32>,
-    pub reference_closed: Option<bool>,
-    pub target_closed: Option<bool>,
-    pub reference_point_type: Option<PointType>,
-    pub target_point_type: Option<PointType>,
-    pub reference_anchor_names: Option<Vec<Option<String>>>,
-    pub target_anchor_names: Option<Vec<Option<String>>>,
-    pub reference_component_ids: Option<Vec<GlyphId>>,
-    pub target_component_ids: Option<Vec<GlyphId>>,
-}
-
-impl From<&IrLayerDifference> for LayerDifference {
-    fn from(difference: &IrLayerDifference) -> Self {
-        let mut wire = Self {
-            kind: LayerDifferenceKind::ContourCount,
-            contour: None,
-            point: None,
-            reference_count: None,
-            target_count: None,
-            reference_closed: None,
-            target_closed: None,
-            reference_point_type: None,
-            target_point_type: None,
-            reference_anchor_names: None,
-            target_anchor_names: None,
-            reference_component_ids: None,
-            target_component_ids: None,
-        };
-
-        match difference {
-            IrLayerDifference::ContourCount { reference, source } => {
-                wire.reference_count = Some(wire_index(*reference));
-                wire.target_count = Some(wire_index(*source));
-            }
-            IrLayerDifference::ContourClosed {
-                contour,
-                reference,
-                source,
-            } => {
-                wire.kind = LayerDifferenceKind::ContourClosed;
-                wire.contour = Some(wire_index(*contour));
-                wire.reference_closed = Some(*reference);
-                wire.target_closed = Some(*source);
-            }
-            IrLayerDifference::PointCount {
-                contour,
-                reference,
-                source,
-            } => {
-                wire.kind = LayerDifferenceKind::PointCount;
-                wire.contour = Some(wire_index(*contour));
-                wire.reference_count = Some(wire_index(*reference));
-                wire.target_count = Some(wire_index(*source));
-            }
-            IrLayerDifference::PointType {
-                contour,
-                point,
-                reference,
-                source,
-            } => {
-                wire.kind = LayerDifferenceKind::PointType;
-                wire.contour = Some(wire_index(*contour));
-                wire.point = Some(wire_index(*point));
-                wire.reference_point_type = Some(PointType::from(*reference));
-                wire.target_point_type = Some(PointType::from(*source));
-            }
-            IrLayerDifference::AnchorCount { reference, source } => {
-                wire.kind = LayerDifferenceKind::AnchorCount;
-                wire.reference_count = Some(wire_index(*reference));
-                wire.target_count = Some(wire_index(*source));
-            }
-            IrLayerDifference::AnchorSequence { reference, source } => {
-                wire.kind = LayerDifferenceKind::AnchorSequence;
-                wire.reference_anchor_names = Some(reference.clone());
-                wire.target_anchor_names = Some(source.clone());
-            }
-            IrLayerDifference::ComponentSequence { reference, source } => {
-                wire.kind = LayerDifferenceKind::ComponentSequence;
-                wire.reference_component_ids = Some(reference.clone());
-                wire.target_component_ids = Some(source.clone());
-            }
-        }
-
-        wire
-    }
-}
-
-/// Read-only cross-layer identity mappings and compatibility diagnostics.
-///
-/// Incomplete matches carry differences but no entity mappings, mirroring the
-/// domain contract that prevents consumers from applying partial edits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LayerMatch {
-    pub reference_layer_id: LayerId,
-    pub target_layer_id: LayerId,
-    pub complete: bool,
-    pub contours: Vec<ContourMatch>,
-    pub points: Vec<PointMatch>,
-    pub anchors: Vec<AnchorMatch>,
-    pub components: Vec<ComponentMatch>,
-    pub differences: Vec<LayerDifference>,
-}
-
-impl LayerMatch {
-    /// Derives a transport value from two acquired authored layers.
-    pub fn from_layers(reference: &GlyphLayer, target: &GlyphLayer) -> Self {
-        let layer_match = reference.match_with(target);
-        let contours = reference
-            .contours_iter()
-            .filter_map(|contour| {
-                layer_match
-                    .contour_for(&contour.id())
-                    .cloned()
-                    .map(|target_id| ContourMatch {
-                        reference_id: contour.id(),
-                        target_id,
-                    })
-            })
-            .collect();
-        let points = reference
-            .contours_iter()
-            .flat_map(shift_font::Contour::points)
-            .filter_map(|point| {
-                layer_match
-                    .point_for(&point.id())
-                    .cloned()
-                    .map(|target_id| PointMatch {
-                        reference_id: point.id(),
-                        target_id,
-                    })
-            })
-            .collect();
-        let anchors = reference
-            .anchors_iter()
-            .filter_map(|anchor| {
-                layer_match
-                    .anchor_for(&anchor.id())
-                    .cloned()
-                    .map(|target_id| AnchorMatch {
-                        reference_id: anchor.id(),
-                        target_id,
-                    })
-            })
-            .collect();
-        let components = reference
-            .components_iter()
-            .filter_map(|component| {
-                layer_match
-                    .component_for(&component.id())
-                    .cloned()
-                    .map(|target_id| ComponentMatch {
-                        reference_id: component.id(),
-                        target_id,
-                    })
-            })
-            .collect();
-        let differences = layer_match
-            .differences()
-            .iter()
-            .map(LayerDifference::from)
-            .collect();
-
-        Self {
-            reference_layer_id: *layer_match.reference_layer_id(),
-            target_layer_id: *layer_match.target_layer_id(),
-            complete: layer_match.is_complete(),
-            contours,
-            points,
-            anchors,
-            components,
-            differences,
-        }
-    }
-}
-
-fn wire_index(value: usize) -> u32 {
-    u32::try_from(value).expect("glyph structure exceeds the wire index limit")
-}
-
-#[cfg(test)]
-mod layer_match_tests {
-    use super::*;
-    use shift_font::{Anchor, Component, Contour, Point};
-
-    fn reference_layer() -> GlyphLayer {
-        let mut layer = GlyphLayer::new(LayerId::from_raw("reference"), SourceId::from_raw("one"));
-        layer.add_contour(Contour::from_points(
-            vec![Point::on_curve(0.0, 0.0), Point::on_curve(100.0, 0.0)],
-            true,
-        ));
-        layer.add_anchor(Anchor::new(Some("top".to_string()), 50.0, 100.0));
-        layer.add_component(Component::new(GlyphId::from_raw("base"), "base"));
-        layer
-    }
-
-    #[test]
-    fn complete_layer_match_transports_every_entity_pair() {
-        let reference = reference_layer();
-        let target =
-            reference.clone_with_fresh_ids(LayerId::from_raw("target"), SourceId::from_raw("two"));
-
-        let layer_match = LayerMatch::from_layers(&reference, &target);
-
-        assert!(layer_match.complete);
-        assert_eq!(layer_match.reference_layer_id, reference.id());
-        assert_eq!(layer_match.target_layer_id, target.id());
-        assert_eq!(layer_match.contours.len(), 1);
-        assert_eq!(layer_match.points.len(), 2);
-        assert_eq!(layer_match.anchors.len(), 1);
-        assert_eq!(layer_match.components.len(), 1);
-        assert!(layer_match.differences.is_empty());
-    }
-
-    #[test]
-    fn incomplete_layer_match_transports_differences_without_pairs() {
-        let reference = reference_layer();
-        let mut target =
-            reference.clone_with_fresh_ids(LayerId::from_raw("target"), SourceId::from_raw("two"));
-        target
-            .contours_iter_mut()
-            .next()
-            .unwrap()
-            .points_mut()
-            .pop();
-
-        let layer_match = LayerMatch::from_layers(&reference, &target);
-
-        assert!(!layer_match.complete);
-        assert!(layer_match.contours.is_empty());
-        assert!(layer_match.points.is_empty());
-        assert!(layer_match.anchors.is_empty());
-        assert!(layer_match.components.is_empty());
-        assert_eq!(layer_match.differences.len(), 1);
-        assert_eq!(
-            layer_match.differences[0].kind,
-            LayerDifferenceKind::PointCount
-        );
-        assert_eq!(layer_match.differences[0].contour, Some(0));
-        assert_eq!(layer_match.differences[0].reference_count, Some(2));
-        assert_eq!(layer_match.differences[0].target_count, Some(1));
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphState {
     pub layer_id: LayerId,
     pub structure: GlyphStructure,
     /// Numeric glyph state ordered to match `GlyphStructure`.
-    pub values: GlyphValues,
+    #[cfg_attr(feature = "pack", pack(numbers))]
+    pub values: Vec<f64>,
 }
 
 impl GlyphState {
@@ -744,6 +270,7 @@ impl GlyphState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphLayerSnapshot {
     pub glyph_id: GlyphId,
     pub source_id: SourceId,
@@ -758,6 +285,7 @@ pub struct GlyphSnapshotRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphSnapshot {
     pub glyph_id: GlyphId,
     pub projection: Option<GlyphProjection>,
@@ -767,6 +295,7 @@ pub struct GlyphSnapshot {
 /// Lightweight glyph identity present before geometry is acquired.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphEntry {
     pub id: GlyphId,
     pub name: GlyphName,
@@ -779,14 +308,15 @@ pub struct GlyphEntry {
 /// from its source's directory and leaves without a lib or kerning.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct FontSnapshot {
     pub metadata: FontMetadata,
     pub metrics: FontMetrics,
     pub metric_definitions: Vec<MetricDefinition>,
     pub source_metrics_interpolation: Option<SourceMetricsInterpolationSnapshot>,
     pub glyphs: Vec<GlyphEntry>,
-    pub sources: Vec<Source>,
-    pub axes: Vec<Axis>,
+    pub sources: Vec<shift_font::Source>,
+    pub axes: Vec<shift_font::Axis>,
     pub axis_mappings: Vec<AxisMapping>,
     pub axis_mapping_bases: Vec<AxisMappingBasis>,
     pub named_instances: Vec<NamedInstance>,
@@ -798,6 +328,7 @@ pub struct FontSnapshot {
 /// Numeric encoding used for component transforms in one projection shape.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum ComponentTransformKind {
     Decomposed,
     Affine,
@@ -806,9 +337,11 @@ pub enum ComponentTransformKind {
 /// One compact glyph layer shape suitable for local projection evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphLayerShape {
     pub structure: GlyphStructure,
-    pub values: GlyphValues,
+    #[cfg_attr(feature = "pack", pack(numbers))]
+    pub values: Vec<f64>,
     pub component_transform_kind: ComponentTransformKind,
 }
 
@@ -825,6 +358,7 @@ impl From<&GlyphLayer> for GlyphLayerShape {
 /// One axis support within an interpolation coefficient region.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct InterpolationSupport {
     pub axis_id: AxisId,
     pub lower: f64,
@@ -835,14 +369,17 @@ pub struct InterpolationSupport {
 /// One normalized support and numeric contribution vector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct VariationDelta {
     pub region: Vec<InterpolationSupport>,
+    #[cfg_attr(feature = "pack", pack(numbers))]
     pub values: Vec<f64>,
 }
 
 /// Fontdrasil-compiled supports and numeric contributions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct VariationBasis {
     pub deltas: Vec<VariationDelta>,
 }
@@ -875,6 +412,7 @@ impl From<&IrVariationBasis> for VariationBasis {
 /// Design-space normalization transported without authoring-axis metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct DesignNormalization {
     pub axis_id: AxisId,
     pub minimum: f64,
@@ -896,6 +434,7 @@ impl From<&shift_font::DesignNormalization> for DesignNormalization {
 /// Coordinate-independent interpolation weights for an ordered source set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct InterpolationBasis {
     pub source_ids: Vec<SourceId>,
     pub basis: VariationBasis,
@@ -919,14 +458,17 @@ impl From<&IrInterpolationBasis> for InterpolationBasis {
 /// Initial numeric values for one compatible glyph source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphSourceValues {
     pub source_id: SourceId,
-    pub values: GlyphValues,
+    #[cfg_attr(feature = "pack", pack(numbers))]
+    pub values: Vec<f64>,
 }
 
 /// Compatible glyph interpolation over a shared structural fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphInterpolation {
     pub basis: InterpolationBasis,
     pub sources: Vec<GlyphSourceValues>,
@@ -935,6 +477,7 @@ pub struct GlyphInterpolation {
 /// Compiled numeric variation for a passive imported glyph shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphVariation {
     pub basis: VariationBasis,
 }
@@ -958,6 +501,7 @@ impl From<&IrGlyphInterpolation> for GlyphInterpolation {
 /// Exact authored source shape not represented by compatible interpolation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphSourceShape {
     pub source_id: SourceId,
     pub shape: GlyphLayerShape,
@@ -966,6 +510,7 @@ pub struct GlyphSourceShape {
 /// One ordered, cycle-pruned component occurrence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct ComponentGlyph {
     pub parent_glyph_id: GlyphId,
     pub component_id: ComponentId,
@@ -991,6 +536,7 @@ impl From<&IrComponentGlyph> for ComponentGlyph {
 /// Ordered component relationships for one resolved root glyph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphComponents {
     pub root_glyph_id: GlyphId,
     pub components: Vec<ComponentGlyph>,
@@ -1008,6 +554,7 @@ impl From<&IrGlyphComponents> for GlyphComponents {
 /// Exact-source component relationships that differ from the default shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphSourceComponents {
     pub source_id: SourceId,
     pub components: GlyphComponents,
@@ -1025,6 +572,7 @@ impl From<&IrGlyphSourceComponents> for GlyphSourceComponents {
 /// Location-independent glyph payload evaluated synchronously by renderers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphProjection {
     pub glyph_id: GlyphId,
     pub fallback: GlyphLayerShape,
@@ -1068,6 +616,7 @@ impl From<&IrGlyphProjection> for GlyphProjection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphStructure {
     pub contours: Vec<ContourData>,
     pub anchors: Vec<AnchorData>,
@@ -1086,7 +635,9 @@ impl From<&GlyphLayer> for GlyphStructure {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct ContourData {
+    #[cfg_attr(feature = "pack", pack(id = "ContourId"))]
     pub id: String,
     pub points: Vec<PointData>,
     pub closed: bool,
@@ -1104,7 +655,9 @@ impl From<&IrContour> for ContourData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct PointData {
+    #[cfg_attr(feature = "pack", pack(id = "PointId"))]
     pub id: String,
     pub point_type: PointType,
     pub smooth: bool,
@@ -1126,6 +679,7 @@ impl From<&IrPoint> for PointData {
     clippy::enum_variant_names,
     reason = "the font-format names for point types"
 )]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum PointType {
     OnCurve,
     OffCurve,
@@ -1154,7 +708,9 @@ impl From<PointType> for IrPointType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct AnchorData {
+    #[cfg_attr(feature = "pack", pack(id = "AnchorId"))]
     pub id: String,
     pub name: Option<String>,
 }
@@ -1170,7 +726,9 @@ impl From<&IrAnchor> for AnchorData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct ComponentData {
+    #[cfg_attr(feature = "pack", pack(id = "ComponentId"))]
     pub id: String,
     pub base_glyph_id: GlyphId,
     pub base_glyph_name: GlyphName,
@@ -1192,6 +750,7 @@ impl From<&IrComponent> for ComponentData {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct GlyphChangedEntities {
     pub point_ids: Vec<PointId>,
     pub contour_ids: Vec<ContourId>,
@@ -1253,6 +812,7 @@ impl GlyphChangedEntities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct Location {
     pub values: HashMap<AxisId, f64>,
 }
@@ -1271,6 +831,7 @@ impl From<&IrLocation> for Location {
 /// Optional source-level numeric fields appended after authored metric rows.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum SourceMetricField {
     ItalicAngle,
     LineGap,
@@ -1281,8 +842,10 @@ pub enum SourceMetricField {
 /// Initial metric values for one authored source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SourceMetricValues {
     pub source_id: SourceId,
+    #[cfg_attr(feature = "pack", pack(numbers))]
     pub values: Vec<f64>,
 }
 
@@ -1294,6 +857,7 @@ pub struct SourceMetricValues {
 /// interpolation never invents values for a sparse optional field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SourceMetricsInterpolationSnapshot {
     pub metric_ids: Vec<MetricId>,
     pub technical_fields: Vec<SourceMetricField>,
@@ -1339,6 +903,7 @@ impl From<IrSourceMetricField> for SourceMetricField {
 /// edge, `Second` its left edge.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum KerningPosition {
     First,
     Second,
@@ -1353,43 +918,14 @@ impl From<IrKerningPosition> for KerningPosition {
     }
 }
 
-/// Whether a kerning pair side names one glyph or a group.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum KerningSideKind {
-    Glyph,
-    Group,
-}
-
-/// One side of a kerning pair: `id` is a glyph id or a group id, by `kind`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KerningSide {
-    pub kind: KerningSideKind,
-    pub id: String,
-}
-
-impl From<&IrKerningSide> for KerningSide {
-    fn from(side: &IrKerningSide) -> Self {
-        match side {
-            IrKerningSide::Glyph(glyph_id) => Self {
-                kind: KerningSideKind::Glyph,
-                id: glyph_id.to_string(),
-            },
-            IrKerningSide::Group(group_id) => Self {
-                kind: KerningSideKind::Group,
-                id: group_id.to_string(),
-            },
-        }
-    }
-}
-
 /// One kerning group and its members in authored order.
 ///
 /// Pairs reference the group by `id`; `name` is its label, unique at its position.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct KerningGroup {
+    #[cfg_attr(feature = "pack", pack(id = "KerningGroupId"))]
     pub id: String,
     pub position: KerningPosition,
     pub name: String,
@@ -1399,15 +935,17 @@ pub struct KerningGroup {
 /// One authored pair and its adjustment in font units.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct KerningPairValue {
-    pub first: KerningSide,
-    pub second: KerningSide,
+    pub first: shift_font::KerningSide,
+    pub second: shift_font::KerningSide,
     pub amount: f64,
 }
 
 /// The pairs one source authors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SourceKerningPairs {
     pub source_id: SourceId,
     pub pairs: Vec<KerningPairValue>,
@@ -1420,6 +958,7 @@ pub struct SourceKerningPairs {
 /// glyphs or sources that are not in the font; they never resolve.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct KerningSnapshot {
     pub groups: Vec<KerningGroup>,
     pub sources: Vec<SourceKerningPairs>,
@@ -1449,8 +988,8 @@ impl From<&IrFont> for KerningSnapshot {
                 pairs: pairs
                     .pairs()
                     .map(|(pair, amount)| KerningPairValue {
-                        first: (&pair.first).into(),
-                        second: (&pair.second).into(),
+                        first: pair.first.clone(),
+                        second: pair.second.clone(),
                         amount,
                     })
                     .collect(),

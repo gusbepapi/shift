@@ -12,11 +12,15 @@ import {
   mintContourId,
   mintGlyphId,
   mintLayerId,
+  mintNodeId,
   ascending,
   mintPointId,
+  mintRunId,
+  mintTextItemId,
   type FontIntent,
   type GlyphId,
   type GlyphName,
+  type GlyphRecord,
   type LayerId,
   type PointType,
   type SourceId,
@@ -24,21 +28,76 @@ import {
 } from "@shift/types";
 import {
   FontStoreLocation,
-  type ByteStreamControl,
-  type ByteStreamMessage,
-  type ShellCallMap,
-  type ShellEventMap,
+  type PersistedChange,
   type SlugAtlasOrigin,
-  type SyncCallMap,
-  type SyncEventMap,
   type WorkspaceDocumentState,
-  type WorkspaceSnapshot,
+  type WorkspaceShell,
+  type StoredWorkspaceSnapshot,
+  type WorkspaceSync,
+} from "../../shared/workspace/lanes";
+import type {
+  ByteStreamControl,
+  ByteStreamMessage,
+  ShellEventMap,
+  ShellPortCallMap,
+  SyncEventMap,
+  SyncStreamCallMap,
 } from "../../shared/workspace/protocol";
-import { loadEngine, type EngineEdit, type EngineSession } from "@shift/editor/model";
-import { engineLayerSource } from "../../renderer/src/lib/engine/engineLayerSource";
+import { client } from "../../shared/workspace/remote";
+import { Axis, loadEngine, type EngineEdit, type EngineSession } from "@shift/editor/model";
+import { engineStoreRequest } from "../../renderer/src/lib/engine/engineStoreRequest";
+import { indexKeys } from "@shift/wasm";
+import { storeReader } from "@shift/wasm/store-reader";
+import type { SceneIntent, SceneNode } from "@shift/wasm/protocol";
 import { WorkspaceHost } from "./WorkspaceHost";
 
-type ShellChannel = Channel<ShellCallMap, ShellEventMap>;
+/** The shell lane as main holds it: the interface, plus its channel for events and `connect`. */
+type ShellChannel = WorkspaceShell & {
+  readonly channel: Channel<ShellPortCallMap, ShellEventMap>;
+};
+
+/** The sync lane as a window holds it: the interface, plus its channel for events and streams. */
+type SyncChannel = WorkspaceSync & {
+  readonly channel: Channel<SyncStreamCallMap, SyncEventMap>;
+};
+
+/** The scene two pages with runs leave: the new document's page, then Proofs and Specimen. */
+const TWO_PAGES = { "Page 1": "", Proofs: "A", Specimen: "B" };
+
+/** Each page's name with the characters of the runs on it, in order. */
+function describeScene(nodes: readonly SceneNode[]): Record<string, string> {
+  const pages = new Map<string, string>();
+  const names = new Map<string, string>();
+  for (const node of nodes) {
+    if (node.content.kind === "page") {
+      names.set(node.id, node.content.name);
+      pages.set(node.content.name, "");
+      continue;
+    }
+    const page = node.parentId ? names.get(node.parentId) : undefined;
+    if (node.content.kind !== "textRun" || page === undefined) continue;
+    const text = node.content.items
+      .map((item) => (item.kind === "character" ? String.fromCodePoint(item.codepoint) : ""))
+      .join("");
+    pages.set(page, (pages.get(page) ?? "") + text);
+  }
+  return Object.fromEntries(pages);
+}
+
+function shellChannel(transport: Transport): ShellChannel {
+  const channel = new Channel<ShellPortCallMap, ShellEventMap>(transport);
+  return withChannel(client<WorkspaceShell, ShellPortCallMap, ShellEventMap>(channel), channel);
+}
+
+function syncChannel(transport: Transport): SyncChannel {
+  const channel = new Channel<SyncStreamCallMap, SyncEventMap>(transport);
+  return withChannel(client<WorkspaceSync, SyncStreamCallMap, SyncEventMap>(channel), channel);
+}
+
+/** `remote`'s methods, with `channel` as an own property in front of them. */
+function withChannel<T extends object, C>(remote: T, channel: C): T & { readonly channel: C } {
+  return Object.assign(Object.create(remote) as T, { channel });
+}
 
 const retainedFontPath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -87,8 +146,6 @@ function createGlyphALayer(sourceId: SourceId): {
     intents: [createGlyphA(glyphId), createGlyphLayer(glyphId, sourceId, layerId)],
   };
 }
-type SyncChannel = Channel<SyncCallMap, SyncEventMap>;
-type WorkspacePersisted = SyncCallMap["workspace.persist"]["response"];
 
 /** The engine a test's window holds over one lane's store, and the reader it loads through. */
 interface HeldEngine {
@@ -115,9 +172,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   async function connectSyncLane(targetShell: ShellChannel = shell): Promise<SyncChannel> {
     const lane = new MessageChannel();
-    await targetShell.call("workspace.connect", undefined, [lane.port1]);
+    await targetShell.channel.call("connect", undefined, [lane.port1]);
 
-    const sync: SyncChannel = new Channel(nodePortTransport(lane.port2));
+    const sync = syncChannel(nodePortTransport(lane.port2));
     channels.push(sync);
     return sync;
   }
@@ -127,7 +184,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     sync: SyncChannel;
   }> {
     const lane = new MessageChannel();
-    const additionalShell: ShellChannel = new Channel(nodePortTransport(lane.port1));
+    const additionalShell = shellChannel(nodePortTransport(lane.port1));
     channels.push(additionalShell);
     startHost(nodePortTransport(lane.port2));
     return { shell: additionalShell, sync: await connectSyncLane(additionalShell) };
@@ -138,22 +195,136 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
    * use, and again when the store moves, with its own undo history.
    */
   async function engineFor(sync: SyncChannel): Promise<EngineSession> {
-    const location = await sync.call("workspace.storeLocation", undefined);
+    const location = await sync.storeLocation();
     if (!location) throw new Error("the workspace has no store to edit");
     const held = engines.get(sync);
     if (held && FontStoreLocation.equals(held.location, location)) return held.session;
     if (held) disposeEngine(held);
 
-    const directory = await sync.call("workspace.directory", undefined);
+    const directory = await sync.directory();
     if (!directory) throw new Error("the workspace has no directory to edit");
     const reader = layerReaders.open(location);
     const { EngineSession } = await loadEngine();
     const session = EngineSession.open(
       directory,
-      engineLayerSource(layerReaders, () => reader),
+      engineStoreRequest(layerReaders, () => reader),
+      storedSceneNodes(reader),
     );
     engines.set(sync, { session, reader, location });
     return session;
+  }
+
+  /** The open font's first master, as the window's engine reads it; the store's snapshot has no sources. */
+  async function defaultSourceId(sync: SyncChannel): Promise<SourceId> {
+    const [source] = (await engineFor(sync)).fontRecords().sources;
+    if (!source) throw new Error("the workspace has no source");
+    return source.id;
+  }
+
+  /**
+   * The glyph records `sync`'s store holds, as a window opening it now reads
+   * them: from an editing engine opened fresh over the store. The store's
+   * snapshot has no glyph records.
+   */
+  /** A page named `name` at the top of the scene, at `index`. */
+  function scenePage(name: string, index: string): SceneNode {
+    return {
+      id: mintNodeId(),
+      index,
+      x: 0,
+      y: 0,
+      sizing: { width: { kind: "hug" }, height: { kind: "hug" } },
+      placement: "absolute",
+      content: { kind: "page", name },
+    };
+  }
+
+  /** Places a text run on `page`, holding one typed character, its settings the engine's defaults. */
+  function sceneRun(page: SceneNode, character: string): SceneIntent {
+    return {
+      kind: "createRun",
+      createRun: {
+        id: mintNodeId(),
+        parentId: page.id,
+        index: indexKeys.between(null, null),
+        x: 10,
+        y: 20,
+        runId: mintRunId(),
+        size: 1000,
+        items: [{ kind: "character", id: mintTextItemId(), codepoint: character.codePointAt(0)! }],
+      },
+    };
+  }
+
+  /** The scene `reader`'s store holds, as a window's engine opens with it. */
+  function storedSceneNodes(reader: number): Uint8Array {
+    return storeReader((method, numbers, blobs) =>
+      layerReaders.request(reader, method, numbers, blobs),
+    ).sceneNodes();
+  }
+
+  /** Persists `intents` as one scene edit, as a window does after applying them in its engine. */
+  async function editScene(sync: SyncChannel, intents: SceneIntent[]): Promise<void> {
+    const engine = await engineFor(sync);
+    engine.beginEdit(null);
+    try {
+      engine.applyScene(intents);
+    } catch (error) {
+      engine.cancelEdit();
+      throw error;
+    }
+    const changeSet = engine.endEdit();
+    if (changeSet) await sync.persist(changeSet, "unsaved");
+  }
+
+  /** Two pages, Proofs and Specimen, each with a text run, added to the document's scene. */
+  async function addTwoPagesWithRuns(sync: SyncChannel): Promise<void> {
+    // After the document's own first page.
+    const proofsIndex = indexKeys.between(indexKeys.between(null, null), null);
+    const proofs = scenePage("Proofs", proofsIndex);
+    const specimen = scenePage("Specimen", indexKeys.between(proofsIndex, null));
+    await editScene(sync, [
+      { kind: "createNode", createNode: proofs },
+      { kind: "createNode", createNode: specimen },
+      sceneRun(proofs, "A"),
+      sceneRun(specimen, "B"),
+    ]);
+  }
+
+  /** The stored scene, each page's name with the characters of the runs on it, as a fresh window reads it. */
+  async function storedScene(sync: SyncChannel): Promise<Record<string, string>> {
+    const location = await sync.storeLocation();
+    const directory = await sync.directory();
+    if (!location || !directory) throw new Error("the workspace has no store to read");
+    const reader = layerReaders.open(location);
+    const { EngineSession } = await loadEngine();
+    const session = EngineSession.open(
+      directory,
+      engineStoreRequest(layerReaders, () => reader),
+      storedSceneNodes(reader),
+    );
+    try {
+      return describeScene(session.sceneNodes().map((revised) => revised.node));
+    } finally {
+      disposeEngine({ session, reader, location });
+    }
+  }
+
+  async function storedGlyphRecords(sync: SyncChannel): Promise<readonly GlyphRecord[]> {
+    const location = await sync.storeLocation();
+    const directory = await sync.directory();
+    if (!location || !directory) throw new Error("the workspace has no store to read");
+    const reader = layerReaders.open(location);
+    const { EngineSession } = await loadEngine();
+    const session = EngineSession.open(
+      directory,
+      engineStoreRequest(layerReaders, () => reader),
+    );
+    try {
+      return session.fontRecords().glyphs;
+    } finally {
+      disposeEngine({ session, reader, location });
+    }
   }
 
   function disposeEngine(held: HeldEngine): void {
@@ -165,7 +336,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   async function applyWorkspace(
     sync: SyncChannel,
     request: { intents: FontIntent[]; label?: string },
-  ): Promise<WorkspacePersisted["applied"]> {
+  ): Promise<PersistedChange["applied"]> {
     const persisted = await editWorkspace(sync, request);
     return persisted?.applied ?? { layers: [], dependents: [] };
   }
@@ -174,14 +345,14 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   async function editWorkspace(
     sync: SyncChannel,
     { intents }: { intents: FontIntent[]; label?: string },
-  ): Promise<WorkspacePersisted | null> {
+  ): Promise<PersistedChange | null> {
     const changeSet = changeSetOf(await engineFor(sync), intents);
-    return changeSet ? sync.call("workspace.persist", { changeSet, saveState: "unsaved" }) : null;
+    return changeSet ? sync.persist(changeSet, "unsaved") : null;
   }
 
   /** The change set `intents` make in `engine`, as one edit. */
   function changeSetOf(engine: EngineSession, intents: FontIntent[]): Uint8Array | undefined {
-    engine.beginEdit();
+    engine.beginEdit(null);
     try {
       engine.apply(intents);
     } catch (error) {
@@ -191,22 +362,21 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     return engine.endEdit();
   }
 
-  async function undoWorkspace(sync: SyncChannel): Promise<WorkspacePersisted["applied"] | null> {
+  async function undoWorkspace(sync: SyncChannel): Promise<PersistedChange["applied"] | null> {
     return persistReplay(sync, (await engineFor(sync)).undo());
   }
 
-  async function redoWorkspace(sync: SyncChannel): Promise<WorkspacePersisted["applied"] | null> {
+  async function redoWorkspace(sync: SyncChannel): Promise<PersistedChange["applied"] | null> {
     return persistReplay(sync, (await engineFor(sync)).redo());
   }
 
   async function persistReplay(
     sync: SyncChannel,
     replayed: EngineEdit | undefined,
-  ): Promise<WorkspacePersisted["applied"] | null> {
+  ): Promise<PersistedChange["applied"] | null> {
     if (!replayed?.changeSet) return null;
     const saveState = replayed.matchesSaved ? "matchesSaved" : "unsaved";
-    return (await sync.call("workspace.persist", { changeSet: replayed.changeSet, saveState }))
-      .applied;
+    return (await sync.persist(replayed.changeSet, saveState)).applied;
   }
 
   async function streamSlugAtlas(
@@ -219,55 +389,50 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const chunks: Uint8Array[] = [];
     let receivedLength = 0;
     const complete = new Promise<number>((resolve, reject) => {
-      lane.port2.onmessage = (event: MessageEvent<ByteStreamMessage>) => {
-        switch (event.data.kind) {
+      lane.port2.on("message", (message: ByteStreamMessage) => {
+        switch (message.kind) {
           case "chunk":
-            if (event.data.offset !== receivedLength) {
-              reject(
-                new Error(`Slug chunk started at ${event.data.offset}, not ${receivedLength}`),
-              );
+            if (message.offset !== receivedLength) {
+              reject(new Error(`Slug chunk started at ${message.offset}, not ${receivedLength}`));
               lane.port2.close();
               return;
             }
-            if (event.data.bytes.byteLength > maximumLength) {
+            if (message.bytes.byteLength > maximumLength) {
               reject(new Error(`Slug chunk exceeded ${maximumLength} bytes`));
               lane.port2.close();
               return;
             }
-            chunks.push(event.data.bytes);
-            receivedLength += event.data.bytes.byteLength;
+            chunks.push(message.bytes);
+            receivedLength += message.bytes.byteLength;
             lane.port2.postMessage({
               kind: "ack",
               nextOffset: receivedLength,
             } satisfies ByteStreamControl);
             return;
           case "complete":
-            if (event.data.totalLength !== receivedLength) {
+            if (message.totalLength !== receivedLength) {
               reject(
-                new Error(
-                  `Slug stream completed at ${event.data.totalLength}, not ${receivedLength}`,
-                ),
+                new Error(`Slug stream completed at ${message.totalLength}, not ${receivedLength}`),
               );
               return;
             }
-            resolve(event.data.totalLength);
+            resolve(message.totalLength);
             return;
           case "error":
-            reject(new Error(event.data.message));
+            reject(new Error(message.message));
         }
-      };
+      });
     });
-    lane.port2.start();
     if (pageOrigin === "source") {
-      await sync.call("source.atlasPageStream", { generation, maximumLength }, [lane.port1]);
+      await sync.channel.call("streamSourceAtlasPage", { generation, maximumLength }, [lane.port1]);
     } else if (pageOrigin) {
-      await sync.call(
-        "workspace.slugAtlasPageStream",
+      await sync.channel.call(
+        "streamSlugAtlasPage",
         { generation, origin: pageOrigin, maximumLength },
         [lane.port1],
       );
     } else {
-      await sync.call("workspace.slugAtlasStream", { generation, maximumLength }, [lane.port1]);
+      await sync.channel.call("streamSlugAtlas", { generation, maximumLength }, [lane.port1]);
     }
     const totalLength = await complete;
     lane.port2.close();
@@ -295,9 +460,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   async function createWorkspace(
     sync: SyncChannel,
     targetShell: ShellChannel = shell,
-  ): Promise<WorkspaceSnapshot> {
-    const state = await targetShell.call("workspace.create", undefined);
-    const snapshot = await sync.call("workspace.snapshot", undefined);
+  ): Promise<StoredWorkspaceSnapshot> {
+    const state = await targetShell.create();
+    const snapshot = await sync.snapshot();
     if (!snapshot) throw new Error("workspace.create did not create a snapshot");
     expect(snapshot.workspaceId).toBe(state.workspaceId);
     return snapshot;
@@ -307,9 +472,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     sync: SyncChannel,
     targetShell: ShellChannel,
     sourcePath: string,
-  ): Promise<WorkspaceSnapshot> {
-    const state = await targetShell.call("workspace.open", { path: sourcePath });
-    const snapshot = await sync.call("workspace.snapshot", undefined);
+  ): Promise<StoredWorkspaceSnapshot> {
+    const state = await targetShell.open(sourcePath);
+    const snapshot = await sync.snapshot();
     if (!snapshot) throw new Error("workspace.open did not create a snapshot");
     expect(snapshot.workspaceId).toBe(state.workspaceId);
     return snapshot;
@@ -322,7 +487,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const { workspaceId } = await createWorkspace(sync);
     await applyWorkspace(sync, { intents: [createGlyphA()], label: "Add Glyph" });
     const documentPath = path.join(tmpRoot, fileName);
-    await sync.call("workspace.saveAs", { path: documentPath });
+    await sync.saveAs(documentPath);
     return { path: documentPath, workspaceId };
   }
 
@@ -335,8 +500,8 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   async function reopenedGlyphNames(documentPath: string): Promise<string[]> {
     const reopened = await startAdditionalHost();
-    const snapshot = await openWorkspace(reopened.sync, reopened.shell, documentPath);
-    return snapshot.glyphs.map((glyph) => glyph.name);
+    await openWorkspace(reopened.sync, reopened.shell, documentPath);
+    return (await storedGlyphRecords(reopened.sync)).map((glyph) => glyph.name);
   }
 
   function canonicalGlyphNames(documentPath: string): string[] {
@@ -345,10 +510,10 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
     fs.mkdirSync(path.dirname(recoveryPath), { recursive: true });
     try {
-      bridge.openDocument(documentPath, recoveryPath);
-      return bridge.getGlyphs().map((glyph) => glyph.name);
+      bridge.workspace.openDocument(documentPath, recoveryPath);
+      return bridge.workspace.getGlyphs().map((glyph) => glyph.name);
     } finally {
-      bridge.closeWorkspace();
+      bridge.workspace.closeWorkspace();
     }
   }
 
@@ -356,7 +521,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shift-workspace-host-"));
     const lane = new MessageChannel();
 
-    shell = new Channel(nodePortTransport(lane.port1));
+    shell = shellChannel(nodePortTransport(lane.port1));
     channels.push(shell);
     startHost(nodePortTransport(lane.port2));
   });
@@ -364,48 +529,52 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   afterEach(() => {
     for (const held of engines.values()) disposeEngine(held);
     engines.clear();
-    for (const channel of channels.splice(0)) channel.dispose();
+    for (const lane of channels.splice(0)) lane.channel.dispose();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
   it("opens a retained source without allocating document or cache storage", async () => {
-    const state = await shell.call("source.open", { path: retainedFontPath });
+    const state = await shell.openSource(retainedFontPath);
     const sync = await connectSyncLane();
-    const snapshot = await sync.call("source.snapshot", undefined);
+    const snapshot = await sync.sourceSnapshot();
 
     expect(state.canonicalPath).toBe(fs.realpathSync(retainedFontPath));
     expect(snapshot?.font.metadata.familyName).toBeTruthy();
     expect(snapshot?.font.glyphs.length).toBeGreaterThan(0);
-    expect(await sync.call("workspace.snapshot", undefined)).toBeNull();
-    expect(await sync.call("document.state", undefined)).toBeNull();
+    expect(await sync.snapshot()).toBeNull();
+    expect(await sync.documentState()).toBeNull();
     expect(fs.existsSync(path.join(tmpRoot, "workspaces"))).toBe(false);
     expect(fs.existsSync(path.join(tmpRoot, "atlas-cache"))).toBe(false);
   });
 
   it("has no layer store for a retained source", async () => {
-    await shell.call("source.open", { path: retainedFontPath });
+    await shell.openSource(retainedFontPath);
     const sync = await connectSyncLane();
 
-    expect(await sync.call("workspace.storeLocation", undefined)).toBeNull();
+    expect(await sync.storeLocation()).toBeNull();
   });
 
   it("points a window's layer reader at an untitled workspace's store", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const glyph = createGlyphALayer(snapshot.sources[0]!.id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const glyph = createGlyphALayer(sourceId);
     await applyWorkspace(sync, {
       intents: glyph.intents,
       label: "Add Glyph",
     });
 
-    const location = await sync.call("workspace.storeLocation", undefined);
+    const location = await sync.storeLocation();
     expect(location?.kind).toBe("working");
     const layers = layerReaderHost();
     const reader = layers.open(location!);
-    expect(new TextDecoder().decode(layers.load(reader, [glyph.layerId]))).toContain(glyph.layerId);
+    const store = storeReader((method, numbers, blobs) =>
+      layers.request(reader, method, numbers, blobs),
+    );
+    expect(new TextDecoder().decode(store.layers([glyph.layerId]))).toContain(glyph.layerId);
 
     layers.close(reader);
-    expect(() => layers.load(reader, [glyph.layerId])).toThrow(/no layer reader/);
+    expect(() => store.layers([glyph.layerId])).toThrow(/no layer reader/);
   });
 
   it("keeps the store Save As moves off until the window's reader follows", async () => {
@@ -413,63 +582,65 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const { workspaceId } = await createWorkspace(sync);
     const storePath = path.join(tmpRoot, "workspaces", workspaceId, "document.sqlite");
 
-    await sync.call("workspace.saveAs", { path: path.join(tmpRoot, "Moved.shift") });
+    await sync.saveAs(path.join(tmpRoot, "Moved.shift"));
     expect(fs.existsSync(storePath)).toBe(true);
 
-    await sync.call("workspace.releaseRetiredStores", undefined);
+    await sync.releaseRetiredStores();
     expect(fs.existsSync(storePath)).toBe(false);
   });
 
   it("points a window's layer reader at a document and its unsaved edits", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
     const documentPath = path.join(tmpRoot, "Reader.shift");
-    await sync.call("workspace.saveAs", { path: documentPath });
-    const unsaved = createGlyphALayer(snapshot.sources[0]!.id);
+    await sync.saveAs(documentPath);
+    const unsaved = createGlyphALayer(sourceId);
     await applyWorkspace(sync, {
       intents: unsaved.intents,
       label: "Add Glyph",
     });
 
-    const location = await sync.call("workspace.storeLocation", undefined);
+    const location = await sync.storeLocation();
     expect(location).toMatchObject({
       kind: "document",
       documentPath: fs.realpathSync(documentPath),
     });
     const layers = layerReaderHost();
     const reader = layers.open(location!);
-    expect(new TextDecoder().decode(layers.load(reader, [unsaved.layerId]))).toContain(
-      unsaved.layerId,
+    const store = storeReader((method, numbers, blobs) =>
+      layers.request(reader, method, numbers, blobs),
     );
+    expect(new TextDecoder().decode(store.layers([unsaved.layerId]))).toContain(unsaved.layerId);
   });
 
   it("reads selected retained glyph geometry without authored state", async () => {
-    await shell.call("source.open", { path: retainedFontPath });
+    await shell.openSource(retainedFontPath);
     const sync = await connectSyncLane();
-    const snapshot = await sync.call("source.snapshot", undefined);
+    const snapshot = await sync.sourceSnapshot();
     if (!snapshot) throw new Error("source.open did not create a snapshot");
     const glyphId = snapshot.font.glyphs.find((glyph) => glyph.name === "A")?.id;
     if (!glyphId) throw new Error("fixture has no A glyph");
 
-    const glyphs = await sync.call("source.glyph", { glyphId });
+    const glyphs = await sync.sourceGlyph(glyphId);
     const glyph = glyphs.find((candidate) => candidate.glyphId === glyphId);
 
     expect(glyph?.layers).toEqual([]);
     expect(glyph?.projection?.glyphId).toBe(glyphId);
     expect(glyph?.projection?.fallback.values.length).toBeGreaterThan(1);
-    expect(await sync.call("workspace.snapshot", undefined)).toBeNull();
+    expect(await sync.snapshot()).toBeNull();
   });
 
   it("streams every retained atlas page and evaluates its resident weights", async () => {
-    await shell.call("source.open", { path: retainedFontPath });
+    await shell.openSource(retainedFontPath);
     const sync = await connectSyncLane();
-    const snapshot = await sync.call("source.snapshot", undefined);
+    const snapshot = await sync.sourceSnapshot();
     if (!snapshot) throw new Error("source.open did not create a snapshot");
-    const coordinates = snapshot.font.axes.map((axis) => axis.default);
+    const coordinates = snapshot.font.axes.map((axis) => axis.kind.default);
     const pages = [];
 
     for (let start = 0, pageIndex = 0; start < snapshot.font.glyphs.length; start += 256) {
-      const page = await sync.call("source.atlasPagePrepare", {
+      const page = await sync.prepareSourceAtlasPage({
         pageIndex,
         glyphIds: snapshot.font.glyphs.slice(start, start + 256).map((glyph) => glyph.id),
         coordinates,
@@ -481,11 +652,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       pageIndex += 1;
     }
 
-    const weights = await sync.call("source.atlasWeights", { coordinates });
-    const maximumCoordinates = snapshot.font.axes.map((axis) => axis.maximum ?? axis.default);
-    const maximumWeights = await sync.call("source.atlasWeights", {
-      coordinates: maximumCoordinates,
-    });
+    const weights = await sync.sourceAtlasWeights(coordinates);
+    const maximumCoordinates = snapshot.font.axes.map((axis) => new Axis(axis).maximum);
+    const maximumWeights = await sync.sourceAtlasWeights(maximumCoordinates);
     expect(weights.map((page) => page.pageIndex)).toEqual(pages.map((page) => page.pageIndex));
     expect(weights.map((page) => page.weights)).toEqual(pages.map((page) => page.weights));
     expect(maximumWeights).not.toEqual(weights);
@@ -494,23 +663,20 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   });
 
   it("drops retained catch-up state when the source closes", async () => {
-    await shell.call("source.open", { path: retainedFontPath });
+    await shell.openSource(retainedFontPath);
     const sync = await connectSyncLane();
 
-    expect(await sync.call("source.snapshot", undefined)).not.toBeNull();
-    expect(await shell.call("source.close", undefined)).toBeNull();
-    expect(await sync.call("source.snapshot", undefined)).toBeNull();
+    expect(await sync.sourceSnapshot()).not.toBeNull();
+    expect(await shell.closeSource()).toBeNull();
+    expect(await sync.sourceSnapshot()).toBeNull();
   });
 
   it("creates a canonical document atomically from a foreign source", async () => {
     const documentPath = path.join(tmpRoot, "Converted.shift");
 
-    const state = await shell.call("workspace.createFromSource", {
-      sourcePath: convertibleFontPath,
-      documentPath,
-    });
+    const state = await shell.createFromSource(convertibleFontPath, documentPath);
     const sync = await connectSyncLane();
-    const snapshot = await sync.call("workspace.snapshot", undefined);
+    const snapshot = await sync.snapshot();
 
     expect(state).toMatchObject({
       sourceKind: "document",
@@ -521,29 +687,28 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       needsSaveAs: false,
     });
     expect(snapshot?.workspaceId).toBe(state.workspaceId);
-    expect(snapshot?.glyphs.length).toBeGreaterThan(0);
+    const glyphs = await storedGlyphRecords(sync);
+    expect(glyphs.length).toBeGreaterThan(0);
     expect(canonicalGlyphNames(documentPath)).toEqual(
-      expect.arrayContaining(snapshot?.glyphs.map((glyph) => glyph.name) ?? []),
+      expect.arrayContaining(glyphs.map((glyph) => glyph.name)),
     );
   });
 
   it("keeps a preview's glyph ids when the source becomes a document", async () => {
-    await shell.call("source.open", { path: convertibleFontPath });
+    await shell.openSource(convertibleFontPath);
     const previewSync = await connectSyncLane();
-    const preview = await previewSync.call("source.snapshot", undefined);
-    await shell.call("source.close", undefined);
+    const preview = await previewSync.sourceSnapshot();
+    await shell.closeSource();
 
-    await shell.call("workspace.createFromSource", {
-      sourcePath: convertibleFontPath,
-      documentPath: path.join(tmpRoot, "Converted.shift"),
-    });
+    await shell.createFromSource(convertibleFontPath, path.join(tmpRoot, "Converted.shift"));
     const documentSync = await connectSyncLane();
-    const document = await documentSync.call("workspace.snapshot", undefined);
+    await documentSync.snapshot();
+    const document = await storedGlyphRecords(documentSync);
 
     const idsByName = (glyphs: readonly { name: string; id: string }[] = []) =>
       Object.fromEntries(glyphs.map((glyph) => [glyph.name, glyph.id]));
     expect(preview?.font.glyphs.length).toBeGreaterThan(0);
-    expect(idsByName(document?.glyphs)).toEqual(idsByName(preview?.font.glyphs));
+    expect(idsByName(document)).toEqual(idsByName(preview?.font.glyphs));
   });
 
   it("replaces an occupied destination during conversion", async () => {
@@ -551,10 +716,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const previousDestination = Buffer.from("replace me");
     fs.writeFileSync(occupiedPath, previousDestination);
 
-    const state = await shell.call("workspace.createFromSource", {
-      sourcePath: convertibleFontPath,
-      documentPath: occupiedPath,
-    });
+    const state = await shell.createFromSource(convertibleFontPath, occupiedPath);
 
     expect(state).toMatchObject({ saveTarget: occupiedPath, needsSaveAs: false, dirty: false });
     expect(fs.readFileSync(occupiedPath)).not.toEqual(previousDestination);
@@ -566,32 +728,28 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     fs.writeFileSync(blockedParent, "blocked");
 
     await expect(
-      shell.call("workspace.createFromSource", {
-        sourcePath: convertibleFontPath,
-        documentPath: path.join(blockedParent, "Converted.shift"),
-      }),
+      shell.createFromSource(convertibleFontPath, path.join(blockedParent, "Converted.shift")),
     ).rejects.toThrow();
 
-    await expect(shell.call("document.state", undefined)).resolves.toBeNull();
+    await expect(shell.documentState()).resolves.toBeNull();
     const workspacesRoot = path.join(tmpRoot, "workspaces");
     expect(fs.existsSync(workspacesRoot) ? fs.readdirSync(workspacesRoot) : []).toEqual([]);
 
     const retryPath = path.join(tmpRoot, "Retried.shift");
-    await expect(
-      shell.call("workspace.createFromSource", {
-        sourcePath: convertibleFontPath,
-        documentPath: retryPath,
-      }),
-    ).resolves.toMatchObject({ saveTarget: retryPath, needsSaveAs: false });
+    await expect(shell.createFromSource(convertibleFontPath, retryPath)).resolves.toMatchObject({
+      saveTarget: retryPath,
+      needsSaveAs: false,
+    });
   });
 
   it("streams one authored Slug generation through bounded native chunks", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const glyph = createGlyphALayer(snapshot.sources[0]!.id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const glyph = createGlyphALayer(sourceId);
     await applyWorkspace(sync, { intents: glyph.intents });
 
-    const atlas = await sync.call("workspace.slugAtlasPrepare", { alignment: 256 });
+    const atlas = await sync.prepareSlugAtlas(256);
     const bytes = await streamSlugAtlas(sync, atlas.generation, 64);
 
     expect(bytes.byteLength).toBe(atlas.layout.totalLength);
@@ -601,15 +759,16 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   it("streams requested roots through one validated cached artifact", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const first = createGlyphALayer(snapshot.sources[0]!.id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const first = createGlyphALayer(sourceId);
     const secondGlyphId = mintGlyphId();
     const secondLayerId = mintLayerId();
     await applyWorkspace(sync, {
       intents: [
         ...first.intents,
         createGlyph("B" as GlyphName, 66 as Unicode, secondGlyphId),
-        createGlyphLayer(secondGlyphId, snapshot.sources[0]!.id, secondLayerId),
+        createGlyphLayer(secondGlyphId, sourceId, secondLayerId),
       ],
     });
 
@@ -620,12 +779,12 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       pageCount: 1,
       replacementPageIndices: [0],
     };
-    const page = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const page = await sync.prepareSlugAtlasPage(request);
     const bytes = await streamSlugAtlas(sync, page.generation, 64, page.origin);
-    const cached = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const cached = await sync.prepareSlugAtlasPage(request);
     const cachedBytes = await streamSlugAtlas(sync, cached.generation, 64, cached.origin);
     corruptAtlasCacheIndex();
-    const retained = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const retained = await sync.prepareSlugAtlasPage(request);
     const retainedBytes = await streamSlugAtlas(sync, retained.generation, 64, retained.origin);
 
     expect(page.origin).toBe("native");
@@ -638,22 +797,20 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     await applyWorkspace(sync, {
       intents: [{ kind: "setXAdvance", setXAdvance: { layerId: secondLayerId, width: 700 } }],
     });
-    const changed = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const changed = await sync.prepareSlugAtlasPage(request);
     expect(changed.origin).toBe("native");
-    await sync.call("workspace.slugAtlasPageDiscard", {
-      generation: changed.generation,
-      origin: changed.origin,
-    });
-    await shell.call("workspace.close", { discard: true });
+    await sync.discardSlugAtlasPage(changed.generation, changed.origin);
+    await shell.close(true);
   });
 
   it("reuses saved document atlas bytes after a fresh workspace allocation", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const glyph = createGlyphALayer(snapshot.sources[0]!.id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const glyph = createGlyphALayer(sourceId);
     await applyWorkspace(sync, { intents: glyph.intents });
     const documentPath = path.join(tmpRoot, "Cached.shift");
-    const saved = await sync.call("workspace.saveAs", { path: documentPath });
+    const saved = await sync.saveAs(documentPath);
     const request = {
       glyphIds: [glyph.glyphId],
       alignment: 256,
@@ -661,12 +818,12 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       pageCount: 1,
       replacementPageIndices: [0],
     };
-    const page = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const page = await sync.prepareSlugAtlasPage(request);
     const bytes = await streamSlugAtlas(sync, page.generation, 64, page.origin);
 
-    await shell.call("workspace.close", { discard: false });
-    const reopened = await shell.call("workspace.open", { path: documentPath });
-    const cached = await sync.call("workspace.slugAtlasPagePrepare", request);
+    await shell.close(false);
+    const reopened = await shell.open(documentPath);
+    const cached = await sync.prepareSlugAtlasPage(request);
     const cachedBytes = await streamSlugAtlas(sync, cached.generation, 64, cached.origin);
 
     expect(page.origin).toBe("native");
@@ -678,13 +835,10 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     await applyWorkspace(sync, {
       intents: [{ kind: "setXAdvance", setXAdvance: { layerId: glyph.layerId, width: 700 } }],
     });
-    const changed = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const changed = await sync.prepareSlugAtlasPage(request);
     expect(changed.origin).toBe("native");
-    await sync.call("workspace.slugAtlasPageDiscard", {
-      generation: changed.generation,
-      origin: changed.origin,
-    });
-    await shell.call("workspace.close", { discard: true });
+    await sync.discardSlugAtlasPage(changed.generation, changed.origin);
+    await shell.close(true);
   });
 
   it("keeps unbound atlas artifacts isolated by workspace allocation", async () => {
@@ -692,8 +846,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const glyphId = mintGlyphId();
     const layerId = mintLayerId();
     const first = await createWorkspace(sync);
+    const firstSourceId = await defaultSourceId(sync);
     await applyWorkspace(sync, {
-      intents: [createGlyphA(glyphId), createGlyphLayer(glyphId, first.sources[0]!.id, layerId)],
+      intents: [createGlyphA(glyphId), createGlyphLayer(glyphId, firstSourceId, layerId)],
     });
     const request = {
       glyphIds: [glyphId],
@@ -702,37 +857,36 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       pageCount: 1,
       replacementPageIndices: [0],
     };
-    const page = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const page = await sync.prepareSlugAtlasPage(request);
     await streamSlugAtlas(sync, page.generation, 64, page.origin);
-    await shell.call("workspace.close", { discard: true });
+    await shell.close(true);
 
     const second = await createWorkspace(sync);
+    const secondSourceId = await defaultSourceId(sync);
     await applyWorkspace(sync, {
-      intents: [createGlyphA(glyphId), createGlyphLayer(glyphId, second.sources[0]!.id, layerId)],
+      intents: [createGlyphA(glyphId), createGlyphLayer(glyphId, secondSourceId, layerId)],
     });
-    const isolated = await sync.call("workspace.slugAtlasPagePrepare", request);
+    const isolated = await sync.prepareSlugAtlasPage(request);
 
     expect(second.workspaceId).not.toBe(first.workspaceId);
     expect(page.origin).toBe("native");
     expect(isolated.origin).toBe("native");
-    await sync.call("workspace.slugAtlasPageDiscard", {
-      generation: isolated.generation,
-      origin: isolated.origin,
-    });
-    await shell.call("workspace.close", { discard: true });
+    await sync.discardSlugAtlasPage(isolated.generation, isolated.origin);
+    await shell.close(true);
   });
 
   it("publishes cached pages after retrying one page before the build completes", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const first = createGlyphALayer(snapshot.sources[0]!.id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const first = createGlyphALayer(sourceId);
     const secondGlyphId = mintGlyphId();
     const secondLayerId = mintLayerId();
     await applyWorkspace(sync, {
       intents: [
         ...first.intents,
         createGlyph("B" as GlyphName, 66 as Unicode, secondGlyphId),
-        createGlyphLayer(secondGlyphId, snapshot.sources[0]!.id, secondLayerId),
+        createGlyphLayer(secondGlyphId, sourceId, secondLayerId),
       ],
     });
 
@@ -748,18 +902,18 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       glyphIds: [secondGlyphId],
       pageIndex: 1,
     };
-    const firstPage = await sync.call("workspace.slugAtlasPagePrepare", firstRequest);
+    const firstPage = await sync.prepareSlugAtlasPage(firstRequest);
     await streamSlugAtlas(sync, firstPage.generation, 64, firstPage.origin);
-    const retriedPage = await sync.call("workspace.slugAtlasPagePrepare", firstRequest);
+    const retriedPage = await sync.prepareSlugAtlasPage(firstRequest);
     const retriedBytes = await streamSlugAtlas(
       sync,
       retriedPage.generation,
       64,
       retriedPage.origin,
     );
-    const secondPage = await sync.call("workspace.slugAtlasPagePrepare", secondRequest);
+    const secondPage = await sync.prepareSlugAtlasPage(secondRequest);
     await streamSlugAtlas(sync, secondPage.generation, 64, secondPage.origin);
-    const cachedPage = await sync.call("workspace.slugAtlasPagePrepare", firstRequest);
+    const cachedPage = await sync.prepareSlugAtlasPage(firstRequest);
     const cachedBytes = await streamSlugAtlas(sync, cachedPage.generation, 64, cachedPage.origin);
 
     expect(firstPage.origin).toBe("native");
@@ -768,52 +922,52 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(cachedPage.origin).toBe("cached");
     expect(cachedBytes).toEqual(retriedBytes);
 
-    await shell.call("workspace.close", { discard: true });
+    await shell.close(true);
   });
 
   it("cancels native Slug production when the renderer rejects a chunk", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
     await applyWorkspace(sync, {
-      intents: createGlyphALayer(snapshot.sources[0]!.id).intents,
+      intents: createGlyphALayer(sourceId).intents,
     });
-    const atlas = await sync.call("workspace.slugAtlasPrepare", { alignment: 256 });
+    const atlas = await sync.prepareSlugAtlas(256);
     const lane = new MessageChannel();
-    lane.port2.onmessage = (event: MessageEvent<ByteStreamMessage>) => {
-      if (event.data.kind !== "chunk") return;
+    lane.port2.on("message", (message: ByteStreamMessage) => {
+      if (message.kind !== "chunk") return;
       lane.port2.postMessage({ kind: "cancel", message: "GPU upload rejected" });
-    };
-    lane.port2.start();
+    });
 
     await expect(
-      sync.call("workspace.slugAtlasStream", { generation: atlas.generation, maximumLength: 64 }, [
+      sync.channel.call("streamSlugAtlas", { generation: atlas.generation, maximumLength: 64 }, [
         lane.port1,
       ]),
     ).rejects.toThrow("GPU upload rejected");
     lane.port2.close();
 
-    await expect(
-      sync.call("workspace.slugAtlasPrepare", { alignment: 256 }),
-    ).resolves.toMatchObject({ generation: atlas.generation + 1 });
+    await expect(sync.prepareSlugAtlas(256)).resolves.toMatchObject({
+      generation: atlas.generation + 1,
+    });
   });
 
   it("invalidates a prepared Slug generation after an authored edit", async () => {
     const sync = await connectSyncLane();
     await createWorkspace(sync);
-    const stale = await sync.call("workspace.slugAtlasPrepare", { alignment: 256 });
+    const stale = await sync.prepareSlugAtlas(256);
     const glyphId = mintGlyphId();
     await applyWorkspace(sync, { intents: [createGlyphA(glyphId)] });
     const rejectedLane = new MessageChannel();
     rejectedLane.port2.onmessage = () => undefined;
 
     await expect(
-      sync.call("workspace.slugAtlasStream", { generation: stale.generation, maximumLength: 64 }, [
+      sync.channel.call("streamSlugAtlas", { generation: stale.generation, maximumLength: 64 }, [
         rejectedLane.port1,
       ]),
     ).rejects.toThrow(`unknown Slug atlas generation ${stale.generation}`);
     rejectedLane.port2.close();
 
-    const current = await sync.call("workspace.slugAtlasPrepare", { alignment: 256 });
+    const current = await sync.prepareSlugAtlas(256);
     await expect(streamSlugAtlas(sync, current.generation, 64)).resolves.toHaveLength(
       current.layout.totalLength,
     );
@@ -822,9 +976,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   it("emits ready after start", async () => {
     const lane = new MessageChannel();
-    const client: ShellChannel = new Channel(nodePortTransport(lane.port1));
-    channels.push(client);
-    const ready = new Promise<void>((resolve) => client.listen("ready", resolve));
+    const main = shellChannel(nodePortTransport(lane.port1));
+    channels.push(main);
+    const ready = new Promise<void>((resolve) => main.channel.listen("ready", resolve));
 
     startHost(nodePortTransport(lane.port2));
 
@@ -845,8 +999,8 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(fs.existsSync(storePath)).toBe(true);
   });
 
-  it("rejects workspace.connect without a transferred port", async () => {
-    await expect(shell.call("workspace.connect", undefined)).rejects.toThrow(
+  it("rejects connect without a transferred port", async () => {
+    await expect(shell.channel.call("connect", undefined)).rejects.toThrow(
       "requires a transferred sync-lane port",
     );
   });
@@ -854,15 +1008,15 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   it("returns a null snapshot before any workspace exists", async () => {
     const sync = await connectSyncLane();
 
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toBeNull();
+    await expect(sync.snapshot()).resolves.toBeNull();
   });
 
   it("returns null document state before any workspace exists", async () => {
-    await expect(shell.call("document.state", undefined)).resolves.toBeNull();
+    await expect(shell.documentState()).resolves.toBeNull();
   });
 
   it("creates an untitled workspace from the shell lane", async () => {
-    const state = await shell.call("workspace.create", undefined);
+    const state = await shell.create();
 
     expect(state).toMatchObject({
       sourceKind: "untitled",
@@ -872,10 +1026,8 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     });
 
     const sync = await connectSyncLane();
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toMatchObject({
-      workspaceId: state.workspaceId,
-      glyphs: [],
-    });
+    await expect(sync.snapshot()).resolves.toMatchObject({ workspaceId: state.workspaceId });
+    await expect(storedGlyphRecords(sync)).resolves.toEqual([]);
   });
 
   it("creates an untitled workspace and returns it as the next state", async () => {
@@ -884,10 +1036,11 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const snapshot = await createWorkspace(sync);
 
     expect(snapshot.workspaceId).toMatch(/^[0-9a-f]{8}-[0-9a-f-]{27}$/);
-    expect(snapshot.glyphs).toEqual([]);
+    await expect(storedGlyphRecords(sync)).resolves.toEqual([]);
     expect(snapshot.metrics.unitsPerEm).toBe(1000);
-    expect(snapshot.sources.length).toBeGreaterThan(0);
-    expect(snapshot.axes).toEqual([]);
+    const records = (await engineFor(sync)).fontRecords();
+    expect(records.sources.length).toBeGreaterThan(0);
+    expect(records.axes).toEqual([]);
   });
 
   it("writes the SQLite store under the workspace root", async () => {
@@ -899,11 +1052,11 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(fs.existsSync(storePath)).toBe(true);
   });
 
-  it("workspace.snapshot returns the created workspace", async () => {
+  it("snapshot returns the created workspace", async () => {
     const sync = await connectSyncLane();
     const created = await createWorkspace(sync);
 
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toEqual(created);
+    await expect(sync.snapshot()).resolves.toEqual(created);
   });
 
   it("opens a canonical document through a sparse recovery workspace", async () => {
@@ -911,8 +1064,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const saved = await saveDocumentWithGlyphA(source, "OpenMe.shift");
     const restarted = await startAdditionalHost();
 
-    const state = await restarted.shell.call("workspace.open", { path: saved.path });
-    const snapshot = await restarted.sync.call("workspace.snapshot", undefined);
+    const state = await restarted.shell.open(saved.path);
+    await restarted.sync.snapshot();
+    const glyphs = await storedGlyphRecords(restarted.sync);
 
     expect(state).toMatchObject({
       sourceKind: "document",
@@ -921,7 +1075,51 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       dirty: false,
       needsSaveAs: false,
     });
-    expect(snapshot?.glyphs.map((glyph) => glyph.name)).toEqual(["A"]);
+    expect(glyphs.map((glyph) => glyph.name)).toEqual(["A"]);
+  });
+
+  it("recovers an unsaved scene, two pages with their runs, on the next document open", async () => {
+    const source = await connectSyncLane();
+    const saved = await saveDocumentWithGlyphA(source, "Scene.shift");
+    await addTwoPagesWithRuns(source);
+
+    // The first host is never closed, as when the app is killed.
+    const restarted = await startAdditionalHost();
+    await openWorkspace(restarted.sync, restarted.shell, saved.path);
+
+    await expect(storedScene(restarted.sync)).resolves.toEqual(TWO_PAGES);
+    await expect(restarted.shell.documentState()).resolves.toMatchObject({ dirty: true });
+  });
+
+  it("discards an unsaved scene with the rest of the unsaved edits", async () => {
+    const source = await connectSyncLane();
+    const saved = await saveDocumentWithGlyphA(source, "SceneDiscard.shift");
+    await addTwoPagesWithRuns(source);
+    const restarted = await startAdditionalHost();
+    await openWorkspace(restarted.sync, restarted.shell, saved.path);
+
+    await restarted.shell.close(true);
+    const reopened = await startAdditionalHost();
+    await openWorkspace(reopened.sync, reopened.shell, saved.path);
+
+    await expect(storedScene(reopened.sync)).resolves.toEqual({ "Page 1": "" });
+    await expect(reopened.shell.documentState()).resolves.toMatchObject({ dirty: false });
+  });
+
+  it("Save As writes the unsaved scene to the new document and leaves the old one as saved", async () => {
+    const source = await connectSyncLane();
+    const saved = await saveDocumentWithGlyphA(source, "SceneSource.shift");
+    await addTwoPagesWithRuns(source);
+    const destinationPath = path.join(tmpRoot, "SceneDestination.shift");
+
+    await source.saveAs(destinationPath);
+
+    const copy = await startAdditionalHost();
+    await openWorkspace(copy.sync, copy.shell, destinationPath);
+    await expect(storedScene(copy.sync)).resolves.toEqual(TWO_PAGES);
+    const original = await startAdditionalHost();
+    await openWorkspace(original.sync, original.shell, saved.path);
+    await expect(storedScene(original.sync)).resolves.toEqual({ "Page 1": "" });
   });
 
   it("recovers unsaved edits on the next document open", async () => {
@@ -934,12 +1132,15 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const opened = await openWorkspace(restarted.sync, restarted.shell, saved.path);
 
     expect(opened.workspaceId).toBe(saved.workspaceId);
-    expect(opened.glyphs.map((glyph) => glyph.name)).toEqual(["A", "B"]);
-    await expect(restarted.shell.call("document.state", undefined)).resolves.toMatchObject({
+    expect((await storedGlyphRecords(restarted.sync)).map((glyph) => glyph.name)).toEqual([
+      "A",
+      "B",
+    ]);
+    await expect(restarted.shell.documentState()).resolves.toMatchObject({
       sourceKind: "document",
       dirty: true,
     });
-    await restarted.sync.call("workspace.save", undefined);
+    await restarted.sync.save();
     expect(canonicalGlyphNames(saved.path)).toEqual(["A", "B"]);
   });
 
@@ -949,7 +1150,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     fs.writeFileSync(path.join(orphanPath, "recovery.sqlite-wal"), "orphan");
     const restarted = await startAdditionalHost();
 
-    await restarted.shell.call("workspace.listRecoveries", undefined);
+    await restarted.shell.listRecoveries();
 
     expect(fs.existsSync(orphanPath)).toBe(false);
   });
@@ -960,14 +1161,13 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     await addGlyphB(sync);
 
     const restarted = await startAdditionalHost();
-    await expect(restarted.shell.call("workspace.listRecoveries", undefined)).resolves.toEqual([
+    await expect(restarted.shell.listRecoveries()).resolves.toEqual([
       { kind: "unsaved", state: "recoverable", workspaceId: created.workspaceId },
     ]);
 
-    const state = await restarted.shell.call("workspace.resume", {
-      workspaceId: created.workspaceId,
-    });
-    const snapshot = await restarted.sync.call("workspace.snapshot", undefined);
+    const state = await restarted.shell.resume(created.workspaceId);
+    await restarted.sync.snapshot();
+    const glyphs = await storedGlyphRecords(restarted.sync);
 
     expect(state).toMatchObject({
       workspaceId: created.workspaceId,
@@ -975,7 +1175,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       dirty: true,
       needsSaveAs: true,
     });
-    expect(snapshot?.glyphs.map((glyph) => glyph.name)).toEqual(["B"]);
+    expect(glyphs.map((glyph) => glyph.name)).toEqual(["B"]);
   });
 
   it("discard removes recovered edits without changing the canonical document", async () => {
@@ -985,12 +1185,12 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const restarted = await startAdditionalHost();
     await openWorkspace(restarted.sync, restarted.shell, saved.path);
 
-    await restarted.shell.call("workspace.close", { discard: true });
+    await restarted.shell.close(true);
     const reopened = await startAdditionalHost();
-    const snapshot = await openWorkspace(reopened.sync, reopened.shell, saved.path);
+    await openWorkspace(reopened.sync, reopened.shell, saved.path);
 
-    expect(snapshot.glyphs.map((glyph) => glyph.name)).toEqual(["A"]);
-    await expect(reopened.shell.call("document.state", undefined)).resolves.toMatchObject({
+    expect((await storedGlyphRecords(reopened.sync)).map((glyph) => glyph.name)).toEqual(["A"]);
+    await expect(reopened.shell.documentState()).resolves.toMatchObject({
       dirty: false,
     });
   });
@@ -998,11 +1198,11 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
   it("Save As rebinds a recovered document without mutating its source", async () => {
     const source = await connectSyncLane();
     const saved = await saveDocumentWithGlyphA(source, "Source.shift");
-    const sourceState = await shell.call("document.state", undefined);
+    const sourceState = await shell.documentState();
     await addGlyphB(source);
     const destinationPath = path.join(tmpRoot, "Destination.shift");
 
-    const rebound = await source.call("workspace.saveAs", { path: destinationPath });
+    const rebound = await source.saveAs(destinationPath);
 
     expect(rebound.documentId).not.toBe(sourceState?.documentId);
     expect(rebound.canonicalPath).toBe(fs.realpathSync(destinationPath));
@@ -1015,16 +1215,14 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const sync = await connectSyncLane();
     const saved = await saveDocumentWithGlyphA(sync, "Bound.shift");
     await addGlyphB(sync);
-    const before = await shell.call("document.state", undefined);
+    const before = await shell.documentState();
     const blockedParent = path.join(tmpRoot, "not-a-directory");
     fs.writeFileSync(blockedParent, "blocked");
 
-    await expect(
-      sync.call("workspace.saveAs", { path: path.join(blockedParent, "Saved.shift") }),
-    ).rejects.toThrow();
-    await expect(shell.call("document.state", undefined)).resolves.toEqual(before);
+    await expect(sync.saveAs(path.join(blockedParent, "Saved.shift"))).rejects.toThrow();
+    await expect(shell.documentState()).resolves.toEqual(before);
     const retryPath = path.join(tmpRoot, "Retried.shift");
-    const retried = await sync.call("workspace.saveAs", { path: retryPath });
+    const retried = await sync.saveAs(retryPath);
     expect(retried).toMatchObject({
       workspaceId: saved.workspaceId,
       canonicalPath: fs.realpathSync(retryPath),
@@ -1035,13 +1233,13 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   it("emits utility-owned document state after create and apply", async () => {
     let latestState: WorkspaceDocumentState | null = null;
-    const unlisten = shell.listen("document.changed", (state) => {
+    const unlisten = shell.channel.listen("document.changed", (state) => {
       latestState = state;
     });
     const sync = await connectSyncLane();
 
     const created = await createWorkspace(sync);
-    await shell.call("document.state", undefined);
+    await shell.documentState();
     expect(latestState).toMatchObject({
       workspaceId: created.workspaceId,
       sourceKind: "untitled",
@@ -1058,7 +1256,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       dirty: true,
       needsSaveAs: true,
     });
-    await shell.call("document.state", undefined);
+    await shell.documentState();
     expect(latestState).toMatchObject({
       dirty: true,
       needsSaveAs: true,
@@ -1067,39 +1265,39 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     unlisten();
   });
 
-  it("workspace.close deletes a clean document and emits null state", async () => {
+  it("close deletes a clean document and emits null state", async () => {
     let latestState: WorkspaceDocumentState | null | undefined;
-    const unlisten = shell.listen("document.changed", (state) => {
+    const unlisten = shell.channel.listen("document.changed", (state) => {
       latestState = state;
     });
     const sync = await connectSyncLane();
     const created = await createWorkspace(sync);
     const storePath = path.join(tmpRoot, "workspaces", created.workspaceId, "document.sqlite");
 
-    await expect(shell.call("workspace.close", { discard: false })).resolves.toBeNull();
+    await expect(shell.close(false)).resolves.toBeNull();
 
     expect(latestState).toBeNull();
     expect(fs.existsSync(storePath)).toBe(false);
-    await expect(shell.call("document.state", undefined)).resolves.toBeNull();
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toBeNull();
+    await expect(shell.documentState()).resolves.toBeNull();
+    await expect(sync.snapshot()).resolves.toBeNull();
     unlisten();
   });
 
-  it("workspace.close requires discard for dirty documents", async () => {
+  it("close requires discard for dirty documents", async () => {
     const sync = await connectSyncLane();
     const created = await createWorkspace(sync);
     await applyWorkspace(sync, { intents: [createGlyphA()], label: "Add Glyph" });
     const storePath = path.join(tmpRoot, "workspaces", created.workspaceId, "document.sqlite");
 
-    await expect(shell.call("workspace.close", { discard: false })).rejects.toThrow(
+    await expect(shell.close(false)).rejects.toThrow(
       "cannot close a dirty workspace without discard",
     );
-    await expect(shell.call("document.state", undefined)).resolves.toMatchObject({
+    await expect(shell.documentState()).resolves.toMatchObject({
       workspaceId: created.workspaceId,
       dirty: true,
     });
 
-    await expect(shell.call("workspace.close", { discard: true })).resolves.toBeNull();
+    await expect(shell.close(true)).resolves.toBeNull();
     expect(fs.existsSync(storePath)).toBe(false);
   });
 
@@ -1109,7 +1307,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
     const second = await connectSyncLane();
 
-    await expect(second.call("workspace.snapshot", undefined)).resolves.toEqual(created);
+    await expect(second.snapshot()).resolves.toEqual(created);
   });
 
   it("apply createGlyph echoes identity records without layers", async () => {
@@ -1125,30 +1323,29 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(applied.next?.glyphChanges?.updated[0]?.layers).toEqual([]);
     expect(applied.layers).toEqual([]);
 
-    const snapshot = await sync.call("workspace.snapshot", undefined);
-    expect(snapshot?.glyphs.map((glyph) => glyph.name)).toEqual(["A"]);
-    expect(snapshot?.glyphs[0]?.layers).toEqual([]);
+    const glyphs = await storedGlyphRecords(sync);
+    expect(glyphs.map((glyph) => glyph.name)).toEqual(["A"]);
+    expect(glyphs[0]?.layers).toEqual([]);
   });
 
   it("apply createGlyphLayer echoes sparse membership and a structural layer", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { layerId, intents } = createGlyphALayer(sourceId);
 
     const applied = await applyWorkspace(sync, {
       intents,
       label: "Add Glyph Layer",
     });
 
-    expect(applied.next?.glyphChanges?.updated[0]?.layers).toEqual([
-      { id: layerId, sourceId: snapshot.sources[0].id },
-    ]);
+    expect(applied.next?.glyphChanges?.updated[0]?.layers).toEqual([{ id: layerId, sourceId }]);
     expect(applied.layers).toHaveLength(1);
     expect(applied.layers[0].layerId).toBe(layerId);
     expect(applied.layers[0].structure).toBeDefined();
   });
 
-  it("workspace.save reports NeedsSaveAs for untitled workspaces", async () => {
+  it("save reports NeedsSaveAs for untitled workspaces", async () => {
     const sync = await connectSyncLane();
     await createWorkspace(sync);
     await applyWorkspace(sync, {
@@ -1156,17 +1353,15 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       label: "Add Glyph",
     });
 
-    await expect(sync.call("workspace.save", undefined)).rejects.toThrow(
-      "workspace needs a save path",
-    );
+    await expect(sync.save()).rejects.toThrow("workspace needs a save path");
 
-    await expect(shell.call("document.state", undefined)).resolves.toMatchObject({
+    await expect(shell.documentState()).resolves.toMatchObject({
       dirty: true,
       needsSaveAs: true,
     });
   });
 
-  it("workspace.saveAs writes a native document and clears dirty for later saves", async () => {
+  it("saveAs writes a native document and clears dirty for later saves", async () => {
     const sync = await connectSyncLane();
     await createWorkspace(sync);
     await applyWorkspace(sync, {
@@ -1175,7 +1370,7 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     });
 
     const savePath = path.join(tmpRoot, "SavedFont.shift");
-    const saved = await sync.call("workspace.saveAs", { path: savePath });
+    const saved = await sync.saveAs(savePath);
 
     expect(saved).toMatchObject({
       sourceKind: "document",
@@ -1199,11 +1394,11 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       ],
       label: "Add Glyph",
     });
-    await expect(shell.call("document.state", undefined)).resolves.toMatchObject({
+    await expect(shell.documentState()).resolves.toMatchObject({
       dirty: true,
     });
 
-    await expect(sync.call("workspace.save", undefined)).resolves.toMatchObject({
+    await expect(sync.save()).resolves.toMatchObject({
       dirty: false,
       needsSaveAs: false,
     });
@@ -1220,12 +1415,12 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     // raced ahead, the doc would read dirty once the persist landed.
     const changeSet = changeSetOf(await engineFor(sync), [createGlyphA()]);
     if (!changeSet) throw new Error("creating a glyph changes the font");
-    const persist = sync.call("workspace.persist", { changeSet, saveState: "unsaved" });
-    const saved = await sync.call("workspace.saveAs", { path: savePath });
+    const persist = sync.persist(changeSet, "unsaved");
+    const saved = await sync.saveAs(savePath);
     await persist;
 
     expect(saved).toMatchObject({ dirty: false, needsSaveAs: false });
-    await expect(shell.call("document.state", undefined)).resolves.toMatchObject({
+    await expect(shell.documentState()).resolves.toMatchObject({
       dirty: false,
     });
   });
@@ -1242,25 +1437,24 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     if (!glyphId) throw new Error("createGlyph must echo the record id");
 
     const undone = await undoWorkspace(sync);
-    expect(undone?.next?.glyphChanges).toEqual({ updated: [], removed: [glyphId] });
+    expect(undone?.next?.glyphChanges).toEqual({ updated: [], removed: [glyphId], order: null });
     expect(undone?.layers).toEqual([]);
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toMatchObject({
-      glyphs: [],
-    });
+    await expect(storedGlyphRecords(sync)).resolves.toEqual([]);
 
     const redone = await redoWorkspace(sync);
     expect(redone?.next?.glyphChanges?.updated.map((glyph) => glyph.name)).toEqual(["A"]);
     expect(redone?.next?.glyphChanges?.updated[0]?.layers).toEqual([]);
     expect(redone?.layers).toEqual([]);
-    await expect(sync.call("workspace.snapshot", undefined)).resolves.toMatchObject({
-      glyphs: [{ id: glyphId, name: "A", layers: [] }],
-    });
+    await expect(storedGlyphRecords(sync)).resolves.toMatchObject([
+      { id: glyphId, name: "A", layers: [] },
+    ]);
   });
 
   it("apply setXAdvance echoes values without structure or records", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { layerId, intents } = createGlyphALayer(sourceId);
     const created = await applyWorkspace(sync, {
       intents,
     });
@@ -1270,9 +1464,9 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
       intents: [{ kind: "setXAdvance", setXAdvance: { layerId, width: 642 } }],
     });
 
-    expect(applied.next).toBeUndefined();
+    expect(applied.next).toBeNull();
     expect(applied.layers[0].layerId).toBe(layerId);
-    expect(applied.layers[0].structure).toBeUndefined();
+    expect(applied.layers[0].structure).toBeNull();
     expect(applied.layers[0].values[0]).toBe(642);
   });
 
@@ -1280,18 +1474,16 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     const sync = await connectSyncLane();
     await createWorkspace(sync);
 
-    await expect(
-      sync.call("workspace.persist", {
-        changeSet: new Uint8Array([1, 2, 3]),
-        saveState: "unsaved",
-      }),
-    ).rejects.toThrow("cannot decode");
+    await expect(sync.persist(new Uint8Array([1, 2, 3]), "unsaved")).rejects.toThrow(
+      "cannot decode",
+    );
   });
 
   it("pen intents apply atomically with client-minted ids through the channel", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { glyphId, layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { glyphId, layerId, intents } = createGlyphALayer(sourceId);
     const created = await applyWorkspace(sync, {
       intents,
     });
@@ -1327,57 +1519,27 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(structure?.contours[0].points.map((point) => point.id)).toEqual([p1, p2]);
     // Drawing changes no glyph record (its layers and component bases stay the
     // same), so the echo does not resend the directory.
-    expect(applied.next?.glyphChanges).toBeUndefined();
+    expect(applied.next?.glyphChanges ?? null).toBeNull();
     expect(created.next?.glyphChanges?.updated).toEqual([
       {
         id: glyphId,
         name: "A",
         unicodes: [65],
-        layers: [{ id: layerId, sourceId: snapshot.sources[0].id }],
+        layers: [{ id: layerId, sourceId }],
         componentBaseGlyphIds: [],
+        mark: false,
+        nonspacingMark: false,
+        ligature: null,
       },
     ]);
     expect(applied.dependents).toEqual([]);
   });
 
-  it("workspace.layerMatch transports complete entity mappings", async () => {
-    const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
-    const contourId = mintContourId();
-    const pointId = mintPointId();
-    await applyWorkspace(sync, {
-      intents: [
-        ...intents,
-        { kind: "addContour", addContour: { layerId, contourId, closed: false } },
-        {
-          kind: "addPoints",
-          addPoints: {
-            layerId,
-            contourId,
-            points: [
-              { id: pointId, x: 10, y: 20, pointType: "onCurve" as PointType, smooth: false },
-            ],
-          },
-        },
-      ],
-    });
-
-    const layerMatch = await sync.call("workspace.layerMatch", {
-      referenceLayerId: layerId,
-      targetLayerId: layerId,
-    });
-
-    expect(layerMatch.complete).toBe(true);
-    expect(layerMatch.contours).toEqual([{ referenceId: contourId, targetId: contourId }]);
-    expect(layerMatch.points).toEqual([{ referenceId: pointId, targetId: pointId }]);
-    expect(layerMatch.differences).toEqual([]);
-  });
-
   it("undo and redo replay ledger entries through the channel", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { layerId, intents } = createGlyphALayer(sourceId);
     const created = await applyWorkspace(sync, {
       intents,
     });
@@ -1409,15 +1571,16 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
 
   it("discarding redo prevents replay without changing document state", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    await applyWorkspace(sync, createGlyphALayer(snapshot.sources[0].id));
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    await applyWorkspace(sync, createGlyphALayer(sourceId));
     await undoWorkspace(sync);
-    const before = await sync.call("document.state", undefined);
+    const before = await sync.documentState();
 
     (await engineFor(sync)).discardRedo();
 
     await expect(redoWorkspace(sync)).resolves.toBeNull();
-    await expect(sync.call("document.state", undefined)).resolves.toEqual(before);
+    await expect(sync.documentState()).resolves.toEqual(before);
   });
 
   it("undo on an empty ledger answers null", async () => {
@@ -1428,23 +1591,20 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     await expect(redoWorkspace(sync)).resolves.toBeNull();
   });
 
-  it("workspace.glyphSnapshots pulls bounded source snapshots by stable glyph id", async () => {
+  it("glyphSnapshots pulls bounded source snapshots by stable glyph id", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { layerId, intents } = createGlyphALayer(sourceId);
     const created = await applyWorkspace(sync, {
       intents,
     });
-    expect(created.next?.glyphChanges?.updated[0]?.layers).toEqual([
-      { id: layerId, sourceId: snapshot.sources[0].id },
-    ]);
+    expect(created.next?.glyphChanges?.updated[0]?.layers).toEqual([{ id: layerId, sourceId }]);
 
     const glyphId = created.next?.glyphChanges?.updated[0]?.id;
     if (!glyphId) throw new Error("createGlyph did not echo glyph id");
 
-    const snapshots = await sync.call("workspace.glyphSnapshots", {
-      requests: [{ glyphId }],
-    });
+    const snapshots = await sync.glyphSnapshots([{ glyphId }]);
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].glyphId).toBe(glyphId);
     expect(snapshots[0].layers).toHaveLength(1);
@@ -1452,17 +1612,14 @@ describe("WorkspaceHost serves the workspace over transferred ports", () => {
     expect(snapshots[0].layers[0].state.structure.contours).toEqual([]);
 
     const missing = mintGlyphId();
-    await expect(
-      sync.call("workspace.glyphSnapshots", {
-        requests: [{ glyphId: missing }],
-      }),
-    ).resolves.toEqual([]);
+    await expect(sync.glyphSnapshots([{ glyphId: missing }])).resolves.toEqual([]);
   });
 
   it("CS0 skeleton: measures the apply round trip through the full stack", async () => {
     const sync = await connectSyncLane();
-    const snapshot = await createWorkspace(sync);
-    const { layerId, intents } = createGlyphALayer(snapshot.sources[0].id);
+    await createWorkspace(sync);
+    const sourceId = await defaultSourceId(sync);
+    const { layerId, intents } = createGlyphALayer(sourceId);
     const created = await applyWorkspace(sync, {
       intents,
     });

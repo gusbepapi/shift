@@ -1,7 +1,8 @@
 import type { ShiftHost } from "@shared/host/ShiftHost";
-import type { CommandId } from "@shared/commands";
 import type { AppConfigState } from "@shared/config/config";
-import type { GlyphId, GlyphName } from "@shift/types";
+import type { EngineStorelessRecords, GlyphId, GlyphName } from "@shift/types";
+import { loadEngine } from "@shift/editor/model";
+import { storeReader } from "@shift/wasm/store-reader";
 import type { FontSession } from "@/types/fontSession";
 
 /** One layer read through the preload's layer store, as the window reads the open document. */
@@ -9,8 +10,19 @@ export interface PreloadLayerRead {
   readonly kind: string;
   readonly layerId: string;
   readonly bytes: string;
-  readonly closure: readonly string[];
+  /** The glyphs the glyph's components use, transitively, not the glyph itself. */
+  readonly bases: readonly string[];
   readonly glyphId: GlyphId;
+}
+
+/** One glyph of a source file, read through the preload's source reader as an engine reads it. */
+export interface PreloadSourceGlyphRead {
+  /** The names of the glyphs its components use, directly, from the engine's records, sorted. */
+  readonly componentNames: readonly string[];
+  /** The names of the glyphs its components use, transitively, from the reader, sorted. */
+  readonly baseNames: readonly string[];
+  /** Each of its layers' ids, and the layer read alone, its bytes decoded as text. */
+  readonly layers: readonly { readonly id: string; readonly bytes: string }[];
 }
 
 /**
@@ -29,9 +41,23 @@ export class SessionHooks {
     this.#host = host;
   }
 
-  /** Runs `command` in this window as its menu item does. */
-  runCommand(command: CommandId): Promise<void> {
-    return this.#host.commands.run(command);
+  /**
+   * The axes, master sources and kerning of the font directory `directory`
+   * (base64 of a native workspace's `encodedDirectory`), as an engine opened
+   * over it reads them: how a spec reads a document's records outside the
+   * window's own session. Only reads run, so the engine loads no layer.
+   */
+  async fontRecordsOf(directory: string): Promise<EngineStorelessRecords> {
+    const { EngineSession } = await loadEngine();
+    const bytes = Uint8Array.from(atob(directory), (character) => character.charCodeAt(0));
+    const session = EngineSession.open(bytes, () => {
+      throw new Error("a font-record read loads no layers");
+    });
+    try {
+      return session.storelessRecords();
+    } finally {
+      session.dispose();
+    }
   }
 
   /** Whether the authored workspace has published its loaded font; false without a workspace. */
@@ -73,7 +99,7 @@ export class SessionHooks {
 
   /**
    * Reads the first glyph that has a layer through the preload's layer store API: the store's
-   * kind, that layer's id, its decoded bytes, the glyph's component closure, and its id.
+   * kind, that layer's id, its decoded bytes, the glyphs its components use, and its id.
    */
   async firstLayerThroughPreload(): Promise<PreloadLayerRead> {
     const workspace = this.#session.workspace;
@@ -85,15 +111,51 @@ export class SessionHooks {
 
     const layers = this.#host.layers;
     const reader = layers.open(location);
+    const store = storeReader((method, numbers, blobs) =>
+      layers.request(reader, method, numbers, blobs),
+    );
     try {
       return {
         kind: location.kind,
         layerId,
-        bytes: new TextDecoder().decode(layers.load(reader, [layerId])),
-        closure: layers.componentClosure(reader, [record.id]),
+        bytes: new TextDecoder().decode(store.layers([layerId])),
+        bases: store.basesOf([record.id]),
         glyphId: record.id,
       };
     } finally {
+      layers.close(reader);
+    }
+  }
+
+  /**
+   * Opens the source file at `path` through the preload's source reader, opens an engine over
+   * its directory reading through that reader, and reads the glyph named `name`: its records
+   * from the engine, and its bases and layers from the reader, each in one synchronous call.
+   */
+  async sourceGlyphThroughPreload(path: string, name: string): Promise<PreloadSourceGlyphRead> {
+    const { EngineSession } = await loadEngine();
+    const layers = this.#host.layers;
+    const reader = layers.openSource(path);
+    const request = (method: number, numbers: Float64Array, blobs: readonly Uint8Array[]) =>
+      layers.request(reader, method, numbers, blobs);
+    const session = EngineSession.open(layers.sourceDirectory(reader), request);
+    try {
+      const records = session.fontRecords().glyphs;
+      const names = new Map(records.map((record) => [record.id, record.name]));
+      const nameOf = (id: GlyphId): string => names.get(id) ?? id;
+      const record = records.find((glyph) => glyph.name === name);
+      if (!record) throw new Error(`the source has a glyph named ${name}`);
+      const store = storeReader(request);
+      return {
+        componentNames: record.componentBaseGlyphIds.map(nameOf).toSorted(),
+        baseNames: store.basesOf([record.id]).map(nameOf).toSorted(),
+        layers: record.layers.map(({ id }) => ({
+          id,
+          bytes: new TextDecoder().decode(store.layers([id])),
+        })),
+      };
+    } finally {
+      session.dispose();
       layers.close(reader);
     }
   }
@@ -155,11 +217,6 @@ export class SessionHooks {
   async openGlyph(glyphId: GlyphId): Promise<void> {
     await this.#session.font.loadGlyph(glyphId);
     window.location.hash = `#/editor/${encodeURIComponent(glyphId)}`;
-  }
-
-  /** Waits until the sources being edited have their layers matched to the active one. */
-  editingLayersMatched(): Promise<void> {
-    return this.#session.editor.editingLayersMatched();
   }
 
   /**

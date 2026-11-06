@@ -30,7 +30,9 @@ export const AxesPanel = () => {
           <AxisActionsMenu
             axis={axis}
             onEdit={() => settings.open({ category: "axes", axisId: axis.id })}
-            onReset={() => setExternalLocation(withExternalAxisValue(location, axis, axis.default))}
+            onReset={() =>
+              setExternalLocation(withExternalAxisValue(location, axis, axis.kind.default))
+            }
             onDelete={() => session.font.deleteAxis(axis.id)}
           />
         ) : (
@@ -58,12 +60,12 @@ const AxisActionsMenu = ({ axis, onEdit, onReset, onDelete }: AxisActionsMenuPro
       </MenuTrigger>
     </Tooltip>
     <MenuPortal>
-      <MenuPositioner sideOffset={4} align="end">
+      <MenuPositioner sideOffset={4} align="start">
         <MenuPopup>
           <MenuItem onClick={onEdit}>Edit</MenuItem>
           <MenuItem onClick={onReset}>Reset</MenuItem>
           <MenuSeparator />
-          <MenuItem onClick={onDelete}>Delete axis</MenuItem>
+          <MenuItem onClick={onDelete}>Delete</MenuItem>
         </MenuPopup>
       </MenuPositioner>
     </MenuPortal>

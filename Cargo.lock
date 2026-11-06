@@ -904,6 +904,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fractional_index"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce01fad85c73f947e62a39152c7b0f785af7f44859da36e421c42a3023bcbe3a"
+
+[[package]]
 name = "futures"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1093,8 +1099,7 @@ dependencies = [
 [[package]]
 name = "harfrust"
 version = "0.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "948d0741125ba89cd3e1c23e5642415b6ade7e1d29d67ba25fb925b533e989d6"
+source = "git+https://github.com/shift-editor/harfrust?rev=b90075ae7ad1903405852216ddd3a64123ba1673#b90075ae7ad1903405852216ddd3a64123ba1673"
 dependencies = [
  "bitflags 2.9.1",
  "bytemuck",
@@ -1798,6 +1803,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
+name = "pack"
+version = "0.0.0"
+dependencies = [
+ "pack-derive",
+]
+
+[[package]]
+name = "pack-derive"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.104",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2355,17 +2377,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_derive_internals"
-version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2415,8 +2426,6 @@ dependencies = [
 name = "shift-backends"
 version = "0.1.0"
 dependencies = [
- "fea-rs",
- "fontbe",
  "fontc",
  "fontdrasil",
  "fontir",
@@ -2431,9 +2440,9 @@ dependencies = [
  "rayon",
  "serde",
  "shift-font",
- "shift-shape",
  "shift-slug",
  "shift-store",
+ "shift-text",
  "skrifa",
  "tempfile",
  "thiserror",
@@ -2447,9 +2456,11 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "pack",
  "rmp-serde",
  "shift-backends",
  "shift-config",
+ "shift-engine",
  "shift-font",
  "shift-slug",
  "shift-specimen",
@@ -2496,8 +2507,13 @@ dependencies = [
 name = "shift-engine"
 version = "0.1.0"
 dependencies = [
+ "pack",
  "proptest",
+ "rmp-serde",
+ "serde",
  "shift-font",
+ "shift-layout",
+ "shift-text",
  "thiserror",
 ]
 
@@ -2507,6 +2523,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "fontdrasil",
+ "fractional_index",
  "getrandom 0.3.3",
  "icu_properties",
  "imbl",
@@ -2514,6 +2531,8 @@ dependencies = [
  "kurbo",
  "libm",
  "linesweeper",
+ "pack",
+ "proptest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2522,17 +2541,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "shift-layout"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "pack",
+ "serde",
+ "shift-font",
+ "shift-text",
+ "taffy",
+ "thiserror",
+]
+
+[[package]]
 name = "shift-proof"
 version = "0.1.0"
 dependencies = [
- "harfrust",
  "png",
  "serde",
+ "shift-text",
  "skrifa",
  "thiserror",
  "tiny-skia",
- "unicode-bidi",
- "unicode-script",
 ]
 
 [[package]]
@@ -2542,16 +2572,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "shift-shape"
-version = "0.1.0"
-dependencies = [
- "harfrust",
- "thiserror",
- "unicode-linebreak",
- "unicode-script",
 ]
 
 [[package]]
@@ -2574,6 +2594,7 @@ dependencies = [
  "shift-proof",
  "skrifa",
  "unicode-script",
+ "write-fonts",
 ]
 
 [[package]]
@@ -2587,10 +2608,33 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "shift-engine",
  "shift-font",
  "tempfile",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "shift-text"
+version = "0.1.0"
+dependencies = [
+ "fea-rs",
+ "fontbe",
+ "fontdrasil",
+ "fontir",
+ "harfrust",
+ "pack",
+ "read-fonts 0.43.3",
+ "serde",
+ "shift-backends",
+ "shift-font",
+ "thiserror",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
+ "write-fonts",
 ]
 
 [[package]]
@@ -2599,15 +2643,16 @@ version = "0.0.0"
 dependencies = [
  "fontir",
  "js-sys",
+ "pack",
  "rmp-serde",
  "serde",
  "serde-wasm-bindgen",
  "shift-engine",
  "shift-font",
- "shift-shape",
+ "shift-layout",
+ "shift-text",
  "shift-wire",
  "thiserror",
- "tsify",
  "wasm-bindgen",
 ]
 
@@ -2617,6 +2662,7 @@ version = "0.0.0"
 dependencies = [
  "napi",
  "napi-derive",
+ "pack",
  "serde",
  "serde_json",
  "shift-font",
@@ -2670,6 +2716,15 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
 
 [[package]]
 name = "smallvec"
@@ -2796,6 +2851,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.7",
+]
+
+[[package]]
+name = "taffy"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f7bd2d97198df05186f93a3a3c306845f40e8b3c22bf9279cdd7e5cf5fea7d"
+dependencies = [
+ "serde",
+ "slotmap",
 ]
 
 [[package]]
@@ -3066,30 +3131,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "tsify"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea3af6b48c5c5624f7eb3c2f578d1335fadac433321980cae0063e8eb0acaa44"
-dependencies = [
- "serde",
- "serde-wasm-bindgen",
- "tsify-macros",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "tsify-macros"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1e2e93369379d0a527c7d6632b58c55d52db7a106d8afbde3b354f3a57a9f1"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde_derive_internals",
- "syn 2.0.104",
 ]
 
 [[package]]

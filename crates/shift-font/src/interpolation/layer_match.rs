@@ -1,8 +1,11 @@
 //! Structural matches between ordered authored glyph layers.
 
 use std::collections::HashMap;
+use std::fmt;
 
-use crate::{AnchorId, ComponentId, ContourId, GlyphId, GlyphLayer, LayerId, PointId, PointType};
+use crate::{
+    AnchorId, ComponentId, ContourId, Font, GlyphId, GlyphLayer, LayerId, PointId, PointType,
+};
 
 /// One structural difference that prevents two glyph layers from sharing values.
 ///
@@ -52,6 +55,48 @@ pub enum LayerDifference {
         reference: Vec<GlyphId>,
         source: Vec<GlyphId>,
     },
+}
+
+/// Describes the difference for a person reading a check report, counting
+/// contours and points from one.
+impl fmt::Display for LayerDifference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContourCount { reference, source } => {
+                write!(f, "{source} contours instead of {reference}")
+            }
+            Self::ContourClosed {
+                contour, reference, ..
+            } => {
+                let state = if *reference { "open" } else { "closed" };
+                write!(f, "contour {} is {state}", contour + 1)
+            }
+            Self::PointCount {
+                contour,
+                reference,
+                source,
+            } => write!(
+                f,
+                "contour {} has {source} points instead of {reference}",
+                contour + 1
+            ),
+            Self::PointType { contour, point, .. } => write!(
+                f,
+                "point {} of contour {} is a different kind of point",
+                point + 1,
+                contour + 1
+            ),
+            Self::AnchorCount { reference, source } => {
+                write!(f, "{source} anchors instead of {reference}")
+            }
+            Self::AnchorSequence { .. } => {
+                f.write_str("the anchors are named or ordered differently")
+            }
+            Self::ComponentSequence { .. } => {
+                f.write_str("the components are different or in a different order")
+            }
+        }
+    }
 }
 
 /// Derived structural match from one reference layer to one target layer.
@@ -119,6 +164,120 @@ impl LayerMatch {
     pub fn into_differences(self) -> Vec<LayerDifference> {
         self.differences
     }
+
+    /// The target layer's ids for `points`, `anchors` and `components` of
+    /// the reference layer, each list in the order given; `None` when the
+    /// match is incomplete, so no edit reaches only part of the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CounterpartsError::UnknownPoint`],
+    /// [`CounterpartsError::UnknownAnchor`] or
+    /// [`CounterpartsError::UnknownComponent`] for an id the reference layer
+    /// lacks.
+    pub fn counterparts(
+        &self,
+        points: &[PointId],
+        anchors: &[AnchorId],
+        components: &[ComponentId],
+    ) -> Result<Option<Counterparts>, CounterpartsError> {
+        if !self.is_complete() {
+            return Ok(None);
+        }
+        Ok(Some(Counterparts {
+            points: counterparts_in(&self.points, points, |point| {
+                CounterpartsError::UnknownPoint { point }
+            })?,
+            anchors: counterparts_in(&self.anchors, anchors, |anchor| {
+                CounterpartsError::UnknownAnchor { anchor }
+            })?,
+            components: counterparts_in(&self.components, components, |component| {
+                CounterpartsError::UnknownComponent { component }
+            })?,
+        }))
+    }
+}
+
+impl Font {
+    /// `target`'s ids for `points`, `anchors` and `components` of
+    /// `reference`, two layers of one glyph, as [`GlyphLayer::match_with`]
+    /// pairs them ([`LayerMatch::counterparts`]); `None` when the layers
+    /// don't match completely.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CounterpartsError::UnknownLayer`] for a layer the font
+    /// lacks, [`CounterpartsError::DifferentGlyphs`] for layers of two
+    /// glyphs, and as [`LayerMatch::counterparts`] for an id `reference`
+    /// lacks.
+    pub fn counterparts(
+        &self,
+        reference: LayerId,
+        target: LayerId,
+        points: &[PointId],
+        anchors: &[AnchorId],
+        components: &[ComponentId],
+    ) -> Result<Option<Counterparts>, CounterpartsError> {
+        let owner = |layer| {
+            self.glyph_id_by_layer(layer)
+                .ok_or(CounterpartsError::UnknownLayer { layer })
+        };
+        if owner(reference)? != owner(target)? {
+            return Err(CounterpartsError::DifferentGlyphs { reference, target });
+        }
+        let layer = |layer| {
+            self.layer(layer)
+                .ok_or(CounterpartsError::UnknownLayer { layer })
+        };
+        layer(reference)?
+            .match_with(layer(target)?)
+            .counterparts(points, anchors, components)
+    }
+}
+
+/// One layer's points, anchors and components that correspond to another
+/// layer's, as [`LayerMatch::counterparts`] pairs them.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
+pub struct Counterparts {
+    pub points: Vec<PointId>,
+    pub anchors: Vec<AnchorId>,
+    pub components: Vec<ComponentId>,
+}
+
+/// Why [`Font::counterparts`] or [`LayerMatch::counterparts`] could not
+/// answer. Layers that don't match completely are an answer, `None`, not an
+/// error.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
+pub enum CounterpartsError {
+    /// The font has no layer `layer`.
+    #[error("the font has no layer {layer}")]
+    UnknownLayer { layer: LayerId },
+    /// The layers belong to different glyphs, whose entities never correspond.
+    #[error("layers {reference} and {target} belong to different glyphs")]
+    DifferentGlyphs { reference: LayerId, target: LayerId },
+    /// The reference layer has no point `point`.
+    #[error("the reference layer has no point {point}")]
+    UnknownPoint { point: PointId },
+    /// The reference layer has no anchor `anchor`.
+    #[error("the reference layer has no anchor {anchor}")]
+    UnknownAnchor { anchor: AnchorId },
+    /// The reference layer has no component `component`.
+    #[error("the reference layer has no component {component}")]
+    UnknownComponent { component: ComponentId },
+}
+
+/// The target id `matches` pairs with each of `ids`, or `missing`'s error
+/// for the first id with no pair.
+fn counterparts_in<Id: Clone + Eq + std::hash::Hash>(
+    matches: &HashMap<Id, Id>,
+    ids: &[Id],
+    missing: impl Fn(Id) -> CounterpartsError,
+) -> Result<Vec<Id>, CounterpartsError> {
+    ids.iter()
+        .map(|id| matches.get(id).cloned().ok_or_else(|| missing(id.clone())))
+        .collect()
 }
 
 impl GlyphLayer {
@@ -132,9 +291,9 @@ impl GlyphLayer {
     pub fn match_with(&self, target: &Self) -> LayerMatch {
         let mut differences = Vec::new();
 
-        compare_contours(self, target, &mut differences);
-        compare_anchors(self, target, &mut differences);
-        compare_components(self, target, &mut differences);
+        self.compare_contours(target, &mut differences);
+        self.compare_anchors(target, &mut differences);
+        self.compare_components(target, &mut differences);
 
         let mut layer_match = LayerMatch {
             reference_layer_id: self.id(),
@@ -150,6 +309,93 @@ impl GlyphLayer {
         }
 
         layer_match
+    }
+
+    /// Records contour count, closure, point count and point type
+    /// differences between this reference layer and `source`.
+    fn compare_contours(&self, source: &Self, differences: &mut Vec<LayerDifference>) {
+        if self.contours().len() != source.contours().len() {
+            differences.push(LayerDifference::ContourCount {
+                reference: self.contours().len(),
+                source: source.contours().len(),
+            });
+            return;
+        }
+
+        for (contour, (reference, source)) in
+            self.contours_iter().zip(source.contours_iter()).enumerate()
+        {
+            if reference.is_closed() != source.is_closed() {
+                differences.push(LayerDifference::ContourClosed {
+                    contour,
+                    reference: reference.is_closed(),
+                    source: source.is_closed(),
+                });
+            }
+
+            if reference.points().len() != source.points().len() {
+                differences.push(LayerDifference::PointCount {
+                    contour,
+                    reference: reference.points().len(),
+                    source: source.points().len(),
+                });
+                continue;
+            }
+
+            for (point, (reference, source)) in
+                reference.points().iter().zip(source.points()).enumerate()
+            {
+                if reference.point_type() == source.point_type() {
+                    continue;
+                }
+
+                differences.push(LayerDifference::PointType {
+                    contour,
+                    point,
+                    reference: reference.point_type(),
+                    source: source.point_type(),
+                });
+            }
+        }
+    }
+
+    /// Records anchor count and anchor name sequence differences.
+    fn compare_anchors(&self, source: &Self, differences: &mut Vec<LayerDifference>) {
+        if self.anchors().len() != source.anchors().len() {
+            differences.push(LayerDifference::AnchorCount {
+                reference: self.anchors().len(),
+                source: source.anchors().len(),
+            });
+            return;
+        }
+
+        if self.anchor_names().ne(source.anchor_names()) {
+            let owned_names = |layer: &Self| {
+                layer
+                    .anchor_names()
+                    .map(|name| name.map(ToOwned::to_owned))
+                    .collect()
+            };
+            differences.push(LayerDifference::AnchorSequence {
+                reference: owned_names(self),
+                source: owned_names(source),
+            });
+        }
+    }
+
+    /// Records a difference when the component base glyph sequence differs.
+    fn compare_components(&self, source: &Self, differences: &mut Vec<LayerDifference>) {
+        let sequence_differs = self.components().len() != source.components().len()
+            || self
+                .components_iter()
+                .zip(source.components_iter())
+                .any(|(reference, source)| reference.base_glyph_id() != source.base_glyph_id());
+        if sequence_differs {
+            differences.push(LayerDifference::ComponentSequence {
+                reference: self.component_glyph_ids().collect(),
+                source: source.component_glyph_ids().collect(),
+            });
+        }
     }
 }
 
@@ -177,103 +423,6 @@ impl LayerMatch {
         for (reference, target) in reference.components_iter().zip(target.components_iter()) {
             self.components.insert(reference.id(), target.id());
         }
-    }
-}
-
-fn compare_contours(
-    reference: &GlyphLayer,
-    source: &GlyphLayer,
-    differences: &mut Vec<LayerDifference>,
-) {
-    if reference.contours().len() != source.contours().len() {
-        differences.push(LayerDifference::ContourCount {
-            reference: reference.contours().len(),
-            source: source.contours().len(),
-        });
-        return;
-    }
-
-    for (contour, (reference, source)) in reference
-        .contours_iter()
-        .zip(source.contours_iter())
-        .enumerate()
-    {
-        if reference.is_closed() != source.is_closed() {
-            differences.push(LayerDifference::ContourClosed {
-                contour,
-                reference: reference.is_closed(),
-                source: source.is_closed(),
-            });
-        }
-
-        if reference.points().len() != source.points().len() {
-            differences.push(LayerDifference::PointCount {
-                contour,
-                reference: reference.points().len(),
-                source: source.points().len(),
-            });
-            continue;
-        }
-
-        for (point, (reference, source)) in
-            reference.points().iter().zip(source.points()).enumerate()
-        {
-            if reference.point_type() == source.point_type() {
-                continue;
-            }
-
-            differences.push(LayerDifference::PointType {
-                contour,
-                point,
-                reference: reference.point_type(),
-                source: source.point_type(),
-            });
-        }
-    }
-}
-
-fn compare_anchors(
-    reference: &GlyphLayer,
-    source: &GlyphLayer,
-    differences: &mut Vec<LayerDifference>,
-) {
-    if reference.anchors().len() != source.anchors().len() {
-        differences.push(LayerDifference::AnchorCount {
-            reference: reference.anchors().len(),
-            source: source.anchors().len(),
-        });
-        return;
-    }
-
-    if reference.anchor_names().ne(source.anchor_names()) {
-        let owned_names = |layer: &GlyphLayer| {
-            layer
-                .anchor_names()
-                .map(|name| name.map(ToOwned::to_owned))
-                .collect()
-        };
-        differences.push(LayerDifference::AnchorSequence {
-            reference: owned_names(reference),
-            source: owned_names(source),
-        });
-    }
-}
-
-fn compare_components(
-    reference: &GlyphLayer,
-    source: &GlyphLayer,
-    differences: &mut Vec<LayerDifference>,
-) {
-    let sequence_differs = reference.components().len() != source.components().len()
-        || reference
-            .components_iter()
-            .zip(source.components_iter())
-            .any(|(reference, source)| reference.base_glyph_id() != source.base_glyph_id());
-    if sequence_differs {
-        differences.push(LayerDifference::ComponentSequence {
-            reference: reference.component_glyph_ids().collect(),
-            source: source.component_glyph_ids().collect(),
-        });
     }
 }
 
@@ -509,6 +658,74 @@ mod tests {
                     source: Vec::new(),
                 },
             ]
+        );
+    }
+
+    /// The ids of `layer`'s first contour's points, in order.
+    fn point_ids(layer: &GlyphLayer) -> Vec<PointId> {
+        layer
+            .contours_iter()
+            .next()
+            .unwrap()
+            .points()
+            .iter()
+            .map(Point::id)
+            .collect()
+    }
+
+    #[test]
+    fn counterparts_name_the_target_entities_in_the_order_asked() {
+        let reference = layer();
+        let target = reference.clone_with_fresh_ids(
+            LayerId::from_raw("target-layer"),
+            SourceId::from_raw("other-source"),
+        );
+        let [first, _, last] = point_ids(&reference).try_into().unwrap();
+        let [target_first, _, target_last] = point_ids(&target).try_into().unwrap();
+        let components: Vec<ComponentId> = reference.components_iter().map(Component::id).collect();
+
+        let counterparts = reference.match_with(&target).counterparts(
+            &[last, first],
+            &[reference.anchors()[0].id()],
+            &[components[1].clone()],
+        );
+
+        assert_eq!(
+            counterparts,
+            Ok(Some(Counterparts {
+                points: vec![target_last, target_first],
+                anchors: vec![target.anchors()[0].id()],
+                components: vec![target.components_iter().nth(1).unwrap().id()],
+            }))
+        );
+    }
+
+    #[test]
+    fn counterparts_are_none_for_an_incomplete_match() {
+        let reference = layer();
+        let mut more_anchors = reference.clone();
+        more_anchors.add_anchor(Anchor::new(Some("bottom".to_string()), 50.0, 0.0));
+
+        assert_eq!(
+            reference
+                .match_with(&more_anchors)
+                .counterparts(&point_ids(&reference), &[], &[]),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn counterparts_name_an_id_the_reference_lacks() {
+        let reference = layer();
+        let point = PointId::new();
+
+        assert_eq!(
+            reference.match_with(&reference.clone()).counterparts(
+                std::slice::from_ref(&point),
+                &[],
+                &[]
+            ),
+            Err(CounterpartsError::UnknownPoint { point })
         );
     }
 }

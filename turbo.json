@@ -2,7 +2,7 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^generate:bridge-types", "^build"],
       "outputs": ["dist/**", "index.js", "index.d.ts", "*.node"],
       "inputs": ["src/**", "package.json", "tsconfig.json"]
     },
@@ -12,6 +12,7 @@
         "package.json",
         "Cargo.toml",
         "dts-header.d.ts",
+        "scripts/**",
         "$TURBO_ROOT$/Cargo.toml",
         "$TURBO_ROOT$/Cargo.lock",
         "$TURBO_ROOT$/rust-toolchain.toml",
@@ -19,7 +20,8 @@
         "$TURBO_ROOT$/crates/*/build.rs",
         "$TURBO_ROOT$/crates/*/src/**"
       ],
-      "outputs": ["index.js", "index.d.ts", "*.node"]
+      "outputs": ["index.js", "index.d.ts", "*.node"],
+      "env": ["SHIFT_RUST_TARGET"]
     },
     "shift-bridge#build:debug": {
       "inputs": [
@@ -27,6 +29,7 @@
         "package.json",
         "Cargo.toml",
         "dts-header.d.ts",
+        "scripts/**",
         "$TURBO_ROOT$/Cargo.toml",
         "$TURBO_ROOT$/Cargo.lock",
         "$TURBO_ROOT$/rust-toolchain.toml",
@@ -34,7 +37,8 @@
         "$TURBO_ROOT$/crates/*/build.rs",
         "$TURBO_ROOT$/crates/*/src/**"
       ],
-      "outputs": ["index.js", "index.d.ts", "*.node"]
+      "outputs": ["index.js", "index.d.ts", "*.node"],
+      "env": ["SHIFT_RUST_TARGET"]
     },
     "shift-bridge#build:e2e": {
       "inputs": [
@@ -42,6 +46,7 @@
         "package.json",
         "Cargo.toml",
         "dts-header.d.ts",
+        "scripts/**",
         "$TURBO_ROOT$/Cargo.toml",
         "$TURBO_ROOT$/Cargo.lock",
         "$TURBO_ROOT$/rust-toolchain.toml",
@@ -49,7 +54,8 @@
         "$TURBO_ROOT$/crates/*/build.rs",
         "$TURBO_ROOT$/crates/*/src/**"
       ],
-      "outputs": ["index.js", "index.d.ts", "*.node"]
+      "outputs": ["index.js", "index.d.ts", "*.node"],
+      "env": ["SHIFT_RUST_TARGET"]
     },
     "shift-bridge#types": {
       "inputs": [
@@ -63,9 +69,10 @@
         "$TURBO_ROOT$/crates/*/Cargo.toml",
         "$TURBO_ROOT$/crates/*/build.rs",
         "$TURBO_ROOT$/crates/*/src/**",
+        "$TURBO_ROOT$/packages/pack/src/**",
         "scripts/**"
       ],
-      "outputs": ["index.d.ts"]
+      "outputs": ["index.d.ts", "protocol.ts"]
     },
     "@shift/wasm#build": {
       "inputs": [
@@ -76,9 +83,10 @@
         "$TURBO_ROOT$/rust-toolchain.toml",
         "$TURBO_ROOT$/crates/*/Cargo.toml",
         "$TURBO_ROOT$/crates/*/build.rs",
-        "$TURBO_ROOT$/crates/*/src/**"
+        "$TURBO_ROOT$/crates/*/src/**",
+        "$TURBO_ROOT$/packages/pack/src/**"
       ],
-      "outputs": ["src/generated/**", "src/generated-shaping/**", "src/generated-engine/**"],
+      "outputs": ["src/generated/**", "src/generated-engine/**", "src/generated-protocol/**"],
       "env": ["SHIFT_WASM_OPT"]
     },
     "@shift/wasm#build:debug": {
@@ -90,9 +98,10 @@
         "$TURBO_ROOT$/rust-toolchain.toml",
         "$TURBO_ROOT$/crates/*/Cargo.toml",
         "$TURBO_ROOT$/crates/*/build.rs",
-        "$TURBO_ROOT$/crates/*/src/**"
+        "$TURBO_ROOT$/crates/*/src/**",
+        "$TURBO_ROOT$/packages/pack/src/**"
       ],
-      "outputs": ["src/generated/**", "src/generated-shaping/**", "src/generated-engine/**"],
+      "outputs": ["src/generated/**", "src/generated-engine/**", "src/generated-protocol/**"],
       "env": ["SHIFT_WASM_OPT"]
     },
     "@shift/wasm#build:e2e": {
@@ -104,23 +113,10 @@
         "$TURBO_ROOT$/rust-toolchain.toml",
         "$TURBO_ROOT$/crates/*/Cargo.toml",
         "$TURBO_ROOT$/crates/*/build.rs",
-        "$TURBO_ROOT$/crates/*/src/**"
+        "$TURBO_ROOT$/crates/*/src/**",
+        "$TURBO_ROOT$/packages/pack/src/**"
       ],
-      "outputs": ["src/generated/**", "src/generated-shaping/**", "src/generated-engine/**"],
-      "env": ["SHIFT_WASM_OPT"]
-    },
-    "@shift/wasm#build:reference": {
-      "inputs": [
-        "scripts/**",
-        "package.json",
-        "$TURBO_ROOT$/Cargo.toml",
-        "$TURBO_ROOT$/Cargo.lock",
-        "$TURBO_ROOT$/rust-toolchain.toml",
-        "$TURBO_ROOT$/crates/*/Cargo.toml",
-        "$TURBO_ROOT$/crates/*/build.rs",
-        "$TURBO_ROOT$/crates/*/src/**"
-      ],
-      "outputs": ["src/generated-reference/**"],
+      "outputs": ["src/generated/**", "src/generated-engine/**", "src/generated-protocol/**"],
       "env": ["SHIFT_WASM_OPT"]
     },
     "@shift/wasm#types": {
@@ -132,40 +128,58 @@
         "$TURBO_ROOT$/rust-toolchain.toml",
         "$TURBO_ROOT$/crates/*/Cargo.toml",
         "$TURBO_ROOT$/crates/*/build.rs",
-        "$TURBO_ROOT$/crates/*/src/**"
+        "$TURBO_ROOT$/crates/*/src/**",
+        "$TURBO_ROOT$/packages/pack/src/**"
       ],
-      "outputs": ["src/generated*/shift_wasm.d.ts", "src/generated*/module.d.ts"]
+      "outputs": [
+        "src/generated*/shift_wasm.d.ts",
+        "src/generated*/module.d.ts",
+        "src/generated-protocol/**"
+      ]
     },
     "generate:bridge-types": {
       "dependsOn": ["shift-bridge#types"],
       "inputs": [
         "$TURBO_ROOT$/crates/shift-bridge/index.d.ts",
+        "$TURBO_ROOT$/crates/shift-bridge/protocol.ts",
         "$TURBO_ROOT$/crates/shift-bridge/dts-header.d.ts",
         "$TURBO_ROOT$/scripts/generate-bridge-types.mjs"
       ],
-      "outputs": ["src/bridge/generated.ts"]
+      "outputs": ["src/bridge/generated.ts", "src/bridge/protocol.ts"]
     },
     "generate": {
       "outputs": ["resources/**"]
     },
     "typecheck": {
-      "dependsOn": ["^generate:bridge-types", "generate:bridge-types", "@shift/wasm#types"],
-      "outputs": []
-    },
-    "@shift/glyph-info#typecheck": {
-      "dependsOn": ["generate"],
-      "outputs": []
-    },
-    "@shift/desktop#typecheck": {
-      "dependsOn": [
-        "@shift/glyph-info#generate",
-        "^generate:bridge-types",
-        "generate:bridge-types",
-        "@shift/wasm#types"
-      ],
       "outputs": [],
       "inputs": [
         "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/crates/shift-bridge/index.d.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/generated.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/protocol.ts",
+        "$TURBO_ROOT$/packages/wasm/src/generated*/**/*.d.ts"
+      ]
+    },
+    "@shift/glyph-info#typecheck": {
+      "dependsOn": ["generate"],
+      "outputs": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/crates/shift-bridge/index.d.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/generated.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/protocol.ts",
+        "$TURBO_ROOT$/packages/wasm/src/generated*/**/*.d.ts"
+      ]
+    },
+    "@shift/desktop#typecheck": {
+      "dependsOn": ["@shift/glyph-info#generate"],
+      "outputs": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/crates/shift-bridge/index.d.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/generated.ts",
+        "$TURBO_ROOT$/packages/types/src/bridge/protocol.ts",
+        "$TURBO_ROOT$/packages/wasm/src/generated*/**/*.d.ts",
         "$TURBO_ROOT$/packages/*/src/**",
         "$TURBO_ROOT$/packages/*/package.json"
       ]
@@ -192,6 +206,27 @@
       ]
     },
     "@shift/desktop#build:e2e": {
+      "dependsOn": [
+        "shift-bridge#build:e2e",
+        "@shift/types#generate:bridge-types",
+        "@shift/glyph-info#generate",
+        "@shift/wasm#build:e2e"
+      ],
+      "outputs": [".vite/**"],
+      "inputs": [
+        "src/**",
+        "build.ts",
+        "package.json",
+        "tsconfig*.json",
+        "vite*.config.ts",
+        "electron-builder.config.ts",
+        "resources/**",
+        "$TURBO_ROOT$/icons/**",
+        "$TURBO_ROOT$/packages/*/src/**",
+        "$TURBO_ROOT$/packages/*/package.json"
+      ]
+    },
+    "@shift/desktop#build:perf": {
       "dependsOn": [
         "shift-bridge#build",
         "@shift/types#generate:bridge-types",
@@ -262,7 +297,7 @@
       "inputs": ["e2e/**", "playwright.config.ts", "src/**", "*.config.ts", "package.json"]
     },
     "@shift/desktop#test:e2e:perf": {
-      "dependsOn": ["build:e2e"],
+      "dependsOn": ["build:perf"],
       "cache": false,
       "outputs": [],
       "inputs": ["e2e/**", "playwright.config.ts", "src/**", "*.config.ts", "package.json"]
@@ -278,15 +313,15 @@
     "test": {
       "outputs": [],
       "inputs": ["src/**", "*.config.ts"],
-      "dependsOn": ["@shift/wasm#build", "@shift/wasm#build:reference"]
+      "dependsOn": ["^generate:bridge-types", "generate:bridge-types", "@shift/wasm#build"]
     },
     "@shift/editor#test": {
       "outputs": [],
       "inputs": ["src/**", "*.config.ts", "$TURBO_ROOT$/packages/*/src/**"],
-      "dependsOn": ["@shift/wasm#build", "@shift/wasm#build:reference"]
+      "dependsOn": ["^generate:bridge-types", "generate:bridge-types", "@shift/wasm#build"]
     },
     "@shift/glyph-info#test": {
-      "dependsOn": ["generate"],
+      "dependsOn": ["^generate:bridge-types", "generate"],
       "outputs": [],
       "inputs": ["src/**", "*.config.ts"]
     },
@@ -295,8 +330,7 @@
         "shift-bridge#build",
         "@shift/types#generate:bridge-types",
         "@shift/glyph-info#generate",
-        "@shift/wasm#build",
-        "@shift/wasm#build:reference"
+        "@shift/wasm#build"
       ],
       "outputs": [],
       "inputs": [
@@ -307,17 +341,17 @@
       ]
     },
     "shift-bridge#test": {
-      "dependsOn": ["build"],
+      "dependsOn": ["build", "@shift/types#generate:bridge-types", "@shift/wasm#build"],
       "outputs": [],
       "inputs": ["src/**", "*.config.ts"]
     },
     "test:watch": {
       "cache": false,
       "persistent": true,
-      "dependsOn": ["@shift/wasm#build", "@shift/wasm#build:reference"]
+      "dependsOn": ["^generate:bridge-types", "generate:bridge-types", "@shift/wasm#build"]
     },
     "@shift/glyph-info#test:watch": {
-      "dependsOn": ["generate"],
+      "dependsOn": ["^generate:bridge-types", "generate"],
       "cache": false,
       "persistent": true
     },
@@ -326,8 +360,7 @@
         "shift-bridge#build",
         "@shift/types#generate:bridge-types",
         "@shift/glyph-info#generate",
-        "@shift/wasm#build",
-        "@shift/wasm#build:reference"
+        "@shift/wasm#build"
       ],
       "cache": false,
       "persistent": true

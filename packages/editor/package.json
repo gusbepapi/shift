@@ -24,10 +24,6 @@
       "types": "./src/rendering.ts",
       "import": "./src/rendering.ts"
     },
-    "./reference-testing": {
-      "types": "./src/testing/reference.ts",
-      "import": "./src/testing/reference.ts"
-    },
     "./ui": {
       "types": "./src/ui.ts",
       "import": "./src/ui.ts"
@@ -65,7 +61,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsgo --noEmit && tsgo --noEmit -p tsconfig.config.json",
     "lint": "oxlint --fix src/",
     "lint:check": "oxlint --deny-warnings src/",
     "test": "vitest run",

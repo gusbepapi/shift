@@ -9,10 +9,11 @@ import {
   type AxisId,
   type GlyphId,
   type GlyphName,
+  type Source,
   type SourceId,
   type Unicode,
 } from "@shift/types";
-import type { WorkspaceSnapshot } from "@shared/workspace/protocol";
+import type { WorkspaceSnapshot } from "@shared/workspace/lanes";
 import { Font, FontStore } from "@shift/editor/model";
 import { createWorkspaceStack } from "@/testing/workspaceStack";
 import { signal } from "@shift/editor/signals";
@@ -32,6 +33,8 @@ const SNAPSHOT: WorkspaceSnapshot = {
       unicodes: [65 as Unicode],
       componentBaseGlyphIds: [],
       layers: [],
+      mark: false,
+      nonspacingMark: false,
     },
   ],
   sources: [
@@ -39,7 +42,8 @@ const SNAPSHOT: WorkspaceSnapshot = {
       id: "source-1" as SourceId,
       name: "Regular",
       location: { values: {} },
-      metricValues: [],
+      metricValues: {},
+      role: "master",
     },
   ],
   axes: [],
@@ -142,12 +146,15 @@ describe("Font answers directory and source queries", () => {
     unicodes: [],
     componentBaseGlyphIds: [],
     layers: [],
+    mark: false,
+    nonspacingMark: false,
   });
-  const source = (id: string, name: string) => ({
+  const source = (id: string, name: string): Source => ({
     id: id as SourceId,
     name,
     location: { values: {} },
-    metricValues: [],
+    metricValues: {},
+    role: "master",
   });
   const font = (snapshot: Partial<WorkspaceSnapshot>) =>
     new Font({ store: new FontStore({ workspace: { ...SNAPSHOT, ...snapshot } }) });
@@ -255,10 +262,7 @@ describe("font-level intents make the font variable", () => {
       tag: "opsz",
       name: "Optical Size",
       role: "external",
-      axisType: "continuous",
-      minimum: 8,
-      default: 14,
-      maximum: 72,
+      kind: { kind: "continuous", minimum: 8, default: 14, maximum: 72 },
       labels: [],
       hidden: false,
     });
@@ -271,7 +275,9 @@ describe("font-level intents make the font variable", () => {
     await stack.editCoordinator.settled();
 
     const source = stack.font.sources.find((candidate) => candidate.id === sourceId);
-    expect(source?.metricValues).toHaveLength(stack.font.metricDefinitions.length);
+    expect(Object.keys(source?.metricValues ?? {})).toHaveLength(
+      stack.font.metricDefinitions.length,
+    );
   });
 
   it("createGlyphLayer projects sparse glyph-layer membership", async () => {
@@ -309,10 +315,7 @@ describe("font-level intents make the font variable", () => {
       tag: "wght",
       name: "Weight",
       role: "external",
-      axisType: "continuous",
-      minimum: 100,
-      default: 400,
-      maximum: 900,
+      kind: { kind: "continuous", minimum: 100, default: 400, maximum: 900 },
       labels: [],
       hidden: false,
     });
@@ -401,9 +404,7 @@ describe("font-level intents make the font variable", () => {
       ...weightAxis(),
       tag: "wdth",
       name: "Width",
-      minimum: 50,
-      default: 100,
-      maximum: 200,
+      kind: { kind: "continuous", minimum: 50, default: 100, maximum: 200 },
     });
     await stack.editCoordinator.settled();
     const boldSourceId = stack.font.createSource(
@@ -455,10 +456,7 @@ describe("font-level intents make the font variable", () => {
       tag: "wght",
       name: "Weight",
       role: "external",
-      axisType: "continuous",
-      minimum: 100,
-      default: 400,
-      maximum: 900,
+      kind: { kind: "continuous", minimum: 100, default: 400, maximum: 900 },
       labels: [
         {
           id: labelId,
@@ -783,11 +781,58 @@ function weightAxis(): AxisDefinition {
     tag: "wght",
     name: "Weight",
     role: "external",
-    axisType: "continuous",
-    minimum: 100,
-    default: 400,
-    maximum: 900,
+    kind: { kind: "continuous", minimum: 100, default: 400, maximum: 900 },
     labels: [],
     hidden: false,
   };
 }
+
+describe("Font owns a glyph's name and codepoint rules", () => {
+  async function twoGlyphs() {
+    const stack = createWorkspaceStack();
+    await stack.createWorkspace();
+    const a = stack.font.createGlyphForUnicode(0x41 as Unicode);
+    const b = stack.font.createGlyphForUnicode(0x42 as Unicode);
+    await stack.editCoordinator.settled();
+    return { stack, a, b };
+  }
+
+  it("renames a glyph, refusing a blank name or another glyph's", async () => {
+    const { stack, a, b } = await twoGlyphs();
+
+    const blank = stack.font.renameGlyph(a.id, "   ");
+    const taken = stack.font.renameGlyph(a.id, b.name);
+    const renamed = stack.font.renameGlyph(a.id, " A.alt ");
+    await stack.editCoordinator.settled();
+
+    expect(blank).toEqual({ kind: "refused", conflict: { kind: "blankName" } });
+    expect(taken).toEqual({ kind: "refused", conflict: { kind: "nameTaken", name: b.name } });
+    expect(renamed).toEqual({ kind: "changed" });
+    expect(stack.font.entryForId(a.id)?.name).toBe("A.alt");
+  });
+
+  it("replaces the primary codepoint, refusing one another glyph has, and clears it when blank", async () => {
+    const { stack, a, b } = await twoGlyphs();
+
+    const taken = stack.font.setPrimaryCodepoint(a.id, "42");
+    const invalid = stack.font.setPrimaryCodepoint(a.id, "not hex");
+    const moved = stack.font.setPrimaryCodepoint(a.id, "U+E000");
+    await stack.editCoordinator.settled();
+    const codepoints = stack.font.entryForId(a.id)?.unicodes;
+    const cleared = stack.font.setPrimaryCodepoint(a.id, "");
+    await stack.editCoordinator.settled();
+
+    expect(taken).toEqual({
+      kind: "refused",
+      conflict: { kind: "codepointTaken", codepoint: 0x42, owner: b.name },
+    });
+    expect(invalid).toEqual({
+      kind: "refused",
+      conflict: { kind: "invalidCodepoint", text: "not hex" },
+    });
+    expect(moved).toEqual({ kind: "changed" });
+    expect(codepoints).toEqual([0xe000]);
+    expect(cleared).toEqual({ kind: "changed" });
+    expect(stack.font.entryForId(a.id)?.unicodes).toEqual([]);
+  });
+});

@@ -4,20 +4,22 @@ import type {} from "../../src/main/dialogs/NativeDialogs";
 import type { CommandId } from "../../src/shared/commands";
 import type { GlyphId } from "@shift/types";
 import type { FontSummary } from "@/testing/reads";
-import type { PreloadLayerRead } from "@/testing/e2e/SessionHooks";
+import type { PreloadLayerRead, PreloadSourceGlyphRead } from "@/testing/e2e/SessionHooks";
 import { execFile, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
 import { promisify } from "node:util";
-import { hooksOf } from "./appHooks";
+import { hooksOf, runCommand } from "./appHooks";
 import { EditorDriver } from "./EditorDriver";
 import { MAIN_JS, shiftTestEnvironment, waitForWorkspaceReady } from "./electronApp";
+
+export { runCommand };
 
 const execFileAsync = promisify(execFile);
 
 export async function createNewFont(page: Page, electronApp: ElectronApplication): Promise<Page> {
   const workspaceWindow = electronApp.waitForEvent("window");
-  await page.getByRole("button", { name: "New Font", exact: true }).click();
+  await page.getByRole("button", { name: "New font", exact: true }).click();
 
   const workspacePage = await workspaceWindow;
   await waitForWorkspaceReady(workspacePage);
@@ -38,12 +40,24 @@ export async function createAnotherDirtyFont(
   electronApp: ElectronApplication,
 ): Promise<Page> {
   const nextWindow = electronApp.waitForEvent("window");
-  await runCommand(page, electronApp, "file.new");
+  await runCommand(page, "file.new");
   const nextPage = await nextWindow;
   await waitForWorkspaceReady(nextPage);
   await nextPage.getByRole("button", { name: "Create glyph", exact: true }).click();
   await expect.poll(() => windowTitle(nextPage, electronApp)).toContain("Untitled *");
   return nextPage;
+}
+
+/**
+ * Runs `convert`, a Save or Save As of `page`'s convertible preview, and waits until the window
+ * has reloaded into the authored workspace the conversion opens. Until that reload, a read
+ * reaches the preview's renderer, whose agent lane closes as it unloads; wait for the reloaded
+ * route (`waitForWorkspaceReady`, `waitForEditorReady`) after it.
+ */
+export async function convertPreview(page: Page, convert: () => Promise<void>): Promise<void> {
+  // `Promise.all` fails as soon as `convert` throws and owns the load wait, so a failed Save
+  // never leaves that wait running unobserved until the page closes.
+  await Promise.all([page.waitForEvent("load"), convert()]);
 }
 
 /** The mode of the font session in `page`'s window (`workspace`, `preview`, …), as agents read it. */
@@ -93,28 +107,39 @@ export async function glyphIdForName(page: Page, name: string): Promise<GlyphId>
   return glyph.id;
 }
 
-export async function runCommand(
-  page: Page,
-  electronApp: ElectronApplication,
-  command: CommandId,
-): Promise<void> {
+/**
+ * Focuses `page`'s window and waits until the OS reports it focused, for native menu items,
+ * which act on the focused window. Focus is the menu's contract, so these helpers cannot avoid
+ * it. macOS does not hand focus to the test app while another app is in front, so on a Mac the
+ * app first takes the front once (`app.focus({ steal: true })`); the poll then only focuses the
+ * window, so a slow focus change does not keep pulling the app in front of the user.
+ */
+export async function focusWindow(page: Page, electronApp: ElectronApplication): Promise<void> {
   const browserWindow = await electronApp.browserWindow(page);
-  await expect
-    .poll(() =>
-      browserWindow.evaluate((window) => {
-        window.focus();
-        return window.isFocused();
-      }),
-    )
-    .toBe(true);
+  const windowId = await browserWindow.evaluate((window) => window.id);
   await browserWindow.dispose();
 
-  await runWindowCommand(page, command);
-}
+  // oxlint-disable-next-line shift/no-page-evaluate-in-specs -- drives Electron main (app focus), not the renderer
+  await electronApp.evaluate(({ app }) => {
+    if (process.platform === "darwin") app.focus({ steal: true });
+  });
 
-/** Runs `command` in `page`'s window as its menu item does, without focusing the window first. */
-export async function runWindowCommand(page: Page, command: CommandId): Promise<void> {
-  await hooksOf(page).session.runCommand(command);
+  await expect
+    .poll(
+      () =>
+        // oxlint-disable-next-line shift/no-page-evaluate-in-specs -- reads or drives Electron main (window focus), not the renderer
+        electronApp.evaluate(({ BrowserWindow }, id) => {
+          const window = BrowserWindow.fromId(id);
+          if (!window) throw new Error(`Shift window ${id} is not open`);
+          window.focus();
+          return window.isFocused();
+        }, windowId),
+      {
+        message:
+          "the Shift window never took OS focus, which native menu items need; a locked screen, or a Mac that keeps another app in front, refuses it",
+      },
+    )
+    .toBe(true);
 }
 
 /** What the native application menu holds: its top-level menus, roles and chosen items. */
@@ -209,9 +234,7 @@ export async function applicationMenuItemEnabled(
   electronApp: ElectronApplication,
   command: CommandId,
 ): Promise<boolean> {
-  const browserWindow = await electronApp.browserWindow(page);
-  await browserWindow.evaluate((window) => window.focus());
-  await browserWindow.dispose();
+  await focusWindow(page, electronApp);
 
   // oxlint-disable-next-line shift/no-page-evaluate-in-specs -- reads or drives Electron main (menu, clipboard, app lifecycle, scripted dialogs), not the renderer
   return electronApp.evaluate(({ Menu }, id) => {
@@ -226,16 +249,7 @@ export async function clickApplicationMenuItem(
   electronApp: ElectronApplication,
   command: CommandId,
 ): Promise<void> {
-  const browserWindow = await electronApp.browserWindow(page);
-  await expect
-    .poll(() =>
-      browserWindow.evaluate((window) => {
-        window.focus();
-        return window.isFocused();
-      }),
-    )
-    .toBe(true);
-  await browserWindow.dispose();
+  await focusWindow(page, electronApp);
 
   // oxlint-disable-next-line shift/no-page-evaluate-in-specs -- reads or drives Electron main (menu, clipboard, app lifecycle, scripted dialogs), not the renderer
   await electronApp.evaluate(({ BrowserWindow, Menu }, id) => {
@@ -331,11 +345,20 @@ export async function quitApp(
 
 /**
  * Reads the first glyph that has a layer through the preload's layer store API, as the window
- * reads the open document: the store's kind, that layer's id, its decoded bytes, the component
- * closure of the glyph, and the glyph's id.
+ * reads the open document: the store's kind, that layer's id, its decoded bytes, the glyphs its
+ * components use, and the glyph's id.
  */
 export async function readFirstLayerThroughPreload(page: Page): Promise<PreloadLayerRead> {
   return hooksOf(page).session.firstLayerThroughPreload();
+}
+
+/** Reads the glyph `name` of the source file at `path` through the window's preload. */
+export async function readSourceGlyphThroughPreload(
+  page: Page,
+  path: string,
+  name: string,
+): Promise<PreloadSourceGlyphRead> {
+  return hooksOf(page).session.sourceGlyphThroughPreload(path, name);
 }
 
 /** Clicks the launcher's Open Font… (with a scripted dialog) and returns the workspace window once its Grid shows. */
@@ -344,7 +367,7 @@ export async function openFontFromLauncher(
   electronApp: ElectronApplication,
 ): Promise<Page> {
   const workspaceWindow = electronApp.waitForEvent("window");
-  await launcher.getByRole("button", { name: "Open Font…", exact: true }).click();
+  await launcher.getByRole("button", { name: "Open…", exact: true }).click();
 
   const workspacePage = await workspaceWindow;
   await workspacePage.waitForURL(/#\/home$/);

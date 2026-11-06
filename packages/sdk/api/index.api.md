@@ -115,6 +115,35 @@ export interface BoundsCorner {
 }
 
 // @public
+export type CommandId = string;
+
+// @public
+export interface CommandListInput {
+    // (undocumented)
+    windowId: number;
+}
+
+// @public
+export interface CommandRun {
+    ran: boolean;
+}
+
+// @public
+export interface CommandRunInput extends ShiftTarget {
+    // (undocumented)
+    command: CommandId;
+}
+
+// @public
+export interface CommandSummary {
+    enabled: boolean;
+    // (undocumented)
+    id: CommandId;
+    shortcut: string | null;
+    title: string;
+}
+
+// @public
 export interface ComponentTransform {
     // (undocumented)
     dx: number;
@@ -142,12 +171,14 @@ export type DesignAxisLocation = AxisLocation<"design">;
 // @public
 export class Designspace {
     constructor(cells: {
-        axesCell: Signal<Axis[]>;
-        mappingBasesCell: Signal<AxisMappingBasis[]>;
-        sourcesCell: Signal<Source[]>;
+        axesCell: Signal<readonly Axis$1[]>;
+        mappingBasesCell: Signal<readonly AxisMappingBasis[]>;
+        sourcesCell: Signal<readonly Source[]>;
+        variationCell?: Signal<VariationReader>;
     });
     // (undocumented)
     get axes(): readonly Axis[];
+    get axesCell(): ComputedSignal<readonly Axis[]>;
     // (undocumented)
     axis(axisId: AxisId): Axis | null;
     axisTagged(tag: string): Axis | null;
@@ -156,6 +187,7 @@ export class Designspace {
         value: number;
     }[];
     defaultLocation(): ExternalAxisLocation;
+    interpolationWeights(basis: InterpolationBasis, location: DesignAxisLocation): Float64Array | null;
     location(coordinates: readonly {
         axisId: AxisId;
         value: number;
@@ -171,6 +203,7 @@ export class Designspace {
     toDesign(location: ExternalAxisLocation): DesignAxisLocation;
     toExternal(location: DesignAxisLocation): ExternalAxisLocation;
     track(): void;
+    variationAdjustments(basis: VariationBasis, location: DesignAxisLocation): Float64Array;
 }
 
 // @beta
@@ -230,8 +263,6 @@ export class Editor {
     editableLayer(node: GlyphNode): GlyphLayer | null;
     // (undocumented)
     readonly editing: Editing;
-    get editingLayerMatchesCell(): Signal<ReadonlyMap<LayerId, LayerMatch>>;
-    editingLayersMatched(): Promise<void>;
     // (undocumented)
     get editingSourceIds(): ReadonlySet<SourceId>;
     // (undocumented)
@@ -291,20 +322,23 @@ export class Editor {
     // (undocumented)
     nodeDefinition(kind: "textRun"): TextRunNodeDefinition;
     // (undocumented)
+    nodeDefinition(kind: "page"): PageNodeDefinition;
+    // (undocumented)
     nodeDefinition(kind: NodeKind): NodeDefinition;
     notifyPreviewMutationAttempt(): void;
     object(id: ShiftId): ShiftObject | null;
     objects(ids: readonly ShiftId[]): readonly ShiftObject[];
     on: EventEmitter["on"];
-    openGlyphInText(glyphId: GlyphId): GlyphNode | null;
+    openGlyphInText(glyphId: GlyphId, page: PageNode): GlyphNode | null;
+    readonly pages: Pages;
     // (undocumented)
     get pan(): Point2D;
+    get panCell(): Signal<Point2D>;
     paste(): Promise<boolean>;
     // (undocumented)
     get pointerCoords(): Signal<Coordinates | null>;
     positionSelection(ids: readonly SelectableId[]): PositionSelection | null;
-    // (undocumented)
-    redo(): Promise<void>;
+    redo(): Promise<boolean>;
     registerTool(manifest: ToolManifest): ToolRegistration;
     renameAnchor(anchorId: AnchorId, name: string): boolean;
     // (undocumented)
@@ -384,8 +418,7 @@ export class Editor {
     toSceneVector(vector: ScreenVector): SceneVector;
     transaction<TResult>(label: string, body: () => TResult): TResult;
     transformTarget(ids?: readonly SelectableId[]): TransformTarget | null;
-    // (undocumented)
-    undo(): Promise<void>;
+    undo(): Promise<boolean>;
     // (undocumented)
     updateMousePosition(clientX: number, clientY: number): void;
     visibleLocalBounds(node: ShiftNode): LocalBounds | null;
@@ -428,6 +461,34 @@ export interface EditorInspection extends EditorView {
 }
 
 // @public
+export type EditorOpenGlyphInput = ShiftTarget & {
+    glyph: GlyphSelector;
+};
+
+// @public
+export interface EditorSelectInput extends ShiftTarget {
+    ids: SelectableId[];
+}
+
+// @public
+export interface EditorSetToolInput extends ShiftTarget {
+    tool: string;
+}
+
+// @public
+export interface EditorSetViewInput extends ShiftTarget {
+    // (undocumented)
+    center?: Point2D;
+    // (undocumented)
+    zoom?: number;
+}
+
+// @public
+export interface EditorShowPageInput extends ShiftTarget {
+    pageId: NodeId;
+}
+
+// @public
 export interface EditorTool {
     // (undocumented)
     id: string;
@@ -451,12 +512,21 @@ export interface EditorView {
     externalLocation: AxisCoordinate[];
     // (undocumented)
     glyph: EditorGlyph | null;
+    pages: EditorPage[];
     // (undocumented)
     route: string;
     // (undocumented)
     selectionIds: SelectableId[];
+    shownPageId: NodeId | null;
     // (undocumented)
     tool: EditorTool | null;
+    viewport: EditorViewport;
+}
+
+// @public
+export interface EditorViewport {
+    center: Point2D | null;
+    zoom: number;
 }
 
 // @public
@@ -472,9 +542,9 @@ export function externalAxisLocationFromRecord(values: Readonly<Record<string, n
 export class Font {
     constructor(input: FontOptions);
     assignKerningGroup(position: KerningPairPosition, glyphIds: readonly GlyphId[], groupId: KerningGroupId | null): Promise<void>;
-    get axesCell(): Signal<Axis[]>;
+    get axesCell(): Signal<readonly Axis[]>;
     axis(axisId: AxisId): Axis | null;
-    get axisMappingsCell(): Signal<AxisMapping[]>;
+    get axisMappingsCell(): Signal<readonly AxisMapping[]>;
     axisTagged(tag: string): Axis | null;
     beginKerningEdit(): KerningEdit;
     cloneGlyphLayer(glyphId: GlyphId, sourceId: SourceId, fromLayerId: LayerId): LayerId;
@@ -482,6 +552,7 @@ export class Font {
     componentBaseNamesForName(name: GlyphName): readonly GlyphName[];
     contourIdForPoint(pointId: PointId): ContourId | null;
     contourIdForSegment(segmentId: SegmentId): ContourId | null;
+    counterparts(reference: LayerId, target: LayerId, ids: Counterparts): Counterparts | null;
     createAxis(axis: AxisDefinition): AxisId;
     createGlyph(name: GlyphName): GlyphRecord;
     createGlyphForUnicode(unicode: Unicode): GlyphRecord;
@@ -511,9 +582,12 @@ export class Font {
     entryForUnicode(unicode: Unicode): GlyphEntry | null;
     get externalAxesCell(): Signal<readonly Axis[]>;
     externalLocationForSource(sourceId: SourceId): ExternalAxisLocation | null;
-    getAxes(): Axis[];
-    getAxisMappingBases(): AxisMappingBasis[];
-    getAxisMappings(): AxisMapping[];
+    featureApplies(tag: string, on: boolean | null): boolean;
+    featureSubstitutions(tag: string): readonly FeatureSubstitution[];
+    fontFeatures(): readonly FontFeature[];
+    getAxes(): readonly Axis[];
+    getAxisMappingBases(): readonly AxisMappingBasis[];
+    getAxisMappings(): readonly AxisMapping[];
     get glyphCount(): number;
     glyphEntries(): readonly GlyphEntry[];
     get glyphEntriesCell(): Signal<readonly GlyphEntry[]>;
@@ -542,19 +616,19 @@ export class Font {
     layerIdForPoint(pointId: PointId): LayerId | null;
     layerIdForSegment(segmentId: SegmentId): LayerId | null;
     layerState(layerId: LayerId): GlyphLayerState | null;
+    layoutText(run: TextRun, location: ExternalAxisLocation, sourceId: SourceId | null): PlacedText | null;
     // (undocumented)
     get loaded(): boolean;
     get loadedCell(): Signal<boolean>;
     loadGlyph(glyphId: GlyphId): Promise<Glyph>;
     loadGlyphs(glyphIds: readonly GlyphId[]): Promise<readonly Glyph[]>;
     mapLocation(location: Location_2): Promise<Location_2>;
-    matchLayers(referenceLayerId: LayerId, targetLayerId: LayerId): Promise<LayerMatch>;
     materializeGlyphLayer(glyphId: GlyphId, sourceId: SourceId, fromLayerId: LayerId, values: Float64Array): LayerId;
     // (undocumented)
     get metadata(): FontMetadata;
     get metadataCell(): Signal<FontMetadata>;
-    get metricDefinitions(): MetricDefinition[];
-    get metricDefinitionsCell(): Signal<MetricDefinition[]>;
+    get metricDefinitions(): readonly MetricDefinition[];
+    get metricDefinitionsCell(): Signal<readonly MetricDefinition[]>;
     // (undocumented)
     get metrics(): FontMetrics;
     metricsAtLocation(location: ExternalAxisLocation): SourceMetrics;
@@ -564,42 +638,44 @@ export class Font {
     missingPairOrigin(sourceId: SourceId): MissingKerningOrigin;
     namedInstance(instanceId: NamedInstanceId): NamedInstance | null;
     namedInstanceNamed(name: string): NamedInstance | null;
-    get namedInstances(): NamedInstance[];
-    get namedInstancesCell(): Signal<NamedInstance[]>;
+    get namedInstances(): readonly NamedInstance[];
+    get namedInstancesCell(): Signal<readonly NamedInstance[]>;
     nameForUnicode(unicode: Unicode): GlyphName;
     // (undocumented)
     nearestSource(location: ExternalAxisLocation): Source | null;
     newAnchorName(layerIds: readonly LayerId[]): string;
     nextAvailableGlyphName(name: GlyphName): GlyphName;
     pointIdsForSegment(segmentId: SegmentId): readonly PointId[] | null;
+    preloadLaidOut(glyphIds: readonly GlyphId[]): void;
     primaryUnicodeForName(name: GlyphName): Unicode | null;
     readLayers(layerIds: readonly LayerId[]): Promise<readonly GlyphLayerSnapshot[]>;
     // (undocumented)
     recordForId(glyphId: GlyphId): GlyphRecord | null;
     // (undocumented)
     recordForName(name: GlyphName): GlyphRecord | null;
+    renameGlyph(glyphId: GlyphId, name: string): GlyphIdentityEdit;
     renameKerningGroup(groupId: KerningGroupId, name: string): Promise<void>;
     resolveLayers(layerIds: readonly LayerId[]): Promise<readonly LayerRead[]>;
     setAxisMappings(mappings: readonly AxisMapping[]): Promise<void>;
-    setIndependentAxisMapping(axis: Axis, mapping: AxisMapping): Promise<void>;
+    setIndependentAxisMapping(axis: Axis$1, mapping: AxisMapping): Promise<void>;
     setKerningException(sourceId: SourceId, first: GlyphId, second: GlyphId, position: KerningPairPosition, exception: boolean): boolean;
     setKerningValues(edits: readonly KerningValueEdit[], label: string): void;
     setLanguageIds(languageIds: readonly string[]): void;
     setMetricDefinitions(definitions: readonly MetricDefinition[]): Promise<void>;
-    shaperFont(knownRevision: number | null): Promise<ShaperFont | null>;
+    setPrimaryCodepoint(glyphId: GlyphId, text: string): GlyphIdentityEdit;
     source(sourceId: SourceId): Source | null;
     sourceAt(location: ExternalAxisLocation): Source | null;
     sourceAtCell(location: Signal<ExternalAxisLocation>): ComputedSignal<Source | null>;
     sourceAtOrDefault(location: ExternalAxisLocation): Source;
     get sourceMetricsRevisionCell(): Signal<number>;
     sourceNamed(name: string): Source | null;
-    get sources(): Source[];
-    get sourcesCell(): Signal<Source[]>;
+    get sources(): readonly Source[];
+    get sourcesCell(): Signal<readonly Source[]>;
     // (undocumented)
     get unicodes(): readonly Unicode[];
     get unicodesCell(): Signal<Unicode[]>;
     unicodesForName(name: GlyphName): readonly Unicode[];
-    updateAxis(axis: Axis): Promise<void>;
+    updateAxis(axis: Axis$1): Promise<void>;
     updateGlyphIdentity(glyphId: GlyphId, newName: GlyphName, newUnicodes: Unicode[]): void;
     updateMetadata(metadata: FontMetadata): Promise<void>;
     updateNamedInstance(instance: NamedInstance): Promise<void>;
@@ -609,7 +685,7 @@ export class Font {
 // @public
 export interface FontOverview {
     // (undocumented)
-    axes: Axis[];
+    axes: Axis$1[];
     axisMappings: AxisMapping[];
     // (undocumented)
     glyphCount: number;
@@ -629,31 +705,31 @@ export interface FontOverview {
 // @public
 export type FontRevision = string;
 
-// @public (undocumented)
+// @public
 export interface FontSnapshot {
     // (undocumented)
-    axes: Array<Axis>;
+    readonly axes: readonly Axis$1[];
     // (undocumented)
-    axisMappingBases: Array<AxisMappingBasis>;
+    readonly axisMappingBases: readonly AxisMappingBasis[];
     // (undocumented)
-    axisMappings: Array<AxisMapping>;
+    readonly axisMappings: readonly AxisMapping[];
     // (undocumented)
-    glyphs: Array<GlyphEntry>;
+    readonly glyphs: readonly GlyphEntry[];
     // (undocumented)
-    kerning: KerningSnapshot;
-    languageIds?: Array<string>;
+    readonly kerning: KerningSnapshot;
+    readonly languageIds?: readonly string[] | null;
     // (undocumented)
-    metadata: FontMetadata;
+    readonly metadata: FontMetadata;
     // (undocumented)
-    metricDefinitions: Array<MetricDefinition>;
+    readonly metricDefinitions: readonly MetricDefinition[];
     // (undocumented)
-    metrics: FontMetrics;
+    readonly metrics: FontMetrics;
     // (undocumented)
-    namedInstances: Array<NamedInstance>;
+    readonly namedInstances: readonly NamedInstance[];
     // (undocumented)
-    sourceMetricsInterpolation?: SourceMetricsInterpolationSnapshot;
+    readonly sourceMetricsInterpolation?: SourceMetricsInterpolationSnapshot | null;
     // (undocumented)
-    sources: Array<Source>;
+    readonly sources: readonly Source[];
 }
 
 // @beta
@@ -672,6 +748,7 @@ export class Glyph {
     get contours(): readonly Contour[];
     // (undocumented)
     get entry(): GlyphEntry;
+    get entryCell(): Signal<GlyphEntry>;
     // (undocumented)
     geometryAt(externalLocation: ExternalAxisLocation): GlyphGeometry;
     // (undocumented)
@@ -737,11 +814,11 @@ export interface GlyphLayerReference {
 // @public (undocumented)
 export interface GlyphLayerSnapshot {
     // (undocumented)
-    glyphId: GlyphId;
+    readonly glyphId: GlyphId;
     // (undocumented)
-    sourceId: SourceId;
+    readonly sourceId: SourceId;
     // (undocumented)
-    state: GlyphState;
+    readonly state: GlyphState;
 }
 
 // @public (undocumented)
@@ -779,21 +856,19 @@ export interface GlyphReader {
     read(glyphIds: readonly GlyphId[]): Promise<readonly GlyphSnapshot[]>;
 }
 
-// @public (undocumented)
+// @public
 export interface GlyphRecord {
+    readonly componentBaseGlyphIds: readonly GlyphId[];
     // (undocumented)
-    componentBaseGlyphIds: Array<GlyphId>;
+    readonly id: GlyphId;
+    readonly layers: readonly GlyphLayerRecord[];
+    readonly ligature?: Ligature | null;
+    readonly mark: boolean;
     // (undocumented)
-    id: GlyphId;
+    readonly name: GlyphName;
+    readonly nonspacingMark: boolean;
     // (undocumented)
-    layers: Array<GlyphLayerRecord>;
-    ligature?: "explicit" | "subcategory";
-    mark?: boolean;
-    // (undocumented)
-    name: GlyphName;
-    nonspacingMark?: boolean;
-    // (undocumented)
-    unicodes: Array<Unicode>;
+    readonly unicodes: readonly number[];
 }
 
 // @public (undocumented)
@@ -816,11 +891,11 @@ export type GlyphSelector = {
 // @public (undocumented)
 export interface GlyphSnapshot {
     // (undocumented)
-    glyphId: GlyphId;
+    readonly glyphId: GlyphId;
     // (undocumented)
-    layers: Array<GlyphLayerSnapshot>;
+    readonly layers: readonly GlyphLayerSnapshot[];
     // (undocumented)
-    projection?: GlyphProjection;
+    readonly projection?: GlyphProjection | null;
 }
 
 // @public
@@ -1012,7 +1087,7 @@ export interface LayerOverlays {
 // @public
 export interface LayerRead {
     // (undocumented)
-    authored: GlyphLayerSnapshot;
+    authored: GlyphLayerSnapshot$1;
     // (undocumented)
     resolved: ResolvedLayerGeometry;
 }
@@ -1229,9 +1304,17 @@ export type SelectableId = ShiftId;
 export interface ShiftCapabilities {
     // (undocumented)
     capture(input: ShiftCaptureInput): Promise<ShiftObservation<ShiftCapture>>;
-    // (undocumented)
+    commands: {
+        list(input: CommandListInput): Promise<CommandSummary[]>;
+        run(input: CommandRunInput): Promise<CommandRun>;
+    };
     editor: {
         inspect(input: ShiftTarget): Promise<ShiftObservation<EditorInspection>>;
+        setTool(input: EditorSetToolInput): Promise<ShiftObservation<EditorInspection>>;
+        showPage(input: EditorShowPageInput): Promise<ShiftObservation<EditorInspection>>;
+        openGlyph(input: EditorOpenGlyphInput): Promise<ShiftObservation<EditorInspection>>;
+        setView(input: EditorSetViewInput): Promise<ShiftObservation<EditorInspection>>;
+        select(input: EditorSelectInput): Promise<ShiftObservation<EditorInspection>>;
     };
     // (undocumented)
     font: {
@@ -1242,6 +1325,10 @@ export interface ShiftCapabilities {
         list(input: GlyphListInput): Promise<ShiftObservation<GlyphPage>>;
         get(input: GlyphGetInput): Promise<ShiftObservation<GlyphSummary>>;
         resolve(input: GlyphResolveInput): Promise<ShiftObservation<ResolvedGlyphs>>;
+    };
+    history: {
+        undo(input: HistoryInput): Promise<ShiftObservation<HistoryUndo>>;
+        redo(input: HistoryInput): Promise<ShiftObservation<HistoryRedo>>;
     };
     // (undocumented)
     instances: {
@@ -1264,6 +1351,11 @@ export interface ShiftCapabilities {
     locations: {
         resolve(input: LocationResolveInput): Promise<ShiftObservation<ResolvedLocation>>;
     };
+    pages: {
+        create(input: PageCreateInput): Promise<ShiftObservation<PageChange>>;
+        rename(input: PageRenameInput): Promise<ShiftObservation<PageChange>>;
+        delete(input: PageDeleteInput): Promise<ShiftObservation<PageChange>>;
+    };
     // (undocumented)
     sessions: {
         list(): Promise<ShiftSession[]>;
@@ -1271,6 +1363,15 @@ export interface ShiftCapabilities {
     // (undocumented)
     sources: {
         get(input: SourceGetInput): Promise<ShiftObservation<Source>>;
+    };
+    text: {
+        runs(input: TextRunsInput): Promise<ShiftObservation<TextRunSummary[]>>;
+        get(input: TextRunGetInput): Promise<ShiftObservation<TextRunView>>;
+        create(input: TextRunCreateInput): Promise<ShiftObservation<TextRunView>>;
+        setText(input: TextRunSetTextInput): Promise<ShiftObservation<TextRunView>>;
+        setCaret(input: TextRunSetCaretInput): Promise<ShiftObservation<TextRunView>>;
+        setOptions(input: TextRunSetOptionsInput): Promise<ShiftObservation<TextRunView>>;
+        delete(input: TextRunDeleteInput): Promise<ShiftObservation<null>>;
     };
 }
 
@@ -1357,6 +1458,10 @@ export interface ShiftRead {
     };
     // (undocumented)
     readonly state: ShiftReadState;
+    text: {
+        runs(input?: ShiftReadInput<TextRunsInput>): Promise<TextRunSummary[]>;
+        get(input: ShiftReadInput<TextRunGetInput>): Promise<TextRunView>;
+    };
 }
 
 // @public

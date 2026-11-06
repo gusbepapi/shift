@@ -71,15 +71,24 @@ shift-backends = { path = "crates/shift-backends" }
 shift-bridge = { path = "crates/shift-bridge" }
 shift-config = { path = "crates/shift-config" }
 shift-engine = { path = "crates/shift-engine" }
-shift-shape = { path = "crates/shift-shape" }
 shift-font = { path = "crates/shift-font" }
+shift-layout = { path = "crates/shift-layout", default-features = false }
+pack = { path = "crates/pack" }
 shift-proof = { path = "crates/shift-proof" }
 shift-slug = { path = "crates/shift-slug" }
 shift-specimen = { path = "crates/shift-specimen" }
 shift-store = { path = "crates/shift-store" }
+shift-text = { path = "crates/shift-text", default-features = false }
 shift-workspace = { path = "crates/shift-workspace" }
 
 [profile.e2e]
 inherits = "release"
 opt-level = 1
 codegen-units = 256
+
+# HarfRust with a shape hook told about each layout table and lookup, so the
+# editor positions generated features (kern, mark, mkmk, curs) at their
+# `# Automatic Code` markers among the font's own lookups. Drop once HarfRust
+# releases an equivalent.
+[patch.crates-io]
+harfrust = { git = "https://github.com/shift-editor/harfrust", rev = "b90075ae7ad1903405852216ddd3a64123ba1673" }

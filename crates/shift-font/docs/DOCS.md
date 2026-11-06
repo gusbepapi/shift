@@ -43,10 +43,11 @@ crates/shift-font/src/
   svg_path.rs      -- contours from SVG path data, for authoring payloads and pasted SVG
   naming.rs        -- names for new glyphs and anchors: the name, or the name numbered `.1`, `.2`, ...
   interpolation.rs -- source compatibility, reusable bases, source values
-  projection.rs    -- location-independent glyph payloads and resolved views
+  projection.rs    -- location-independent glyph payloads and resolved views; compiled anchors at a location
   composite.rs     -- component occurrences, anchor-aligned placement, and flattening
   anchor_attachment.rs  -- which components follow their anchors after an edit, and where to
   anchor_propagation.rs -- fontc's anchor propagation into composites, over plain data
+  positioning.rs   -- the generated features (kern, mark, mkmk, curs) applied to shaped runs over the live font
   drag_rules.rs    -- point-neighbourhood drag rules (handles follow anchors, smooth points stay smooth): pattern table, matching once per drag, positions per frame
   check.rs         -- read-only font checks: findings, codes, severities, options
   check/           -- designspace, outline (interpolation), health, kerning, coverage rules
@@ -54,6 +55,9 @@ crates/shift-font/src/
 ```
 
 ## Key Types
+
+- `RunPositioning` (`positioning.rs`) -- applies one generated feature (`GeneratedFeature`: `curs`, `kern`, `mark`, `mkmk`) to a shaped run in logical order, the way a shaper applies the lookups export writes: kerning passes over `GDEF` marks (and kerns marks only next to their neighbour) and moves the first glyph's offset too in right-to-left runs; a mark sits on the base before it (`_top` on `top`, or a ligature's last `top_N`) and `mkmk` stacks it on the nearest earlier mark of its base; cursive joins hang from a word's last glyph right to left and its first left to right. It reads anchors and kerning through `PositioningFont`. Attached glyphs get final offsets directly, since there is no shaper attachment chain; a later authored lookup that moves a base does not carry its marks. **WHY:** the editor applies these over the live font so kerning and anchor edits show without recompiling the shaper font; the export check (`shift-backends/tests/text_layout_export.rs`) holds them to export
+- `FontProjection::compiled_anchors` -- a glyph's anchors as export compiles them at the projection's location, components propagated in by `compiled_anchors`, memoized per projection; a glyph's `GDEF` class decides mark and ligature propagation
 
 - `Font` owns glyphs, sources, axes, axis mappings, named instances, metadata, and font-level data.
 - `EntityList` owns stable-ID lookup and authoring order for glyphs, contours, components, and future ordered entity collections.
@@ -79,7 +83,7 @@ crates/shift-font/src/
 - `AxisMappingBasis` combines mapping input/output identities with a `VariationBasis` whose vectors produce output adjustments in design units, added to the input value. Inputs are normalized over the user axis; outputs are not, because design values can lie outside the user range (a default at the axis end with stem-width design values).
 - `DesignNormalization` retains an axis's numerical design minimum, mapped default, and maximum. `normalize` treats values within a relative `1e-9` of the default, `0`, or `±1` as exactly those, because mapped defaults and extremes carry rounding error and the variation model only recognises an exact default; region evaluation clamps normalized coordinates to `-1..=1`. `Font::design_normalization()` derives it from compiled independent mapping bases, preserving unmapped/internal ranges and reversed or nonmonotonic design extrema.
 - `GlyphInterpolation` combines a reusable basis with one glyph's compatible authored source values. The glyph's default-source layer owns topology when present; otherwise a deterministic master-backed reference layer allows sparse glyph interpolation.
-- `LayerMatch` derives cross-layer contour, point, anchor, and component identity mappings for structurally compatible layers. `LayerDifference` retains ordered structural evidence for incompatible layers.
+- `LayerMatch` derives cross-layer contour, point, anchor, and component identity mappings for structurally compatible layers; `LayerMatch::counterparts` maps a list of reference ids to their `Counterparts` in the target, or none for an incomplete match. `LayerDifference` retains ordered structural evidence for incompatible layers.
 - `GlyphProjection` is a compact location-independent glyph payload: shared fallback layers, optional compatible interpolation, an optional decomposition basis, exact-source topology exceptions, `GlyphComponents`, and transitive component identities.
 - `GlyphProjectionSet` is an immutable, read-scoped projection table for requested roots and their transitive components. It prepares each glyph once and reuses interpolation bases keyed by ordered compatible source identities; callers discard it after the current read or compilation.
 - `GlyphComponents` is the ordered, cycle-pruned component occurrence list for one root glyph. Every `ComponentGlyph` carries its full `ComponentId` ancestry, and its zero-based slot within the immediate parent layer. The ancestry identifies the authored occurrence; the parent-local slot correlates numeric transforms across compatible source layers whose corresponding components have different authored IDs.
@@ -161,7 +165,7 @@ Transport and workspace layers should pass stable identity to find the model obj
 2. Implement the staged mutation branch in `Font::apply_intents`, delegating the actual edit to the owning model object (`GlyphLayer`, `Font`, or `Source`). Existing metadata, collection, glyph, and layer scopes are compared and coalesced automatically.
 3. If the intent introduces a new authored scope, add one coarse reversible `FontChange` variant, include it in `Font::apply_change_set`, and teach `shift-store` to persist that replacement. Do not add workspace-specific inverse state or replay logic.
 4. If the renderer needs identity synchronously, accept caller-minted IDs through a seed struct such as `PointSeed` rather than returning Rust-minted IDs after the fact.
-5. Add the transport payload and its `TryFrom` in `shift-wire::intents` (one line in `wire_intents!`); intents all flow through the single `apply` entry point, natively and in the WebAssembly engine.
+5. Derive `Pack` on the payload behind the `pack` feature (`#[cfg_attr(feature = "pack", derive(pack::Pack))]`), and on any value it carries; the window's engine and the native workspace both receive it as is, and its TypeScript type is generated from it. A value whose TypeScript name would clash with one of `shift-wire`'s records takes a `#[pack(rename)]`, as `Axis` (`FontAxis`) does.
 6. Verify apply/invert round trips and stale-origin atomicity in `shift-font`, persistence in `shift-store`, and undo/redo in `shift-workspace`.
 
 ### Adding a glyph-layer geometry mutation

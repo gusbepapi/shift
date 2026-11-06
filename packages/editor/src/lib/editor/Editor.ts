@@ -23,7 +23,6 @@ import {
   type Unicode,
   type FontSessionMode,
   type LayerId,
-  type LayerMatch,
   type NodeId,
   type SegmentId,
   type SelectableId,
@@ -94,6 +93,7 @@ import { Hover } from "./Hover";
 import { Snapping } from "./Snapping";
 import { Renderer } from "./rendering/Renderer";
 import { Scene } from "./Scene";
+import { SessionScene } from "./SessionScene";
 import type { Canvas2DSurface, MarkerCanvasSurface } from "./rendering/CanvasSurface";
 import type { EditorRenderTheme } from "./rendering/Theme";
 import type { CameraTransform } from "./managers";
@@ -121,8 +121,8 @@ import type { TransformTarget } from "../../types/transformTarget";
 import type { ComponentTargets } from "../../types/componentTargets";
 import type { PositionSelection } from "../../types/positionEdit";
 import type { ShiftObject } from "../../types/object";
-import type { ShiftEditorRecord, ShiftRecordId } from "../../types/records";
-import type { GlyphNode, NodeKind, ShiftNode, TextRunNode } from "../../types/node";
+import type { NodeReference, ShiftEditorRecord } from "../../types/records";
+import type { GlyphNode, NodeKind, PageNode, ShiftNode } from "../../types/node";
 import {
   AnchorObject,
   ComponentObject,
@@ -135,6 +135,8 @@ import {
 import type { NodeDefinition } from "../nodes/NodeDefinition";
 import { GlyphNodeDefinition } from "../nodes/GlyphNodeDefinition";
 import { TextRunNodeDefinition } from "../nodes/TextRunNodeDefinition";
+import { PageNodeDefinition } from "../nodes/PageNodeDefinition";
+import { Pages } from "../pages/Pages";
 import type { NodeDefinitionByKind, NodeDefinitionConstructors } from "../../types/nodeDefinition";
 import { MultiSourceEditing } from "./MultiSourceEditing";
 import { SelectedPoints } from "./SelectedPoints";
@@ -200,8 +202,12 @@ export class Editor {
   /** Immutable persistence and editing capability; glyph edits still require an authored layer. */
   readonly sessionMode: FontSessionMode;
   readonly scene: Scene;
+  /** The scene of a session with no document, held apart from any engine; null in a workspace. */
+  readonly #sessionScene: SessionScene | null;
   readonly text: Text;
   readonly textEditing: TextEditing;
+  /** The document's pages and the page the canvas shows. */
+  readonly pages: Pages;
   readonly #nodeDefinitions: NodeDefinitionByKind;
   readonly #store: ShiftStore<ShiftEditorRecord>;
   readonly #fontStore: FontStore;
@@ -270,10 +276,13 @@ export class Editor {
     this.sessionMode = options.sessionMode;
     this.#store = new ShiftStore();
     this.#fontStore = options.fontStore;
-    this.scene = new Scene(
-      this.#store,
-      (node) => this.nodeDefinition(node.kind).references?.(node) ?? [],
-    );
+    this.#sessionScene = options.sessionMode === "workspace" ? null : new SessionScene();
+    const sceneDocument = this.#sessionScene ?? this.font.editCoordinator.scene;
+    this.scene = new Scene(sceneDocument, {
+      references: (node) => this.nodeDefinition(node.kind).references?.(node) ?? [],
+      recording: () => (this.history.recording ? "undoable" : "unrecorded"),
+      changed: (ids) => this.history.touched(ids),
+    });
 
     const initialExternalLocation = emptyExternalAxisLocation();
 
@@ -292,19 +301,20 @@ export class Editor {
     );
     this.#multiSourceEditing = new MultiSourceEditing(
       this.font,
-      this.scene,
       (glyphId) => this.#fontStore.glyphForId(glyphId),
       this.#activeSourceIdCell,
       this.#editingSourceIdsCell,
     );
-    this.text = new Text(this.#store, this);
+    this.text = new Text(this);
     this.textEditing = new TextEditing(this.#store, this);
 
     const GlyphDefinition = options.nodeDefinitions?.glyph ?? GlyphNodeDefinition;
     const TextRunDefinition = options.nodeDefinitions?.textRun ?? TextRunNodeDefinition;
+    const PageDefinition = options.nodeDefinitions?.page ?? PageNodeDefinition;
     this.#nodeDefinitions = {
       glyph: new GlyphDefinition(this),
       textRun: new TextRunDefinition(this),
+      page: new PageDefinition(this),
     };
 
     this.#view = new EditorViewState();
@@ -317,13 +327,18 @@ export class Editor {
     };
 
     this.selection = new Selection(this.#store);
-    this.editing = new Editing(this.#store);
+    this.editing = new Editing(this.#store, this.scene);
     this.history = new EditorHistory(
       this,
       this.#store,
       this.sessionMode === "workspace" ? this.font.editCoordinator : null,
     );
     this.history.onCaptureFinishing((changed) => this.#runContentHooks(changed));
+    this.pages = new Pages(this);
+    sceneDocument.followReplays((location) => this.pages.reveal(location));
+    // A session without a document starts with one page; setup, not an edit.
+    // A document's scene has its first page already.
+    if (this.#sessionScene) this.history.withoutRecording(() => this.pages.ensure());
     this.hover = new Hover();
     this.snapping = new Snapping(this);
     this.#selectedPoints = computed(
@@ -754,29 +769,6 @@ export class Editor {
     return this.#editingSourceIdsCell.peek();
   }
 
-  /**
-   * Returns the live topology matches for selected non-reference layers.
-   *
-   * @remarks
-   * The map is keyed by target layer ID and may contain incomplete matches for
-   * diagnostics. Coordinate-only edits preserve the current map identity;
-   * source, glyph, or structure changes clear it before asynchronous refresh.
-   *
-   * @returns Read-only reactive match state for the current editing source set.
-   */
-  public get editingLayerMatchesCell(): Signal<ReadonlyMap<LayerId, LayerMatch>> {
-    return this.#multiSourceEditing.matchesCell;
-  }
-
-  /**
-   * Resolves once the layer matches for the current editing sources are
-   * derived, which happens in the background after the sources or a layer's
-   * structure change.
-   */
-  public editingLayersMatched(): Promise<void> {
-    return this.#multiSourceEditing.matched();
-  }
-
   /** Current external user-space coordinate used for displayed font data. */
   public get externalLocation(): ExternalAxisLocation {
     return this.#externalLocation.peek();
@@ -977,7 +969,8 @@ export class Editor {
    * Resolves direct components into reference and matched-layer transform targets.
    *
    * @remarks
-   * Every selected source must have a complete precomputed component match.
+   * Every selected source's layer must match the active one completely, as
+   * the window's engine matches them when this is called.
    * Bounds are captured in each source's glyph-local coordinates so scale and
    * rotation can use corresponding pivots without workspace reads during drag.
    *
@@ -1026,13 +1019,13 @@ export class Editor {
    * Resolves selected objects into reference and matched-layer position targets.
    *
    * @remarks
-   * Segment and contour IDs expand to their constituent points. Multi-source
-   * results require complete precomputed matches for every selected source; this
-   * method performs no matching or workspace I/O.
+   * Segment and contour IDs expand to their constituent points. Each other
+   * selected source's targets are its layer's counterparts, which the window's
+   * engine matches synchronously; no workspace I/O.
    *
    * @param ids - Selected object identities to normalize as one interaction.
    * @returns Resolved layer targets, or `null` for unsupported, mixed, inactive,
-   * pending, or incompletely matched selections.
+   * or incompletely matched selections.
    */
   public positionSelection(ids: readonly SelectableId[]): PositionSelection | null {
     const objects = this.objects(ids);
@@ -1142,13 +1135,15 @@ export class Editor {
     return SelectedPoints.resolve(ids, layer, node);
   }
 
-  /** Returns the glyph node showing a layer: one placing the layer's glyph at the layer's source. */
+  /** Returns the glyph node on the shown page that places the layer's glyph at the layer's source. */
   #placedGlyphNodeForLayer(layer: GlyphLayer): GlyphNode | null {
     const glyphId = this.font.glyphIdForLayer(layer.id);
     if (!glyphId) return null;
 
+    const pageId = this.scene.shownPageIdCell.peek();
     for (const node of this.scene.nodesReferencing(glyphId)) {
-      if (node.kind === "glyph" && node.sourceId === layer.sourceId) return node;
+      if (node.kind !== "glyph" || node.sourceId !== layer.sourceId) continue;
+      if (this.scene.pageOf(node.id)?.id === pageId) return node;
     }
     return null;
   }
@@ -1211,6 +1206,7 @@ export class Editor {
 
   nodeDefinition(kind: "glyph"): GlyphNodeDefinition;
   nodeDefinition(kind: "textRun"): TextRunNodeDefinition;
+  nodeDefinition(kind: "page"): PageNodeDefinition;
   nodeDefinition(kind: NodeKind): NodeDefinition;
   nodeDefinition(kind: NodeKind): NodeDefinition {
     return this.#nodeDefinitions[kind];
@@ -1773,7 +1769,7 @@ export class Editor {
     });
   }
 
-  #runContentHooks(changed: ReadonlySet<ShiftRecordId>): void {
+  #runContentHooks(changed: ReadonlySet<NodeReference>): void {
     const touched = new Set<ShiftNode>();
     for (const id of changed) {
       const node = isNodeId(id) ? this.scene.node(id) : null;
@@ -1819,12 +1815,24 @@ export class Editor {
     return this.#camera;
   }
 
-  public async undo(): Promise<void> {
-    await this.history.undo();
+  /**
+   * Reverses the latest step of the window's history, as Edit › Undo does,
+   * showing the page it was made on.
+   *
+   * @returns false when there was nothing to undo.
+   */
+  public async undo(): Promise<boolean> {
+    return this.history.undo();
   }
 
-  public async redo(): Promise<void> {
-    await this.history.redo();
+  /**
+   * Reapplies the latest undone step, as Edit › Redo does, showing the page
+   * it was made on.
+   *
+   * @returns false when there was nothing to redo.
+   */
+  public async redo(): Promise<boolean> {
+    return this.history.redo();
   }
 
   /**
@@ -1965,42 +1973,50 @@ export class Editor {
   }
 
   /**
-   * Opens a glyph for editing in place in the canvas's text run, as choosing it
-   * in the glyph grid does.
+   * Opens a glyph for editing in place in a page's text run, as choosing it in
+   * the glyph grid does.
    *
    * @remarks
-   * Until pages exist the canvas has one text run at the scene origin, created
-   * on the first open and kept after; opening replaces its text with the glyph.
-   * Opening is navigation, never a history entry. Tools reset afterwards, since
-   * they activate against the glyph node they find.
+   * Shows `page` first. Until runs are placed by the user each page has at most
+   * one run at its origin, placed on the first open there and kept after;
+   * opening replaces its text with the glyph, and opening the glyph the run
+   * already edits re-enters it. Runs on other pages keep their text. Opening is
+   * navigation, never a history entry. Tools activate against the glyph node
+   * they find, so they reset once it is placed.
    *
    * @param glyphId - A glyph whose model is already loaded.
+   * @param page - The page to show and open it on.
    * @returns the glyph node now being edited, or null when the glyph cannot be placed.
    */
-  public openGlyphInText(glyphId: GlyphId): GlyphNode | null {
-    const runs = this.nodeDefinition("textRun");
-    const run =
-      this.scene.first("textRun") ??
-      this.scene.createNode<TextRunNode>({
-        kind: "textRun",
-        runId: this.text.createRun([]).id,
-        size: this.font.metricsCell.peek().unitsPerEm,
-        position: { x: 0, y: 0 },
-      });
-    const previous = runs.childGlyph(run);
-    const open = (): GlyphNode | null => {
+  public openGlyphInText(glyphId: GlyphId, page: PageNode): GlyphNode | null {
+    const node = this.history.withoutRecording(() => {
+      this.pages.activate(page.id);
+      const runs = this.nodeDefinition("textRun");
+      const existing = this.scene.first("textRun");
+      if (!existing) {
+        const run = this.text.placeRun({ page, at: { x: 0, y: 0 }, glyphs: [glyphId] });
+        const item = this.text.items(run)[0];
+        const child = item ? runs.editItem(run, item.id) : null;
+        if (child) this.enterNode(child.id);
+        return child;
+      }
+
+      const previous = runs.childGlyph(existing);
       if (previous?.glyphId === glyphId) {
         this.enterNode(previous.id);
         return previous;
       }
+
       const item = this.text.glyphItem(glyphId);
       if (!item) return null;
-      this.text.setItems(run.runId, [item]);
-      const child = runs.editItem(run, item.id);
+
+      this.text.setItems(existing.runId, [item]);
+      const child = runs.editItem(existing, item.id);
       if (child) this.enterNode(child.id);
       return child;
-    };
-    const node = this.history.withoutRecording(open);
+    });
+    // Tools activate against the glyph node they find: Pages.activate reset them before this
+    // one was placed, so they reset again now that it is.
     this.toolManager.reset();
     return node;
   }
@@ -2074,6 +2090,11 @@ export class Editor {
 
   public get zoomCell(): Signal<number> {
     return this.#camera.zoomCell;
+  }
+
+  /** Reactive screen position of the scene origin; with {@link zoomCell}, what a page's camera remembers. */
+  public get panCell(): Signal<Point2D> {
+    return this.#camera.panCell;
   }
 
   public get fps(): Signal<number> {
@@ -2487,11 +2508,11 @@ export class Editor {
   public destroy() {
     this.#events.emit("destroying");
     this.#cursorEffect.dispose();
-    this.#multiSourceEditing.dispose();
     this.nodeDefinition("glyph").outlines.dispose();
     this.#renderer.destroy();
     this.#toolManager.dispose();
     this.text.dispose();
+    this.#sessionScene?.dispose();
     this.history.dispose();
     this.#handlesCell.set(new Map());
     this.#events.dispose();

@@ -9,7 +9,7 @@
  * has type imports only and uses neither `import.meta.url` nor `__dirname`.
  */
 import type { PointId } from "@shift/types";
-import type { FontSessionMode } from "@shared/workspace/protocol";
+import type { FontSessionMode } from "@shared/workspace/lanes";
 import type { DrawOptions, GlyphFixture, PointNames } from "./fixtures";
 import type { GlyphListing, Read } from "./reads";
 
@@ -21,12 +21,16 @@ export const FONT_FILES = {
   mutatorSansLightCondensed: "mutatorsans/MutatorSansLightCondensed.ufo",
   /** Composites that take anchors from their components. */
   anchorPropagation: "AnchorPropagation.glyphs",
+  /** `a` with a `top` anchor, combining and spacing dieresis marks, and many points. */
+  anchorDragBench: "AnchorDragBench.glyphs",
   /** A weight axis whose user values map to other design values. */
   mappedWeight: "MappedWeight.glyphs",
   /** Components scaled differently in each master. */
   scaledComponent: "ScaledComponent.glyphs",
   /** Features that substitute and position glyphs, for shaping. */
   shapingTest: "ShapingTest.ufo",
+  /** Feature code that substitutes `f i` by an `f_i` the font does not have yet. */
+  undrawnLigature: "UndrawnLigature.ufo",
   /** MutatorSans compiled to one static TrueType font, opened as a preview or imported. */
   mutatorSansTtf: "mutatorsans/MutatorSans.ttf",
   /** MutatorSans compiled to one static CFF OpenType font. */

@@ -7,7 +7,7 @@ import {
   asLayerId,
   asPointId,
   asSourceId,
-  mintNodeId,
+  mintRunId,
   type AxisId,
   type FontSnapshot,
   type GlyphRecord,
@@ -17,6 +17,7 @@ import { createMemoryFontSession } from "../createMemoryFontSession";
 import type { SystemClipboard } from "../lib/clipboard";
 import { externalAxisLocationFromRecord } from "../lib/variation/location";
 import type { MemoryFontSource } from "../types/fontSession";
+import type { GlyphNode, TextRunNode } from "../types/node";
 
 const glyphId = asGlyphId("glyph_s");
 const regularSourceId = asSourceId("source_regular");
@@ -56,18 +57,12 @@ describe("memory font editing", () => {
 
     editor.selectSource(regularSourceId);
     const loadedGlyph = await font.loadGlyph(glyphId);
-    editor.scene.setNodes([
-      {
-        id: mintNodeId(),
-        type: "node",
-        kind: "glyph",
-        parentId: null,
-        index: "a0",
-        glyphId,
-        sourceId: regularSourceId,
-        position: { x: 0, y: 0 },
-      },
-    ]);
+    editor.scene.createNode<GlyphNode>({
+      kind: "glyph",
+      glyphId,
+      sourceId: regularSourceId,
+      position: { x: 0, y: 0 },
+    });
 
     const midpoint = externalAxisLocationFromRecord({ [axisId]: 500 });
     expect(loadedGlyph.geometryAt(midpoint).point(regularPointId)).toMatchObject({
@@ -100,6 +95,36 @@ describe("memory font editing", () => {
     });
 
     session.dispose();
+  });
+
+  it("lays proof text out as typed, by shift-text, without an engine", async () => {
+    const session = createMemoryFontSession({
+      source: memorySource(fixture()),
+      clipboard: new MemoryClipboard(),
+    });
+    const { editor } = session;
+    editor.selectSource(regularSourceId);
+    const run = editor.scene.createNode<TextRunNode>(
+      {
+        kind: "textRun",
+        parentId: editor.pages.ensure().id,
+        runId: mintRunId(),
+        size: 1000,
+        position: { x: 0, y: 0 },
+      },
+      editor.text.itemsFromText("SS"),
+    );
+
+    // S advances 500 at Regular; the caret stops come from the layout.
+    await expect
+      .poll(() => {
+        const layout = editor.text.layout(run.runId);
+        return {
+          lefts: layout?.placedGlyphs.map((placed) => placed.left),
+          carets: [0, 1, 2].map((cluster) => layout?.caretPosition(cluster).x),
+        };
+      })
+      .toEqual({ lefts: [0, 500], carets: [0, 500, 1000] });
   });
 
   it("keeps axis state isolated between independent editor sessions", () => {
@@ -267,13 +292,15 @@ function fixture(): {
           id: regularSourceId,
           name: "Regular",
           location: { values: { [axisId]: 0 } as Record<AxisId, number> },
-          metricValues: [],
+          metricValues: {},
+          role: "master",
         },
         {
           id: boldSourceId,
           name: "Bold",
           location: { values: { [axisId]: 1000 } as Record<AxisId, number> },
-          metricValues: [],
+          metricValues: {},
+          role: "master",
         },
       ],
       axes: [
@@ -282,10 +309,7 @@ function fixture(): {
           tag: "wght",
           name: "Weight",
           role: "external",
-          axisType: "continuous",
-          minimum: 0,
-          default: 0,
-          maximum: 1000,
+          kind: { kind: "continuous", minimum: 0, default: 0, maximum: 1000 },
           labels: [],
           hidden: false,
         },
@@ -304,6 +328,8 @@ function fixture(): {
           { id: regularLayerId, sourceId: regularSourceId },
           { id: boldLayerId, sourceId: boldSourceId },
         ],
+        mark: false,
+        nonspacingMark: false,
       },
     ],
     glyph: {

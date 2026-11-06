@@ -1,5 +1,47 @@
-import type { NodeId, RunId, TextItemId } from "@shift/types";
-import type { TextItem } from "../lib/text/layout/types";
+import type { Point2D } from "@shift/geo";
+import type { GlyphId, GlyphName, NodeId, RunId, SourceId, TextItemId } from "@shift/types";
+import type { FeatureSubstitution, FontFeature, PlacedText, TextAlign } from "@shift/wasm/protocol";
+import type { PageNode } from "./node";
+import type { CaretEdge, Direction, TextItem } from "../lib/text/layout/types";
+import type { ExternalAxisLocation } from "./variation";
+
+/**
+ * Why a run's text has no layout, or why what its layout needed did not
+ * load: `layout` when laying it out failed, `preload` when the engine could
+ * not load glyphs the layout showed from placeholders, `module` when the
+ * module that lays out a preview's text did not load.
+ */
+export interface TextLayoutFailure {
+  readonly stage: "layout" | "preload" | "module";
+  readonly error: unknown;
+}
+
+/** A run's text as Rust laid it out, or why laying it out failed. */
+export type RunLaidOut =
+  | { readonly kind: "placed"; readonly placed: PlacedText }
+  | { readonly kind: "failed"; readonly failure: TextLayoutFailure };
+
+/**
+ * The features a font's shaper font defines, as Rust lists them, or why
+ * they could not be listed.
+ */
+export type FeatureListing =
+  | { readonly kind: "listed"; readonly features: readonly FontFeature[] }
+  | { readonly kind: "failed"; readonly error: unknown };
+
+/**
+ * The substitutions a feature can make, as Rust reads them from the shaper
+ * font, or why they could not be read.
+ */
+export type SubstitutionListing =
+  | { readonly kind: "listed"; readonly substitutions: readonly FeatureSubstitution[] }
+  | { readonly kind: "failed"; readonly error: unknown };
+
+/** Where text is laid out: the location shown, and the source edited, which takes precedence. */
+export interface TextPlace {
+  readonly location: ExternalAxisLocation;
+  readonly sourceId: SourceId | null;
+}
 
 /** Caret immediately after an item; null denotes the start of a run. */
 export type TextCaret = TextItemId | null;
@@ -9,6 +51,12 @@ export type TextEditingId = string & {
   readonly [TextEditingIdBrand]: typeof TextEditingIdBrand;
 };
 export const currentTextEditingId = "textEditing:current" as TextEditingId;
+
+/** A word's edge on one side on screen: the cluster there, and the direction the word reads in. */
+export interface WordEdge {
+  readonly unit: number;
+  readonly direction: Direction;
+}
 
 export interface TextSelectionRange {
   readonly start: number;
@@ -24,10 +72,41 @@ export interface TextEditingRecord {
   readonly anchor: TextCaret;
   readonly focus: TextCaret;
   /**
+   * Which of the focus stop's places the caret shows at: `secondary` only
+   * where a move landed on the second place of a direction boundary.
+   */
+  readonly focusEdge: CaretEdge;
+  /**
    * Whether Text mode is showing this caret. An inactive record keeps the
    * caret and selection for the next visit.
    */
   readonly active: boolean;
+}
+
+/** Where `Text.placeRun` puts a new run, and what it starts with. */
+export interface RunPlacement {
+  /** The page the run goes on. */
+  readonly page: PageNode;
+  /** The run's origin, in the page's (scene) space. */
+  readonly at: Point2D;
+  /** The glyphs the run starts with, in order; empty for a run to type into. */
+  readonly glyphs: readonly GlyphId[];
+}
+
+/** Where `Text.addRun` puts a new run, and the items it holds. */
+export interface RunContent {
+  /** The page the run goes on. */
+  readonly page: PageNode;
+  /** The run's origin, in the page's (scene) space. */
+  readonly at: Point2D;
+  readonly items: readonly TextItem[];
+}
+
+/** Text parsed into items, and each `/name` in it that names no glyph in the font. */
+export interface ParsedText {
+  readonly items: TextItem[];
+  /** Names the text picks that the font lacks, in the order they appear. */
+  readonly unknownGlyphNames: readonly GlyphName[];
 }
 
 /** Stores document-scoped proof text content. */
@@ -36,4 +115,66 @@ export interface TextRunRecord {
   readonly type: "textrun";
   readonly scope: "document";
   readonly items: readonly TextItem[];
+  /**
+   * Whether the font's feature code shapes the text; off lays out each item
+   * as typed, glyph by glyph.
+   */
+  readonly shaping: boolean;
+  /**
+   * Features turned on (`true`) or off (`false`) for this text by tag, such
+   * as `ss01`; a tag left out keeps the font's default.
+   */
+  readonly features: Readonly<Record<string, boolean>>;
+  /**
+   * The BCP 47 language the text is shaped as, such as `ur` or `tr`, which
+   * picks the font's localized forms; null uses the font's default language.
+   */
+  readonly language: string | null;
+  /**
+   * An ISO 15924 script, such as `Arab`, that the whole text is shaped in;
+   * null shapes each stretch in the script of its own characters.
+   */
+  readonly script: string | null;
+  /**
+   * The distance between baselines, in ems (1.5 is one and a half ems); null
+   * uses the font's own line spacing: ascender, descender, and line gap.
+   */
+  readonly lineHeight: number | null;
+  /** How lines line up; null follows each line's direction, so Arabic lines sit right. */
+  readonly align: TextAlign | null;
+}
+
+/** A feature whose changes one run highlights, such as the one under the pointer. */
+export interface FeatureHighlight {
+  readonly runId: RunId;
+  readonly tag: string;
+}
+
+/** Glyphs one run draws highlighted. */
+export interface TextHighlight {
+  readonly runId: RunId;
+  readonly glyphs: ReadonlySet<GlyphId>;
+}
+
+/**
+ * How a run's text is shaped and set: the fields of its record that the
+ * Text and Features sections edit, kept in the scene's run node.
+ */
+export type TextRunSettings = Pick<
+  TextRunRecord,
+  "shaping" | "features" | "language" | "script" | "lineHeight" | "align"
+>;
+
+/**
+ * Some of a run's settings, to change together (`Text.setSettings`): a field
+ * left out keeps its value, and in `features` a tag left out keeps its
+ * setting while `null` returns it to the font's default.
+ */
+export interface TextRunSettingsChange {
+  readonly shaping?: boolean;
+  readonly features?: Readonly<Record<string, boolean | null>>;
+  readonly language?: string | null;
+  readonly script?: string | null;
+  readonly lineHeight?: number | null;
+  readonly align?: TextAlign | null;
 }

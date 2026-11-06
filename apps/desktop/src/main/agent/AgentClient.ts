@@ -22,11 +22,15 @@ import type {
 import type { GlyphId, NamedInstance, Source } from "@shift/types";
 import type { MessagePortMain } from "electron";
 import type {
+  EditorControlOperation,
+  DocumentOperation,
   AgentCallMap,
   AgentE2ECallMap,
   AgentEventMap,
   EditorCaptureBounds,
+  TextOperation,
 } from "../../shared/agent/protocol";
+import type { CommandId } from "../../shared/commands";
 import { Channel, electronPortTransport } from "../../shared/workspace/channel";
 import { createShiftLogger, type ShiftLogger } from "../logging";
 
@@ -65,6 +69,22 @@ export class AgentClient {
   /** Returns a point-in-time view of the editor owned by this renderer. */
   inspectEditor(ifFontRevision?: FontRevision): Promise<ShiftObservation<EditorView>> {
     return this.#call("editor.inspect", { ifFontRevision });
+  }
+
+  /**
+   * Runs `command` through the window's own command request once
+   * `ifFontRevision`, when given, still matches; main has checked an agent may run it.
+   */
+  runCommand(command: CommandId, ifFontRevision?: FontRevision): Promise<ShiftObservation<null>> {
+    return this.#call("commands.run", { command, ifFontRevision });
+  }
+
+  /** Changes what the window's editor shows, answering with its view afterwards. */
+  controlEditor<K extends EditorControlOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<ShiftObservation<EditorView>> {
+    return this.#call(operation, input);
   }
 
   getFont(ifFontRevision?: FontRevision): Promise<ShiftObservation<FontOverview>> {
@@ -154,6 +174,22 @@ export class AgentClient {
     input: AgentCallMap["layers.render"]["request"],
   ): Promise<ShiftObservation<LayerSvg>> {
     return this.#call("layers.render", input);
+  }
+
+  /** Calls one of the window's proof-text capabilities, as `text.<operation>`. */
+  text<K extends TextOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]> {
+    return this.#call(operation, input);
+  }
+
+  /** Edits the window's document as its pages list and Edit menu do, as `pages.*` or `history.*`. */
+  edit<K extends DocumentOperation>(
+    operation: K,
+    input: AgentCallMap[K]["request"],
+  ): Promise<AgentCallMap[K]["response"]> {
+    return this.#call(operation, input);
   }
 
   /**

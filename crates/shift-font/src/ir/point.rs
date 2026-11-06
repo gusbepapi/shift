@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 crate::string_enum! {
     // The names match serde's camelCase names, which stored layers use.
     #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "pack", derive(pack::Pack))]
     #[serde(rename_all = "camelCase")]
     #[allow(
         clippy::enum_variant_names,
@@ -27,6 +28,7 @@ impl PointType {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct Point {
     id: PointId,
     x: f64,

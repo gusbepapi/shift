@@ -1,4 +1,4 @@
-use crate::SourceGlyphIds;
+use crate::SourceIds;
 use crate::distinct_named_instances;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -9,16 +9,14 @@ use std::{
 
 use norad::designspace::DesignSpaceDocument;
 use rayon::prelude::*;
-use shift_font::{
-    Axis, AxisId, DesignLocation, Font, GlyphId, LayerId, MetricDefinition, Source, SourceId,
-};
+use shift_font::{Axis, DesignLocation, Font, GlyphId, MetricDefinition, Source, SourceId};
 
 use crate::{
     ImportReport,
     errors::{FormatBackendError, FormatBackendResult},
     font_source::VariationAxisKind,
     formats::ufo::{UfoKerning, load_header, read_glyph_paths},
-    import::{GlifGlyph, GlifGlyphStream, GlifLayer},
+    import::{GlifDirectory, GlifGlyphStream},
     kerning_import::KerningImport,
 };
 
@@ -65,6 +63,7 @@ fn stream_designspace(
     designspace_path: &Path,
     retained_glyph_paths: Option<&[BTreeMap<String, PathBuf>]>,
 ) -> DesignspaceResult<DesignspaceStream> {
+    let ids = SourceIds::for_path(designspace_path);
     let designspace_dir =
         designspace_path
             .parent()
@@ -117,7 +116,7 @@ fn stream_designspace(
     if let Some(family_name) = &default_descriptor.familyname {
         header.metadata_mut().family_name = Some(family_name.clone());
     }
-    add_axes(&mut header, &document, &mut labels)?;
+    add_axes(&mut header, &document, &mut labels, &ids)?;
     header.set_axis_mappings(axis_mappings_from_designspace(&document, header.axes())?)?;
     let (instances, instance_loss) =
         distinct_named_instances(named_instances_from_designspace(&document, header.axes()));
@@ -191,13 +190,20 @@ fn stream_designspace(
             source.set_layer_name(descriptor.layer.clone());
             source
         },
+        &ids,
     );
 
-    let (glyph_ids, glyphs) =
-        build_glyph_directory(&SourceGlyphIds::for_path(designspace_path), &directories);
-    let mut report = import_kerning(&mut header, &default_kerning, &directories, &glyph_ids);
+    let stream = GlifGlyphStream::from_sources(&ids, &directories);
+    let mut report = import_kerning(
+        &mut header,
+        &default_kerning,
+        &directories,
+        stream.glyph_ids(),
+        &ids,
+    );
+    ids.identify(&mut header)?;
     report.losses.extend(instance_loss);
-    Ok((header, GlifGlyphStream::new(glyph_ids, glyphs), report))
+    Ok((header, stream, report))
 }
 
 fn stream_axisless_designspace(
@@ -206,6 +212,7 @@ fn stream_axisless_designspace(
     xml: &str,
     original_error: &str,
 ) -> DesignspaceResult<DesignspaceStream> {
+    let ids = SourceIds::for_path(designspace_path);
     let sources = parse_axisless_sources(xml).map_err(|fallback_error| {
         DesignspaceError::LoadDesignspace {
             path: designspace_path.to_path_buf(),
@@ -295,12 +302,19 @@ fn stream_axisless_designspace(
             source.set_layer_name(descriptor.layer.clone());
             source
         },
+        &ids,
     );
 
-    let (glyph_ids, glyphs) =
-        build_glyph_directory(&SourceGlyphIds::for_path(designspace_path), &directories);
-    let report = import_kerning(&mut header, &default_kerning, &directories, &glyph_ids);
-    Ok((header, GlifGlyphStream::new(glyph_ids, glyphs), report))
+    let stream = GlifGlyphStream::from_sources(&ids, &directories);
+    let report = import_kerning(
+        &mut header,
+        &default_kerning,
+        &directories,
+        stream.glyph_ids(),
+        &ids,
+    );
+    ids.identify(&mut header)?;
+    Ok((header, stream, report))
 }
 
 fn register_designspace_sources(
@@ -308,6 +322,7 @@ fn register_designspace_sources(
     source_materials: Vec<DesignspaceSourceMaterial>,
     default_index: usize,
     mut create_source: impl FnMut(usize, Option<&str>, &HashSet<String>) -> Source,
+    ids: &SourceIds,
 ) -> Vec<SourceDirectory> {
     let metric_definitions = header.metric_definitions().to_vec();
     let mut source_names = HashSet::new();
@@ -325,7 +340,8 @@ fn register_designspace_sources(
         source.set_line_gap(material.metrics.line_gap());
         source.set_underline_position(material.metrics.underline_position());
         source.set_underline_thickness(material.metrics.underline_thickness());
-        let source_id = header.add_source(source);
+        let source_id =
+            header.add_source(source.identified_as(ids.source_id(&material.index.to_string())));
         if material.index == default_index {
             header.set_default_source_id(source_id);
         }
@@ -347,9 +363,10 @@ fn import_kerning(
     default_kerning: &UfoKerning,
     directories: &[SourceDirectory],
     glyph_ids: &HashMap<String, GlyphId>,
+    ids: &SourceIds,
 ) -> ImportReport {
     let mut report = ImportReport::default();
-    let mut import = KerningImport::new(glyph_ids);
+    let mut import = KerningImport::new(glyph_ids, ids);
     default_kerning.add_groups(&mut import);
     for directory in directories {
         if let Some(kerning) = &directory.kerning {
@@ -364,11 +381,13 @@ fn add_axes(
     header: &mut Font,
     document: &DesignSpaceDocument,
     labels: &mut HashMap<String, Vec<shift_font::AxisLabel>>,
+    ids: &SourceIds,
 ) -> DesignspaceResult<()> {
     for axis in &document.axes {
+        let id = ids.axis_id(&axis.tag);
         let mut imported = match axis.variation_kind() {
             VariationAxisKind::Discrete { values, default } => Axis::discrete_with_id(
-                AxisId::new(),
+                id,
                 axis.tag.clone(),
                 axis.name.clone(),
                 values.into_vec(),
@@ -378,7 +397,8 @@ fn add_axes(
                 minimum,
                 default,
                 maximum,
-            } => Axis::new(
+            } => Axis::continuous_with_id(
+                id,
                 axis.tag.clone(),
                 axis.name.clone(),
                 minimum,
@@ -394,38 +414,20 @@ fn add_axes(
     Ok(())
 }
 
-fn build_glyph_directory(
-    source_glyph_ids: &SourceGlyphIds,
-    directories: &[SourceDirectory],
-) -> (HashMap<String, GlyphId>, Vec<GlifGlyph>) {
-    let names = directories
-        .iter()
-        .flat_map(|directory| directory.glyphs.keys().cloned())
-        .collect::<BTreeSet<_>>();
-    let glyph_ids = names
-        .iter()
-        .map(|name| (name.clone(), source_glyph_ids.glyph_id(name)))
-        .collect::<HashMap<_, _>>();
-    let glyphs = names
-        .into_iter()
-        .map(|name| {
-            let layers = directories
-                .iter()
-                .filter_map(|directory| {
-                    let path = directory.glyphs.get(&name)?;
-                    Some(GlifLayer {
-                        source_id: directory.source_id,
-                        layer_id: LayerId::new(),
-                        path: path.clone(),
-                    })
-                })
-                .collect();
-            GlifGlyph {
-                id: glyph_ids[&name],
-                name,
-                layers,
-            }
-        })
-        .collect();
-    (glyph_ids, glyphs)
+impl GlifGlyphStream {
+    /// The glyphs of every source directory, in name order.
+    fn from_sources(source_ids: &SourceIds, directories: &[SourceDirectory]) -> Self {
+        let names = directories
+            .iter()
+            .flat_map(|directory| directory.glyphs.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        let directories = directories
+            .iter()
+            .map(|directory| GlifDirectory {
+                source_id: directory.source_id,
+                glyphs: &directory.glyphs,
+            })
+            .collect::<Vec<_>>();
+        Self::from_directories(source_ids, names.into_iter().collect(), &directories)
+    }
 }

@@ -11,6 +11,7 @@ use crate::{Axis, AxisKind, AxisRole, CoreError, CoreResult, ExternalLocation, N
 /// design space only when previewing or exporting the product.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct NamedInstance {
     id: NamedInstanceId,
     name: String,
@@ -22,6 +23,13 @@ impl NamedInstance {
     /// Creates a named instance with newly minted stable identity.
     pub fn new(name: String, location: ExternalLocation, postscript_name: Option<String>) -> Self {
         Self::with_id(NamedInstanceId::new(), name, location, postscript_name)
+    }
+
+    /// The instance with `id` as its id, as a reader that derives ids gives it one.
+    #[must_use]
+    pub fn identified_as(mut self, id: NamedInstanceId) -> Self {
+        self.id = id;
+        self
     }
 
     /// Rebuilds a named instance while preserving source-format identity.
