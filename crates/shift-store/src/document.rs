@@ -55,6 +55,7 @@ impl ShiftStore {
                 recovery: None,
             };
             store.replace_font_state(font)?;
+            store.ensure_scene_page()?;
             store.insert_document_metadata(&DocumentMetadata {
                 document_id: DocumentId::new(),
                 saved_commit_id: CommitId::new(),
@@ -110,8 +111,9 @@ impl ShiftStore {
         if let Some(recovery) = self.recovery.as_ref() {
             let state = recovery.state()?;
             match state {
-                RecoveryState::Clean => {}
-                RecoveryState::Dirty | RecoveryState::Conflict => {
+                // A clean overlay can still hold glyph pages, navigation the
+                // new document keeps too.
+                RecoveryState::Clean | RecoveryState::Dirty | RecoveryState::Conflict => {
                     crate::recovery::apply_overlay_to_snapshot(
                         &mut conn,
                         recovery,
@@ -186,7 +188,12 @@ impl ShiftStore {
         let version = schema::validate_document_header(&conn)?;
         validate_document_shape(&conn)?;
         configure_document_connection(&conn)?;
-        schema::migrate(&conn, version, schema::SHIFT_DOCUMENT_SCHEMA_VERSION)?;
+        schema::migrate(
+            &conn,
+            version,
+            schema::SHIFT_DOCUMENT_SCHEMA_VERSION,
+            schema::SceneUpgrade::AddFirstPage,
+        )?;
 
         Ok(Self {
             conn,

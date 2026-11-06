@@ -1,4 +1,12 @@
-import { asAxisId, asGlyphId, asLayerId, asNamedInstanceId, asSourceId } from "@shift/types";
+import {
+  asAxisId,
+  asGlyphId,
+  asLayerId,
+  asNamedInstanceId,
+  asNodeId,
+  asSelectableId,
+  asSourceId,
+} from "@shift/types";
 import * as z from "zod/v4";
 
 const windowId = z.number().int().positive();
@@ -9,10 +17,21 @@ const sourceId = z.string().min(1).transform(asSourceId);
 const instanceId = z.string().min(1).transform(asNamedInstanceId);
 const layerId = z.string().min(1).transform(asLayerId);
 const axisId = z.string().min(1).transform(asAxisId);
+const nodeId = z.string().min(1).max(256).transform(asNodeId);
+/** A text position, between items: 0 is before the first. */
+const textPosition = z.number().int().min(0);
+/** Proof text, as the Text tool reads pasted text. */
+const proofText = z.string().max(4096);
+const pagePoint = z.strictObject({ x: z.number().finite(), y: z.number().finite() });
 const axisCoordinate = z.strictObject({ axisId, value: z.number() });
 const location = z.array(axisCoordinate).max(64);
 const kerningPosition = z.enum(["first", "second"]);
 const name = z.string().min(1).max(256);
+/** A page's name, as the pages list keeps it: surrounding spaces are dropped, so it needs another character. */
+const pageName = z
+  .string()
+  .max(256)
+  .refine((value) => value.trim() !== "", "A page name needs a character that is not a space");
 const glyphSelector = z.union([z.strictObject({ glyphId }), z.strictObject({ name })]);
 const sourceSelector = z.union([z.strictObject({ sourceId }), z.strictObject({ name })]);
 /** A layer by stable id, or a glyph's layer at a source (the default source when omitted). */
@@ -53,6 +72,30 @@ export const shiftInputSchemas = {
     scale: z.number().min(0.25).max(4).optional().default(1),
   }),
   "editor.inspect": z.strictObject({ windowId, ifFontRevision }),
+  "commands.list": z.strictObject({ windowId }),
+  "commands.run": z.strictObject({ windowId, ifFontRevision, command: z.string().min(1).max(128) }),
+  "editor.setTool": z.strictObject({ windowId, ifFontRevision, tool: z.string().min(1).max(128) }),
+  "editor.showPage": z.strictObject({
+    windowId,
+    ifFontRevision,
+    pageId: z.string().min(1).max(256).transform(asNodeId),
+  }),
+  "editor.openGlyph": z.strictObject({ windowId, ifFontRevision, glyph: glyphSelector }),
+  "editor.setView": z
+    .strictObject({
+      windowId,
+      ifFontRevision,
+      zoom: z.number().positive().finite().optional(),
+      center: z.strictObject({ x: z.number().finite(), y: z.number().finite() }).optional(),
+    })
+    .refine(({ zoom, center }) => zoom !== undefined || center !== undefined, {
+      message: "editor.setView takes zoom, center or both",
+    }),
+  "editor.select": z.strictObject({
+    windowId,
+    ifFontRevision,
+    ids: z.array(z.string().min(1).max(512).transform(asSelectableId)).max(10_000),
+  }),
   "font.get": z.strictObject({ windowId, ifFontRevision }),
   read: z.strictObject({ windowId }),
   "locations.resolve": z.strictObject({ windowId, ifFontRevision, location }),
@@ -115,6 +158,42 @@ export const shiftInputSchemas = {
     second: glyphSelector,
     source: sourceSelector.optional(),
   }),
+  "text.runs": z.strictObject({ windowId, ifFontRevision, pageId: nodeId.optional() }),
+  "text.get": z.strictObject({ windowId, ifFontRevision, runId: nodeId }),
+  "text.create": z.strictObject({
+    windowId,
+    ifFontRevision,
+    pageId: nodeId.optional(),
+    text: proofText,
+    at: pagePoint.optional(),
+  }),
+  "text.setText": z.strictObject({ windowId, ifFontRevision, runId: nodeId, text: proofText }),
+  "text.setCaret": z.strictObject({
+    windowId,
+    ifFontRevision,
+    runId: nodeId,
+    position: textPosition,
+    selection: z.strictObject({ start: textPosition, end: textPosition }).optional(),
+  }),
+  "text.setOptions": z.strictObject({
+    windowId,
+    ifFontRevision,
+    runId: nodeId,
+    options: z.strictObject({
+      shaping: z.boolean().optional(),
+      features: z.record(z.string().max(64), z.boolean().nullable()).optional(),
+      language: z.string().max(64).nullable().optional(),
+      script: z.string().max(64).nullable().optional(),
+      lineHeight: z.number().finite().nullable().optional(),
+      align: z.enum(["start", "end", "left", "center", "right"]).nullable().optional(),
+    }),
+  }),
+  "text.delete": z.strictObject({ windowId, ifFontRevision, runId: nodeId }),
+  "pages.create": z.strictObject({ windowId, ifFontRevision, name: pageName.optional() }),
+  "pages.rename": z.strictObject({ windowId, ifFontRevision, pageId: nodeId, name: pageName }),
+  "pages.delete": z.strictObject({ windowId, ifFontRevision, pageId: nodeId }),
+  "history.undo": z.strictObject({ windowId, ifFontRevision }),
+  "history.redo": z.strictObject({ windowId, ifFontRevision }),
   "layers.get": z.union([
     z.strictObject({ windowId, ifFontRevision, ...layerSelector.byId }),
     z.strictObject({ windowId, ifFontRevision, ...layerSelector.byGlyph }),

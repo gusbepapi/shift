@@ -17,7 +17,7 @@
 ## Agent Skills
 
 - `.agents/skills/` is the canonical source for repository skills. Pi discovers this standard location automatically.
-- Load the matching skill before acting: `commit` for commits, `pr` for pull requests, `issue` for issues, `writing-tests` for test changes or reviews, `writing-e2e-tests` for desktop Playwright specs, fixtures, and visual goldens, `ui` for interface and styling work, `signals` for reactive code (`signal`, `computed`, `effect`, model and render state), `jsdoc` for JSDoc, `typescript` for TypeScript domain types, lookups, collections and extensible kinds, `rust` for Rust code (error handling, lookups, checked arithmetic), and `rustdoc` for Rust documentation.
+- Load the matching skill before acting: `commit` for commits, `pr` for pull requests, `issue` for issues, `triage` for triaging or reviewing a pull request, `writing-tests` for test changes or reviews, `writing-e2e-tests` for desktop Playwright specs, fixtures, and visual goldens, `ui` for interface and styling work, `signals` for reactive code (`signal`, `computed`, `effect`, model and render state), `jsdoc` for JSDoc, `typescript` for TypeScript domain types, lookups, collections and extensible kinds, `rust` for Rust code (error handling, lookups, checked arithmetic), and `rustdoc` for Rust documentation.
 - `.claude/skills/` and `.codex/skills/` are generated client adapters. Never edit shared skills there directly.
 - After changing a canonical skill, run `pnpm agent-skills:sync`. CI runs `pnpm agent-skills:check` to prevent adapter drift.
 
@@ -170,7 +170,7 @@ Use these root commands instead of invoking a package's Vitest script directly. 
 
 ### Generated and domain types
 
-- **Generated types** live ONLY in `packages/types/src/bridge/generated.ts`, generated from shift-bridge's NAPI declarations. Run `pnpm generate:bridge-types` to regenerate. They are the single source of truth for shapes and field names (e.g. `familyName`, `versionMajor`, not `family` or `version`).
+- **Generated types** live ONLY in `packages/types/src/bridge/generated.ts`, generated from shift-bridge's NAPI declarations and not committed. Turbo typecheck, test and build tasks and `pnpm install` write it; run `pnpm generate:bridge-types` to regenerate by hand. They are the single source of truth for shapes and field names (e.g. `familyName`, `versionMajor`, not `family` or `version`).
 - **Generated layouts** (glyph value, source metric, and Slug atlas offsets and strides) live in `packages/types/src/layout/` and are exported from `@shift/types`. Rust tests in `shift-font` and `shift-slug` render them and fail when the checked-in copy is stale; run `pnpm generate:from-rust` after changing a Rust layout. Never hard-code these offsets in TypeScript.
 - **WebAssembly call layouts** are declared in `crates/shift-wasm` and generated into `packages/editor/src/lib/wasm/generated/layouts.ts` by the same command. Never hand-pack a `Float64Array` for a `@shift/wasm` call.
 - **Domain types** derived from generated shapes (definitions before an id is assigned, resolved metrics) live in `packages/types/src/domain.ts` and MUST derive from generated types (`Pick`, `Omit`, composition): same field names, no re-declaration of structure. The glyph model classes (`Point`, `Contour`, `Segment`, `Component`) live in `@shift/glyph-state`, and `Glyph` and `Font` in `packages/editor/src/lib/model/`.

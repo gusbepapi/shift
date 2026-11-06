@@ -1,6 +1,6 @@
 # @shift/runtime
 
-<!-- reviewed: 2026-10-04 review-every: 90d -->
+<!-- reviewed: 2026-11-01 review-every: 90d -->
 
 Host-neutral capability contracts shared by Shift protocol adapters and future plugin hosts.
 
@@ -22,6 +22,7 @@ packages/runtime/
   src/
     capabilities.ts       -- canonical capability, observation, and `ShiftRead` contracts
     read.ts               -- `ShiftReadScope` and `FontChangedError` over raw capabilities
+    controlErrors.ts      -- typed failures of the `commands` and `editor` control calls
     inputs.ts             -- Zod validation of untrusted code-mode arguments
     index.ts              -- public capability types and input schemas
   scripts/
@@ -37,12 +38,20 @@ packages/runtime/
 - `ShiftObservation`, `FontRevision`, and `ShiftTarget` -- revision-correlated result, opaque authored-state identity, and explicit window/precondition input.
 - `ShiftCapture` and `ShiftCaptureTarget` -- point-in-time PNG output and its explicit `window` or `editor` target.
 - `EditorInspection` -- point-in-time editor observation paired with its explicit target.
+- `EditorViewport` -- the canvas camera in an inspection: `zoom`, and the `center` point in the open glyph's units (or the page's), null before the canvas has a size.
+- `CommandSummary`, `CommandRun`, and the `Editor*Input` types -- the app commands an agent may run, and the inputs of the `commands` and `editor` control calls.
+- `CommandNotFoundError`, `CommandNotRunnableError`, `CommandDisabledError`, `ToolNotFoundError`, `PageNotFoundError`, `GlyphNotFoundError`, `ObjectNotFoundError`, `LastTabError`, and `CanvasHiddenError` (`src/controlErrors.ts`) -- the typed failures of control calls, recognized by `name` across process and sandbox boundaries.
 - `FontOverview`, `GlyphPage`, `GlyphSummary`, and `AuthoredLayer` -- read-only font (with its axes, axis mappings, sources and instances), paged directory, stable layer references, and nested source-specific geometry.
 - `ResolvedLocation`, `ResolvedGlyph`, and `ResolvedGlyphs` -- mapped location/metrics and drawable glyph output at arbitrary external coordinates.
 - `AuthoredContour`, `AuthoredPoint`, `AuthoredComponent`, `AuthoredAnchor`, and `AffineTransformation` -- familiar scripting hierarchy with stable IDs and conventional component transforms.
 - `LayerSvg`, `LayerOverlays`, `LayerAppearance`, and `LayerGuides` -- portable authored-layer proof output, semantic overlay selection, presentation-only overrides, and style-independent guide positions.
 - `KerningGroupSummary`, `KerningPairPage`, `AuthoredKerningPair`, and `KerningPairSide` -- font-wide kerning groups with members, and one master's authored pairs with each side tagged glyph or group.
 - `ResolvedKerningPairs`, `KerningResolution`, `KerningMasterValue`, `KerningOrigin`, and `KerningRule` -- the kerning between two glyphs at a master or location, with each master's value, how it arises, and which kind of pair applies.
+- `TextRunSummary`, `TextRunView`, and the `TextRun*Input` types -- a page's canvas text runs (proof text), one run as it shows with its items, glyphs and caret, and the inputs of the `text` capability.
+- `TextRunNotFoundError`, `PageNotFoundError`, `ProofTextError`, `UnknownGlyphNameError`, and `TextCaretError` (`src/errors.ts`) -- the typed failures of `text` calls, recognized by `name` across process boundaries like `FontChangedError`.
+- `PageCreateInput`, `PageRenameInput`, `PageDeleteInput`, and `PageChange` -- the inputs and answer of the `pages` capability, which edits the document's pages as the pages list does.
+- `HistoryInput`, `HistoryUndo`, `HistoryRedo`, and `HistoryLocation` -- the input and answers of the `history` capability, the window's Edit › Undo and Redo.
+- `LastPageError` and `HistoryUnavailableError` (`src/errors.ts`) -- refusing to delete a document's only page, and undo or redo in a preview, which has no undo history.
 - `shiftInputSchemas` -- reusable runtime validation of untrusted capability inputs before IPC.
 - `EditorView` -- renderer-owned portion of an editor observation.
 - `DocumentState` -- one window's document: where it came from, the file Save writes, and whether it is `dirty` or `needsSaveAs`. The desktop's editor reader serves it (`ShiftEditorReader.documentState`); it is not an MCP capability yet.
@@ -53,7 +62,7 @@ packages/runtime/
 
 A host implements `ShiftCapabilities` by routing each operation to the subsystem that owns the truth. The desktop host lists window/session identity in Electron main, captures pixels from the explicitly targeted window, and requests editor bounds or editor and font observations from that window's renderer.
 
-Every targeted call returns `{ fontRevision, value }`. The renderer settles pending authored operations, checks an optional `ifFontRevision`, performs the read, and verifies that the same revision still owns the result. Accepted edits advance the session-local revision immediately; undo, redo, and failed-edit recovery advance it again; save does not. The token is opaque, non-orderable, scoped to one live renderer session, and invalid after renderer replacement. Shift retains no historical state for it. A mismatch fails explicitly so a caller can restart a composed read instead of combining revisions. Font revisions cover authored font truth, not viewport, selection, focus, or other editor-only state. A `captureId` identifies one image while its surrounding `fontRevision` correlates that image with font data.
+Every targeted call returns `{ fontRevision, value }`. The renderer settles pending authored operations, checks an optional `ifFontRevision`, performs the read, and verifies that the same revision still owns the result. Accepted edits that change the font advance the session-local revision immediately (a scene-only edit, such as proof text, does not); undo, redo, and failed-edit recovery advance it again; save does not. The token is opaque, non-orderable, scoped to one live renderer session, and invalid after renderer replacement. Shift retains no historical state for it. A mismatch fails explicitly so a caller can restart a composed read instead of combining revisions. Font revisions cover authored font truth, not viewport, selection, focus, or other editor-only state. A `captureId` identifies one image while its surrounding `fontRevision` correlates that image with font data.
 
 Raw observations suit separate MCP requests and advanced clients. Scripts that compose several reads use `shift.read({ windowId }, async (read) => ...)`: the scope reads `font.get` once, caches that `FontOverview`, binds its revision, and injects `windowId` and `ifFontRevision` into every later call, returning plain values instead of observations. `ShiftReadScope` implements the scope over any `ShiftCapabilities`; the sandbox opens one per `shift.read` and closes it when the callback settles.
 
@@ -68,6 +77,14 @@ Layer reads use one native accepted-state query keyed by `LayerId`, behind pendi
 The code-API generator bundles only declarations reachable from `capabilities.ts`, including the canonical branded identifiers from `@shift/types`, then adds the code-mode global `shift: ShiftScript` (`ShiftCapabilities` plus `read`). `@shift/mcp` imports that generated file as text for `shift.describe`; it does not maintain another declaration.
 
 Kerning reads are read-only. `kerning.groups` lists font-wide groups by position, each with its member glyphs. `kerning.pairs` pages through one source's authored pairs in side-id order; a cursor names the last pair returned, so it survives that pair being removed, and the optional `glyph` filter keeps pairs naming the glyph directly or through its group at that position. Every kerning read takes its master as `source` (a `SourceSelector`), the default source when omitted. `kerning.resolve` takes pairs of glyph selectors (`{ name }` or `{ glyphId }`, as `kerning.at` and the `glyph` filter do) and answers at a `source`, an external `location`, or the default location, using the host's own kerning lookup and blending rather than re-deriving them: the most specific authored pair wins (glyph/glyph, glyph/group, group/glyph, group/group), a source that kerns other pairs but not this one is 0 there, and a source that authors no kerning takes the blend of the sources that do. Each resolution lists every source with that value, its `origin`, and the pair that applies. `kerning.at` reads one such entry: one pair, by glyph selectors, at one source.
+
+`commands` and the `editor` setters change what a window shows, never font data or files. `commands.list` returns the app commands whose registry `effect` is `view` (zoom, interface size, Select All, Deselect, Close Tab, Settings), and `commands.run` runs one through the window's own command request, as its menu item does; the host refuses any other command with `CommandNotRunnableError`, an unknown one with `CommandNotFoundError`, and a disabled one with `CommandDisabledError`; Close Tab with only the glyph overview left fails with `LastTabError`, since closing the window is not view state. `editor.setTool`, `showPage`, `openGlyph`, `setView` and `select` make the model calls the toolbar, pages list, glyph overview, zoom controls and selection make, and answer with the `EditorInspection` afterwards. None marks the document unsaved or moves `fontRevision` (`openGlyph` puts a glyph with no tab yet on a new glyph page, as the glyph overview does, and the document stays saved); each checks `ifFontRevision` first and fails with `FontChangedError`, doing nothing, when it is stale.
+
+`text` writes proof text, and what it writes is view state beside the font: the canvas text runs and the Text mode caret. `text.runs` lists a page's runs (the shown page by default) and `text.get` reads one; `ShiftRead` has both. `text.create`, `text.setText`, `text.setOptions` and `text.delete` are one undo step each through the Text tool's edit path and mark the document unsaved (except on a glyph tab's page, which is navigation); `text.setOptions` writes the run's settings in one `setRunSettings` scene edit, which Rust checks (`RunSettings::check`), and a refusal is a `TextRunOptionsError`; `text.setCaret` places the caret as session state. Text is proof text, parsed and formatted in one place, shift-font's `ProofText` (through `@shift/wasm`'s `proofTexts`), which the Text tool's paste and copy use too: `/name` picks a glyph and ends at a space it consumes or at the next `/`, `//` is a slash. A `/` naming nothing is a `ProofTextError`, and a name the font lacks an `UnknownGlyphNameError` rather than literal text; `TextRunSummary.text` is formatted by the same type, so it reads back as the same items. No write changes the font or advances `fontRevision`; with `ifFontRevision`, a write fails with `FontChangedError` before it changes anything.
+
+`pages` edits the document's pages through `Pages.create`, `rename` and `delete` (`@shift/editor`), the calls the pages list makes, one undo step each; `create` leaves the shown page shown. Each answers `PageChange`: the page touched and every page in list order, as `EditorView.pages` gives them. A page id outside the list (a glyph tab's page included) is a `PageNotFoundError`, and deleting the only page a `LastPageError`; both are checked before anything changes. Pages are scene data, so no page edit advances `fontRevision`.
+
+`history` is the window's Edit › Undo and Redo: `history.undo` and `history.redo` call `Editor.undo` and `Editor.redo`, as the `edit.undo` and `edit.redo` commands do, so a step replays whoever made it and shows the page it was made on. The answer's `location` is the `EditLocation` the replay revealed (`Pages.onReveal`), or null; nothing to replay answers `undone: false` / `redone: false`, not an error. Replaying a font edit moves `fontRevision`. A preview has no workspace history, and both fail with `HistoryUnavailableError`, as its Edit menu disables them. `commands.run` keeps refusing `edit.undo` and `edit.redo`: the commands lane is view-only.
 
 ## Workflow recipes
 

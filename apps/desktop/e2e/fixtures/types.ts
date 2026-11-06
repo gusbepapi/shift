@@ -43,6 +43,8 @@ export type ShiftOptions = {
   /** Preserves native geometry unless exact visual baseline dimensions are requested. */
   windowSizing: "native" | "visual";
   scriptedDialogs: boolean;
+  /** Launches with a simulated update that is found a few seconds after start. */
+  simulatedUpdate: boolean;
   openFontPath: string | undefined;
   saveShiftPaths: readonly string[] | undefined;
   dirtyDocumentChoice: DirtyDocumentChoice;
@@ -62,9 +64,9 @@ export type ShiftOptions = {
 };
 
 export interface CanonicalVariableFont {
-  axes: Axis[];
-  sources: Source[];
-  namedInstances: NamedInstance[];
+  axes: readonly Axis[];
+  sources: readonly Source[];
+  namedInstances: readonly NamedInstance[];
 }
 
 export interface ActiveGlyph {
@@ -120,7 +122,7 @@ export type RecoveryApp = {
   crashAndRecoverWindow: (persistedText: string) => Promise<Page>;
   crashAndReopenDocument: () => Promise<Page>;
   canonicalGlyphNames: () => string[];
-  canonicalVariableFont: () => CanonicalVariableFont;
+  canonicalVariableFont: () => Promise<CanonicalVariableFont>;
 };
 
 /** One Electron launch owned by {@link ElectronProcesses}. */

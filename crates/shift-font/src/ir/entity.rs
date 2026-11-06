@@ -53,6 +53,17 @@ macro_rules! id_impls {
                 Self::from_text(&prefixed_id($prefix))
             }
 
+            /// The id derived from `key` within `namespace`: the same for
+            /// the same pair in every process and every run, so two readers
+            /// of one source name the same entity alike. `key` must be
+            /// unique within `namespace`.
+            pub fn derived(namespace: &str, key: &str) -> Self {
+                Self::from_text(&format!(
+                    concat!($prefix, "_{}"),
+                    derived_id_suffix(namespace, key)
+                ))
+            }
+
             pub fn from_raw(raw: impl std::fmt::Display) -> Self {
                 let raw = raw.to_string();
                 if raw.starts_with(concat!($prefix, "_")) {
@@ -135,6 +146,7 @@ macro_rules! id_impls {
 macro_rules! typed_id {
     ($name:ident, $prefix:literal) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+        #[cfg_attr(feature = "pack", derive(pack::PackId), pack(brand = "@shift/types"))]
         pub struct $name(std::sync::Arc<str>);
 
         impl $name {
@@ -159,7 +171,10 @@ macro_rules! typed_id {
 /// freed, so ids minted per point or contour stay [`typed_id!`] ids.
 macro_rules! interned_id {
     ($name:ident, $prefix:literal) => {
+        // Crosses into the editor as its text, typed by the brand of the same
+        // name in @shift/types.
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(feature = "pack", derive(pack::PackId), pack(brand = "@shift/types"))]
         pub struct $name(IdText);
 
         impl std::fmt::Debug for $name {
@@ -326,6 +341,10 @@ typed_id!(ContourId, "contour");
 typed_id!(ComponentId, "component");
 typed_id!(AnchorId, "anchor");
 typed_id!(GuidelineId, "guideline");
+// Scene ids: one per canvas node, run or text item, freed with it.
+typed_id!(NodeId, "node");
+typed_id!(RunId, "run");
+typed_id!(TextItemId, "textItem");
 interned_id!(LayerId, "layer");
 interned_id!(GlyphId, "glyph");
 

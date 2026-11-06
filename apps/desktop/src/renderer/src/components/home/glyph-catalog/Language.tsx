@@ -7,6 +7,7 @@ import type {
 } from "@shift/glyph-info";
 import { SidebarRowButton } from "@/components/sidebar";
 import type { LanguageGlyph } from "@/types/glyphCatalog";
+import { GuideSlot } from "@/components/editor/object-tree/ObjectSectionRow";
 import { MissingGlyphsPopover } from "./MissingGlyphsPopover";
 
 export interface LanguageProps {
@@ -45,6 +46,7 @@ export const Language = ({
         }}
         title={title}
       >
+        <GuideSlot className="-ml-2" />
         <span className="min-w-0 flex-1 truncate pl-5 text-left">{entry.name}</span>
         <span className="shrink-0 text-xs">
           {complete ? "✓" : `${presentCount}/${requiredCount}`}

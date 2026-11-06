@@ -1,11 +1,12 @@
 //! Intents that act on the font: glyphs, sources, axes, kerning, and layer creation.
 
 use super::*;
-use crate::ColorData;
+use crate::{ColorData, ColorGlyph, ColorJson, ColorPalette};
 
 /// Creates glyph identity and metadata only. Authored editable data is
 /// created by explicit `CreateGlyphLayer` intents.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateGlyph {
     /// Caller-minted id so the verb returns identity synchronously;
     /// `None` mints Rust-side.
@@ -27,6 +28,7 @@ impl FontLevelIntent for CreateGlyph {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct UpdateGlyph {
     /// Stable id of the existing glyph to rename.
     pub glyph_id: GlyphId,
@@ -48,6 +50,7 @@ impl FontLevelIntent for UpdateGlyph {
 
 /// Replaces authored font metadata without changing font metrics.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct UpdateFontMetadata {
     pub metadata: FontMetadata,
 }
@@ -67,6 +70,7 @@ impl FontLevelIntent for UpdateFontMetadata {
 /// keep their first position; an empty list is stored as an empty array,
 /// which is distinct from the key being absent.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetLanguages {
     pub language_ids: Vec<String>,
 }
@@ -80,6 +84,7 @@ impl FontLevelIntent for SetLanguages {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateAxis {
     pub axis: Axis,
 }
@@ -93,6 +98,7 @@ impl FontLevelIntent for CreateAxis {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct UpdateAxis {
     pub axis: Axis,
 }
@@ -106,6 +112,7 @@ impl FontLevelIntent for UpdateAxis {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct DeleteAxis {
     pub axis_id: AxisId,
 }
@@ -119,6 +126,7 @@ impl FontLevelIntent for DeleteAxis {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetAxisMappings {
     pub mappings: Vec<AxisMapping>,
 }
@@ -132,6 +140,7 @@ impl FontLevelIntent for SetAxisMappings {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetMetricDefinitions {
     pub definitions: Vec<MetricDefinition>,
 }
@@ -145,6 +154,7 @@ impl FontLevelIntent for SetMetricDefinitions {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateNamedInstance {
     pub instance: NamedInstance,
 }
@@ -158,6 +168,7 @@ impl FontLevelIntent for CreateNamedInstance {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct UpdateNamedInstance {
     pub instance: NamedInstance,
 }
@@ -171,6 +182,7 @@ impl FontLevelIntent for UpdateNamedInstance {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct DeleteNamedInstance {
     pub instance_id: NamedInstanceId,
 }
@@ -186,14 +198,29 @@ impl FontLevelIntent for DeleteNamedInstance {
 /// Replaces every colour palette. All palettes must have the same length, and
 /// paints may only use entries that still exist.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetColorPalettes {
-    pub palettes: Vec<ColorPalette>,
+    /// The palettes, as the JSON text of a list of [`ColorPalette`].
+    pub palettes: ColorJson,
+}
+
+impl SetColorPalettes {
+    /// Replaces the palettes with `palettes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when the palettes have no JSON form.
+    pub fn new(palettes: &[ColorPalette]) -> CoreResult<Self> {
+        Ok(Self {
+            palettes: ColorJson::of(&palettes)?,
+        })
+    }
 }
 
 impl FontLevelIntent for SetColorPalettes {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
         let mut color = font.color().clone();
-        color.palettes = self.palettes.clone();
+        color.palettes = self.palettes.parse()?;
         font.set_color(color)?;
         Ok((Vec::new(), None))
     }
@@ -204,33 +231,64 @@ impl FontLevelIntent for SetColorPalettes {
 /// The renderer composes palette and paint edits locally, so one intent can add an entry to every
 /// palette and repaint the layers that use it without an invalid state in between.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetColor {
-    pub color: ColorData,
+    /// The colour data, as the JSON text of a [`ColorData`].
+    pub color: ColorJson,
+}
+
+impl SetColor {
+    /// Replaces the colour data with `color`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when `color` has no JSON form.
+    pub fn new(color: &ColorData) -> CoreResult<Self> {
+        Ok(Self {
+            color: ColorJson::of(color)?,
+        })
+    }
 }
 
 impl FontLevelIntent for SetColor {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
-        font.set_color(self.color.clone())?;
+        font.set_color(self.color.parse()?)?;
         Ok((Vec::new(), None))
     }
 }
 
 /// Creates or replaces the paint graph of one colour base glyph.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetColorGlyph {
-    pub color_glyph: ColorGlyph,
+    /// The colour glyph, as the JSON text of a [`ColorGlyph`].
+    pub color_glyph: ColorJson,
+}
+
+impl SetColorGlyph {
+    /// Creates or replaces the paint graph `color_glyph` names.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when `color_glyph` has no JSON form.
+    pub fn new(color_glyph: &ColorGlyph) -> CoreResult<Self> {
+        Ok(Self {
+            color_glyph: ColorJson::of(color_glyph)?,
+        })
+    }
 }
 
 impl FontLevelIntent for SetColorGlyph {
     fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)> {
+        let color_glyph: ColorGlyph = self.color_glyph.parse()?;
         let mut color = font.color().clone();
         match color
             .glyphs
             .iter_mut()
-            .find(|entry| entry.glyph == self.color_glyph.glyph)
+            .find(|entry| entry.glyph == color_glyph.glyph)
         {
-            Some(entry) => *entry = self.color_glyph.clone(),
-            None => color.glyphs.push(self.color_glyph.clone()),
+            Some(entry) => *entry = color_glyph,
+            None => color.glyphs.push(color_glyph),
         }
         font.set_color(color)?;
         Ok((Vec::new(), None))
@@ -239,6 +297,7 @@ impl FontLevelIntent for SetColorGlyph {
 
 /// Removes the paint graph of one colour base glyph, leaving its outline.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct RemoveColorGlyph {
     pub glyph_id: GlyphId,
 }
@@ -259,6 +318,7 @@ impl FontLevelIntent for RemoveColorGlyph {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct DeleteSource {
     pub source_id: SourceId,
 }
@@ -280,6 +340,7 @@ impl FontLevelIntent for DeleteSource {
 /// Creates a global source record only. Glyph layers are authored by
 /// explicit `CreateGlyphLayer` intents.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateSource {
     pub source_id: SourceId,
     pub name: String,
@@ -300,6 +361,7 @@ impl FontLevelIntent for CreateSource {
 
 /// Replaces the editable authoring values of an existing master source.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct UpdateSource {
     pub source_id: SourceId,
     pub name: String,
@@ -328,6 +390,7 @@ impl FontLevelIntent for UpdateSource {
 
 /// Creates one sparse editable glyph layer at one source.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateGlyphLayer {
     pub layer_id: LayerId,
     pub glyph_id: GlyphId,
@@ -348,6 +411,7 @@ impl FontLevelIntent for CreateGlyphLayer {
 
 /// Creates one editable glyph layer by copying another layer's shape with fresh internal ids.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CloneGlyphLayer {
     pub layer_id: LayerId,
     pub glyph_id: GlyphId,
@@ -378,6 +442,7 @@ impl FontLevelIntent for CloneGlyphLayer {
 /// Every source, glyph side, and group side must exist; groups are
 /// created separately. Editing a value never changes group membership.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetKerningValues {
     pub edits: Vec<KerningValueEdit>,
 }
@@ -394,6 +459,7 @@ impl FontLevelIntent for SetKerningValues {
 /// caller mints. The name is trimmed, and must be non-blank, free of
 /// control characters, and unique at its position.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct CreateKerningGroup {
     pub group_id: KerningGroupId,
     pub position: KerningPosition,
@@ -424,6 +490,7 @@ impl FontLevelIntent for CreateKerningGroup {
 /// Moves a glyph into a group at the group's pair position, out of any
 /// other group there, or out of its group at `position` with `None`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct SetKerningGroupMember {
     pub position: KerningPosition,
     pub glyph_id: GlyphId,
@@ -448,6 +515,7 @@ impl FontLevelIntent for SetKerningGroupMember {
 
 /// Renames a group. Pairs reference it by id, so its kerning is unchanged.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct RenameKerningGroup {
     pub group_id: KerningGroupId,
     pub name: String,
@@ -469,6 +537,7 @@ impl FontLevelIntent for RenameKerningGroup {
 /// Deletes a group. Pairs that reference it are kept and never resolve,
 /// so undoing the delete restores its kerning.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct DeleteKerningGroup {
     pub group_id: KerningGroupId,
 }
@@ -492,6 +561,7 @@ impl FontLevelIntent for DeleteKerningGroup {
 /// resolved values replace its advance, coordinates, and component
 /// transforms after fresh internal identities are minted.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct MaterializeGlyphLayer {
     pub layer_id: LayerId,
     pub glyph_id: GlyphId,

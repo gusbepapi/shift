@@ -1,8 +1,9 @@
+import { openFontInfo } from "./fixtures/appLocators";
 import type { Locator, Page } from "@playwright/test";
 import { expect, workspaceTest as test } from "./fixtures/electronApp";
 
 async function openSettings(page: Page, category: "Axes" | "Sources" | "Instances") {
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openFontInfo(page);
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: category, exact: true }).click();
@@ -55,13 +56,14 @@ test.describe("variable-font authoring controls", () => {
     await expect(dialog.getByRole("button", { name: "Black", exact: true })).toBeVisible();
 
     const axis = await editor.axis({ id: axisId });
+    const bounds = axis?.kind.kind === "continuous" ? axis.kind : null;
     const authored = {
       axis: axis && {
         tag: axis.tag,
         name: axis.name,
-        minimum: axis.minimum,
-        default: axis.default,
-        maximum: axis.maximum,
+        minimum: bounds?.minimum,
+        default: axis.kind.default,
+        maximum: bounds?.maximum,
       },
       source: (await editor.source({ name: "Bold" }))?.location.values[axisId],
       instance: (await editor.instance({ name: "Black" }))?.location.values[axisId],

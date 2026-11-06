@@ -1,8 +1,8 @@
 /**
  * The editing engine, compiled from `crates/shift-wasm` with its `engine`
  * feature: shift-engine's session over shift-font, the same code the native
- * workspace runs. Instantiated at import, from its own `.wasm` file rather
- * than embedded like `@shift/wasm`, so importing it waits for the compile.
+ * workspace runs. Instantiated by {@link initEngine}, from its own `.wasm`
+ * file rather than embedded like `@shift/wasm`.
  *
  * @remarks
  * Built into `src/generated-engine` as `shift_wasm_bg.wasm`, which bundlers
@@ -11,7 +11,19 @@
  * a chunk that loads when a font opens for editing. Use the typed wrapper in
  * `@shift/editor`; the raw exports are for it.
  */
-import { initSync } from "./generated-engine/shift_wasm.js";
+import { syncTransport } from "@shift/pack";
+import {
+  engineEditsRequest,
+  engineReadsRequest,
+  initSync,
+  internName,
+  nameOf,
+  svgPathsRequest,
+  takeReplyBlobs,
+  typedTextRequest,
+} from "./generated-engine/shift_wasm.js";
+import { EngineEdits, EngineReads, SvgPaths, TypedText } from "./generated-protocol";
+import { moduleNames } from "./names";
 
 /** The parts of Node's `process` this module reads, where it runs under Node. */
 interface NodeProcess {
@@ -34,7 +46,54 @@ async function engineModule(): Promise<WebAssembly.Module> {
   return WebAssembly.compile(await response.arrayBuffer());
 }
 
-initSync({ module: await engineModule() });
+let initializing: Promise<void> | null = null;
+
+/**
+ * Compiles and instantiates the engine module, once; every other export
+ * calls into it, so callers await this first.
+ *
+ * @remarks
+ * Not a top-level `await`: a consumer bundling the SDK for its default
+ * browser targets cannot build a chunk that uses one.
+ */
+export function initEngine(): Promise<void> {
+  initializing ??= instantiate();
+  return initializing;
+}
+
+async function instantiate(): Promise<void> {
+  initSync({ module: await engineModule() });
+}
+
+const names = moduleNames(internName, nameOf);
+
+/** Contours from SVG path data, as shift-font parses them. */
+export const svgPaths = new SvgPaths(syncTransport(svgPathsRequest, names, takeReplyBlobs));
+
+/** Text laid out as typed, by shift-text, over a font the window has no engine for. */
+export const typedText = new TypedText(syncTransport(typedTextRequest, names, takeReplyBlobs));
+
+/** What the editor reads from the engine session `handle`'s font. */
+export function engineReads(handle: number): EngineReads {
+  return new EngineReads(
+    syncTransport(
+      (method, input, blobs) => engineReadsRequest(handle, method, input, blobs),
+      names,
+      takeReplyBlobs,
+    ),
+  );
+}
+
+/** The intents the engine session `handle` applies next, and the records its latest edit changed. */
+export function engineEdits(handle: number): EngineEdits {
+  return new EngineEdits(
+    syncTransport(
+      (method, input, blobs) => engineEditsRequest(handle, method, input, blobs),
+      names,
+      takeReplyBlobs,
+    ),
+  );
+}
 
 export {
   engineApply,
@@ -42,31 +101,27 @@ export {
   engineCancelEdit,
   engineDiscardRedo,
   engineEndEdit,
+  engineEndPreview,
   engineGlyphNumbers,
-  engineKerningPairs,
-  engineKerningPairsNaming,
-  engineKerningRun,
   engineMarkSaved,
-  engineMissingKerningOrigin,
   engineNewAnchorName,
   engineNextGlyphName,
   engineOpen,
   enginePreload,
   enginePreview,
+  engineShowPreview,
   engineRedo,
   engineRelease,
   engineRewindEdit,
-  engineSourceMetricsAt,
   engineSourceNumbers,
+  engineSourceSetNumber,
   engineStage,
   engineUndo,
-  svgPathContours,
-  type EngineEdit,
-  type EngineKerningPair,
+  type EngineEditLayers,
   type EngineLayer,
   type EngineStructure,
   type KeptContour,
-  type EngineLayerSource,
+  type StoreRequest,
+  type StoreReply,
   type EngineStage,
-  type MissingKerningOrigin,
 } from "./generated-engine/shift_wasm.js";

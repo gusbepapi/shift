@@ -10,6 +10,7 @@
   "napi": {
     "binaryName": "shift-bridge",
     "dtsHeaderFile": "dts-header.d.ts",
+    "constEnum": false,
     "targets": [
       "aarch64-apple-darwin",
       "aarch64-linux-android",
@@ -30,16 +31,19 @@
   "devDependencies": {
     "@napi-rs/cli": "3.6.2",
     "@napi-rs/cross-toolchain": "1.0.3",
+    "@shift/pack": "workspace:*",
+    "@shift/wasm": "workspace:*",
     "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">= 10"
   },
   "scripts": {
+    "typecheck": "tsgo --noEmit",
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "build:e2e": "napi build --platform --profile e2e",
+    "build": "node scripts/build.mjs release",
+    "build:debug": "node scripts/build.mjs debug",
+    "build:e2e": "node scripts/build.mjs e2e",
     "types": "node scripts/types.mjs",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "vitest run",

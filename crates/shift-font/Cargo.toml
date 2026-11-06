@@ -12,8 +12,11 @@ crate-type = ["rlib"]
 test-support = []
 # ToSql/FromSql for ids, for crates that store them in SQLite.
 rusqlite = ["dep:rusqlite"]
+# A number packing for the types the editor's WebAssembly calls carry.
+pack = ["dep:pack"]
 
 [dependencies]
+pack = { workspace = true, optional = true }
 bitflags = "2"
 rusqlite = { version = "0.37.0", optional = true }
 fontdrasil = "1.0.0"
@@ -26,7 +29,9 @@ libm = "0.2.16"
 imbl = { version = "7", features = ["serde"] }
 linesweeper = "0.3.0"
 serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
 thiserror = "2.0.18"
+fractional_index = { version = "2.0.2", default-features = false }
 getrandom = "0.3.3"
 icu_properties = "2.0"
 
@@ -34,7 +39,7 @@ icu_properties = "2.0"
 getrandom = { version = "0.3.3", features = ["wasm_js"] }
 
 [dev-dependencies]
-serde_json = "1.0"
+proptest = "1"
 
 [lints]
 workspace = true

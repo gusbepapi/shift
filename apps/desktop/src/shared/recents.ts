@@ -1,4 +1,4 @@
-import type { Specimen } from "./workspace/protocol";
+import type { Specimen } from "./workspace/lanes";
 
 /** One file Shift has opened, as the launcher and File → Open Recent show it. */
 export type RecentDocument = {
@@ -17,7 +17,19 @@ export type RecentDocument = {
    * nothing, or the file changed outside Shift since it was built.
    */
   specimen: Specimen | null;
+  /** Whether the file has a preview to draw, and why not when it has none. */
+  preview: RecentPreview;
 };
+
+/**
+ * Where a recent file's preview stands: not built yet, built, built but the
+ * font draws nothing usable, or not built because reading the font failed.
+ */
+export type RecentPreview =
+  | { status: "pending" }
+  | { status: "ready" }
+  | { status: "empty" }
+  | { status: "failed"; error: string };
 
 /** A file open that should be recorded in recents. */
 export type RecentDocumentVisit = {

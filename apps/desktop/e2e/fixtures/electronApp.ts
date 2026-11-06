@@ -109,6 +109,7 @@ export const test = base.extend<ShiftFixtures & ShiftOptions, ShiftWorkerFixture
   ],
   electronArgs: [[], { option: true }],
   scriptedDialogs: [false, { option: true }],
+  simulatedUpdate: [false, { option: true }],
   openFontPath: [undefined, { option: true }],
   saveShiftPaths: [undefined, { option: true }],
   font: [undefined, { option: true }],
@@ -170,6 +171,7 @@ export const test = base.extend<ShiftFixtures & ShiftOptions, ShiftWorkerFixture
       deviceScaleFactor,
       electronArgs,
       scriptedDialogs,
+      simulatedUpdate,
       openFontPath,
       saveShiftPaths,
       dirtyDocumentChoice,
@@ -186,7 +188,12 @@ export const test = base.extend<ShiftFixtures & ShiftOptions, ShiftWorkerFixture
     testInfo,
   ) => {
     if (sharedWorkspace) {
-      if (startupFontPath !== FONTS.mutatorSansTtf || scriptedDialogs || electronArgs.length > 0) {
+      if (
+        startupFontPath !== FONTS.mutatorSansTtf ||
+        scriptedDialogs ||
+        simulatedUpdate ||
+        electronArgs.length > 0
+      ) {
         throw new Error("sharedWorkspace needs the default MutatorSans workspace fixture.");
       }
       const { app, processes } = await sharedWorkspaceApp();
@@ -205,6 +212,7 @@ export const test = base.extend<ShiftFixtures & ShiftOptions, ShiftWorkerFixture
       ? createAuthoredDocument(startupFontPath, path.join(testRoot, "workspace"))
       : undefined;
     const environment = shiftTestEnvironment();
+    if (simulatedUpdate) environment.SHIFT_SIMULATE_UPDATE = "1";
 
     if (scriptedDialogs) {
       environment.SHIFT_E2E_NATIVE_DIALOGS = "1";
@@ -364,7 +372,7 @@ export const recoveryTest = test.extend<{ recoveryApp: RecoveryApp }>({
         return page;
       },
       canonicalGlyphNames: () => readCanonicalGlyphNames(documentPath, testRoot),
-      canonicalVariableFont: () => readCanonicalVariableFont(documentPath, testRoot),
+      canonicalVariableFont: () => readCanonicalVariableFont(documentPath, testRoot, page),
     });
   },
 });
@@ -505,27 +513,33 @@ async function readyWorkspacePage(app: ElectronApplication): Promise<Page> {
 function readCanonicalGlyphNames(documentPath: string, testRoot: string): string[] {
   const bridge = createBridge();
   const recoveryPath = path.join(testRoot, `${crypto.randomUUID()}.recovery.sqlite`);
-  bridge.openDocument(documentPath, recoveryPath);
+  bridge.workspace.openDocument(documentPath, recoveryPath);
   try {
-    return bridge.getGlyphs().map((glyph) => glyph.name);
+    return bridge.workspace.getGlyphs().map((glyph) => glyph.name);
   } finally {
-    bridge.closeWorkspace();
+    bridge.workspace.closeWorkspace();
     fs.rmSync(recoveryPath, { force: true });
   }
 }
 
-function readCanonicalVariableFont(documentPath: string, testRoot: string): CanonicalVariableFont {
+/**
+ * The saved document's axes, sources and instances: the axes and sources as
+ * an engine in `page`'s window reads them from the document's directory.
+ */
+async function readCanonicalVariableFont(
+  documentPath: string,
+  testRoot: string,
+  page: Page,
+): Promise<CanonicalVariableFont> {
   const bridge = createBridge();
   const recoveryPath = path.join(testRoot, `${crypto.randomUUID()}.recovery.sqlite`);
-  bridge.openDocument(documentPath, recoveryPath);
+  bridge.workspace.openDocument(documentPath, recoveryPath);
   try {
-    return {
-      axes: bridge.getAxes(),
-      sources: bridge.getSources(),
-      namedInstances: bridge.getNamedInstances(),
-    };
+    const directory = Buffer.from(bridge.workspace.encodedDirectory()).toString("base64");
+    const { axes, sources } = await hooksOf(page).session.fontRecordsOf(directory);
+    return { axes, sources, namedInstances: bridge.workspace.getNamedInstances() };
   } finally {
-    bridge.closeWorkspace();
+    bridge.workspace.closeWorkspace();
     fs.rmSync(recoveryPath, { force: true });
   }
 }

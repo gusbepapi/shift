@@ -2,10 +2,11 @@ use std::collections::{BTreeSet, HashSet};
 
 use shift_font::{
     AppliedIntents, CoreError, Font, FontChange, FontChangeSet, FontIntentSet, Glyph, GlyphId,
-    GlyphLayer, LayerId,
+    GlyphLayer, LayerId, TouchedLayer,
 };
 
-use crate::{LayerResidency, LayerSource};
+use crate::scene::{Scene, SceneChangeSet, SceneError, SceneIntent};
+use crate::{DocumentChangeSet, LayerResidency, LayerSource};
 
 /// Why a staged edit failed. The session is unchanged.
 #[derive(Debug, thiserror::Error)]
@@ -15,6 +16,9 @@ pub enum EngineError {
 
     #[error("refusing to change unloaded glyph layer {0}")]
     UnloadedLayerMutation(LayerId),
+
+    #[error(transparent)]
+    Scene(#[from] SceneError),
 }
 
 /// Why loading failed. Layers loaded before the failure stay loaded.
@@ -28,14 +32,17 @@ pub enum LoadError<E> {
 }
 
 /// An editing session over a font directory whose layer content loads on
-/// demand.
+/// demand, and the scene the font is shown on.
 ///
 /// Edits are staged on an O(1) copy of the font and committed separately, so
-/// a caller that persists them commits only once the write succeeded.
+/// a caller that persists them commits only once the write succeeded. The
+/// scene sits beside the font, never inside it, so nothing that reads a
+/// [`Font`] (export, compilation) sees it.
 #[derive(Clone, Debug)]
 pub struct EngineSession {
     font: Font,
     residency: LayerResidency,
+    scene: Scene,
 }
 
 /// An applied edit that is not part of the session yet.
@@ -54,6 +61,11 @@ impl StagedEdit {
     pub fn changes(&self) -> &FontChangeSet {
         &self.applied.changes
     }
+
+    /// The layers the edit touches, in first-touch order.
+    pub fn touched(&self) -> &[TouchedLayer] {
+        &self.applied.layers
+    }
 }
 
 impl EngineSession {
@@ -62,6 +74,7 @@ impl EngineSession {
         Self {
             residency: LayerResidency::with_unloaded(font.layer_ids()),
             font,
+            scene: Scene::default(),
         }
     }
 
@@ -70,11 +83,37 @@ impl EngineSession {
         Self {
             font,
             residency: LayerResidency::default(),
+            scene: Scene::default(),
         }
+    }
+
+    /// The session with `scene` as its scene, as a document stores it.
+    #[must_use]
+    pub fn with_scene(mut self, scene: Scene) -> Self {
+        self.scene = scene;
+        self
     }
 
     pub fn font(&self) -> &Font {
         &self.font
+    }
+
+    pub fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
+    /// Applies scene `intents` and keeps them; returns what they changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the intent's [`SceneError`]; the scene is then unchanged.
+    pub fn apply_scene(&mut self, intents: &[SceneIntent]) -> Result<SceneChangeSet, SceneError> {
+        self.scene.apply_intents(intents)
+    }
+
+    /// Replaces the scene with the one stored, as after a discard.
+    pub fn replace_scene(&mut self, scene: Scene) {
+        self.scene = scene;
     }
 
     pub fn residency(&self) -> &LayerResidency {
@@ -151,9 +190,7 @@ impl EngineSession {
         let mut closure: BTreeSet<GlyphId> = roots.into_iter().collect();
         let mut frontier: Vec<GlyphId> = closure.iter().copied().collect();
         while !frontier.is_empty() {
-            let persisted = source
-                .component_closure(&frontier)
-                .map_err(LoadError::Source)?;
+            let persisted = source.bases_of(&frontier).map_err(LoadError::Source)?;
             let loaded = self.font.component_glyph_ids_of_glyphs(&frontier);
             // `insert` is true only for a glyph not seen yet.
             frontier = persisted
@@ -373,6 +410,35 @@ impl EngineSession {
         Ok(self.commit(staged))
     }
 
+    /// Loads what replaying `change_set` reads, then installs its font and
+    /// scene changes together: an undo or redo of a document edit. On failure
+    /// neither is installed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::replay`], and [`EngineError::Scene`] when a scene node is no
+    /// longer what the change set found.
+    pub fn replay_document<S: LayerSource>(
+        &mut self,
+        source: &mut S,
+        change_set: &DocumentChangeSet,
+    ) -> Result<AppliedIntents, ApplyError<S::Error>> {
+        let mut scene = self.scene.clone();
+        scene
+            .apply_change_set(&change_set.scene)
+            .map_err(EngineError::from)?;
+        let applied = if change_set.font.is_empty() {
+            AppliedIntents {
+                changes: FontChangeSet::default(),
+                layers: Vec::new(),
+            }
+        } else {
+            self.replay(source, change_set.font.clone())?
+        };
+        self.scene = scene;
+        Ok(applied)
+    }
+
     /// Whether any layer of `glyph_id` is still a placeholder.
     fn is_partly_loaded(&self, glyph_id: GlyphId) -> bool {
         self.font
@@ -391,9 +457,14 @@ impl EngineSession {
             return Ok(BTreeSet::new());
         }
         let mut dependents = self.font.dependent_glyph_ids(layer_ids);
+        let owners: BTreeSet<GlyphId> = layer_ids
+            .iter()
+            .filter_map(|layer_id| self.font.glyph_id_by_layer(*layer_id))
+            .collect();
+        let owners: Vec<GlyphId> = owners.into_iter().collect();
         // Loaded composites may use the glyph through edits not persisted
         // yet, so the source's answer only adds to the font's.
-        dependents.extend(source.dependents(layer_ids).map_err(LoadError::Source)?);
+        dependents.extend(source.composites_of(&owners).map_err(LoadError::Source)?);
         Ok(dependents)
     }
 

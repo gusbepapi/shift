@@ -190,6 +190,24 @@ export {
   type CollapsiblePanelProps,
   type CollapsibleChevronProps,
 } from "./components/collapsible";
+export { ScrollArea, type ScrollAreaProps } from "./components/scroll-area";
+export {
+  SortableItem,
+  SortableList,
+  useSortableItem,
+  type SortableActivatorProps,
+  type SortableItemHandle,
+  type SortableItemProps,
+  type SortableListProps,
+} from "./components/sortable-list";
+export { useInlineRename, type InlineRenameProps } from "./components/inline-rename";
+export {
+  DocumentTab,
+  DocumentTabs,
+  DocumentTabsDivider,
+  type DocumentTabProps,
+  type DocumentTabsProps,
+} from "./components/document-tabs";
 export {
   ResizablePanelGroup,
   ResizablePanel,
@@ -210,7 +228,9 @@ export {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   Copy,
+  FileIcon,
   LayoutGrid,
   List,
   MenuIcon,

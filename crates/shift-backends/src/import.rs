@@ -1,8 +1,11 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 use rayon::prelude::*;
-use shift_font::{ColorData, Font, Glyph, GlyphId, GlyphName, LayerId, SourceId};
+use shift_font::{Anchor, ColorData, Font, Glyph, GlyphId, GlyphName, LayerId, SourceId};
 
+use crate::SourceIds;
+use crate::font_source::authored::{AuthoredEntry, AuthoredGlyphs};
 use crate::{BackendError, BackendResult, FontFormat, FormatBackendResult, ImportReport};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +50,12 @@ pub(crate) struct GlifLayer {
     pub(crate) path: PathBuf,
 }
 
+/// One source's folder of GLIF files, by glyph name.
+pub(crate) struct GlifDirectory<'a> {
+    pub(crate) source_id: SourceId,
+    pub(crate) glyphs: &'a BTreeMap<String, PathBuf>,
+}
+
 #[derive(Clone)]
 pub(crate) struct GlifGlyph {
     pub(crate) id: GlyphId,
@@ -61,12 +70,50 @@ pub(crate) struct GlifGlyphStream {
 }
 
 impl GlifGlyphStream {
-    pub(crate) fn new(glyph_ids: HashMap<String, GlyphId>, glyphs: Vec<GlifGlyph>) -> Self {
+    /// The glyphs `names` lists, in that order, each with a layer in every
+    /// directory that holds a GLIF for it. A directory's position among
+    /// `directories` keys the layer's id.
+    pub(crate) fn from_directories(
+        source_ids: &SourceIds,
+        names: Vec<String>,
+        directories: &[GlifDirectory<'_>],
+    ) -> Self {
+        let glyph_ids = names
+            .iter()
+            .map(|name| (name.clone(), source_ids.glyph_id(name)))
+            .collect::<HashMap<_, _>>();
+        let glyphs = names
+            .into_iter()
+            .map(|name| {
+                let layers = directories
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, directory)| {
+                        let path = directory.glyphs.get(&name)?;
+                        Some(GlifLayer {
+                            source_id: directory.source_id,
+                            layer_id: source_ids.layer_id(&name, &index.to_string()),
+                            path: path.clone(),
+                        })
+                    })
+                    .collect();
+                GlifGlyph {
+                    id: glyph_ids[&name],
+                    name,
+                    layers,
+                }
+            })
+            .collect();
         Self {
             glyph_ids,
             glyphs,
             next_glyph: 0,
         }
+    }
+
+    /// Each glyph's id by name.
+    pub(crate) fn glyph_ids(&self) -> &HashMap<String, GlyphId> {
+        &self.glyph_ids
     }
 }
 
@@ -103,41 +150,104 @@ impl GlyphStream for GlifGlyphStream {
         let glyph_ids = &self.glyph_ids;
         let glyphs = self.glyphs[self.next_glyph..end]
             .par_iter()
-            .map(|record| load_glif_glyph(record, glyph_ids))
+            .map(|record| record.load(glyph_ids))
             .collect::<FormatBackendResult<Vec<_>>>()?;
         self.next_glyph = end;
         Ok(glyphs)
     }
 }
 
-fn load_glif_glyph(
-    record: &GlifGlyph,
-    glyph_ids: &HashMap<String, GlyphId>,
-) -> FormatBackendResult<Glyph> {
-    let mut glyph = Glyph::with_id(record.id, record.name.clone());
-    for (index, layer_record) in record.layers.iter().enumerate() {
-        let norad_glyph = norad::Glyph::load(&layer_record.path).map_err(|error| {
+impl GlifGlyph {
+    /// The glyph, converted with every layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::FormatBackendError::Ufo`] when a layer's GLIF cannot be read, parsed or
+    /// converted.
+    fn load(&self, glyph_ids: &HashMap<String, GlyphId>) -> FormatBackendResult<Glyph> {
+        let mut glyph = Glyph::with_id(self.id, self.name.clone());
+        for (index, layer_record) in self.layers.iter().enumerate() {
+            let norad_glyph = self.parse(layer_record)?;
+            if index == 0 {
+                crate::formats::ufo::UfoReader::set_glyph_identity(&mut glyph, &norad_glyph);
+            }
+            let layer = crate::formats::ufo::UfoReader::convert_stream_layer(
+                &norad_glyph,
+                layer_record.layer_id,
+                layer_record.source_id,
+                glyph_ids,
+            )?;
+            glyph.set_layer(layer);
+        }
+        Ok(glyph)
+    }
+
+    /// The GLIF behind `layer`, one of this glyph's layers, parsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::FormatBackendError::Ufo`] when the file cannot be read or parsed.
+    fn parse(&self, layer: &GlifLayer) -> FormatBackendResult<norad::Glyph> {
+        norad::Glyph::load(&layer.path).map_err(|error| {
             crate::FormatBackendError::Ufo(format!(
                 "failed to read glyph {:?} from {}: {error}",
-                record.name,
-                layer_record.path.display()
+                self.name,
+                layer.path.display()
             ))
-        })?;
-        if index == 0 {
-            glyph.set_unicodes(norad_glyph.codepoints.iter().map(u32::from).collect());
-            if !norad_glyph.lib.is_empty() {
-                *glyph.lib_mut() = crate::formats::ufo::UfoReader::convert_lib(&norad_glyph.lib);
+        })
+    }
+
+    /// The glyph as a directory lists it: its identity and a placeholder per
+    /// layer, with the bases its components use and the layers that carry an
+    /// anchor marks attach to. Parses every layer's GLIF but converts none.
+    fn entry(&self, glyph_ids: &HashMap<String, GlyphId>) -> FormatBackendResult<AuthoredEntry> {
+        let mut entry = AuthoredEntry::new(Glyph::with_id(self.id, self.name.clone()));
+        for (index, layer) in self.layers.iter().enumerate() {
+            let norad_glyph = self.parse(layer)?;
+            if index == 0 {
+                crate::formats::ufo::UfoReader::set_glyph_identity(&mut entry.glyph, &norad_glyph);
+            }
+            entry
+                .glyph
+                .set_layer(crate::formats::ufo::UfoReader::placeholder_layer(
+                    &norad_glyph,
+                    layer.layer_id,
+                    layer.source_id,
+                ));
+            for component in &norad_glyph.components {
+                entry
+                    .bases
+                    .insert(crate::formats::ufo::UfoReader::component_base_id(
+                        glyph_ids,
+                        component.base.as_str(),
+                    )?);
+            }
+            let attaching = norad_glyph
+                .anchors
+                .iter()
+                .any(|anchor| Anchor::name_attaches_marks(anchor.name.as_deref()));
+            if attaching {
+                entry.attaching.push(layer.layer_id);
             }
         }
-        let layer = crate::formats::ufo::UfoReader::convert_stream_layer(
-            &norad_glyph,
-            layer_record.layer_id,
-            layer_record.source_id,
-            glyph_ids,
-        )?;
-        glyph.set_layer(layer);
+        Ok(entry)
     }
-    Ok(glyph)
+}
+
+/// UFO and designspace glyphs, read one at a time with the layer ids the
+/// stream minted for them.
+impl AuthoredGlyphs for GlifGlyphStream {
+    fn glyph_count(&self) -> usize {
+        self.glyphs.len()
+    }
+
+    fn entry(&self, index: usize) -> FormatBackendResult<AuthoredEntry> {
+        self.glyphs[index].entry(&self.glyph_ids)
+    }
+
+    fn glyph(&self, index: usize) -> FormatBackendResult<Glyph> {
+        self.glyphs[index].load(&self.glyph_ids)
+    }
 }
 
 pub(crate) type PreparedImport = (Font, Box<dyn GlyphStream>, ImportReport);

@@ -1,77 +1,96 @@
 //! The editing engine: an [`EngineSession`] over the open font that applies
 //! the editor's intents synchronously, in the frame they are made.
 //!
-//! Layers load on demand through an [`EngineLayerSource`] the editor passes
-//! in, which reads the store synchronously. Intents arrive in the same shape
-//! the native workspace takes (`shift_wire::intents`), and each touched layer
-//! comes back in the same shape as the workspace's echo.
+//! Layers load on demand from the store, asked through shift-engine's
+//! [`StoreReader`] request protocol: the session encodes each request and
+//! calls the one function the editor passes in, which forwards it unchanged
+//! to the preload's native reader and returns its reply. Intents arrive as
+//! shift-font's own, packed ([`crate::engine_edits`]), and each touched
+//! layer comes back in the same shape as the workspace's echo.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use js_sys::{Array, Float64Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Float64Array, Function, Object, Reflect, Uint8Array};
+use pack::{CarryingNames, Packed};
 use serde::Serialize;
-use shift_engine::{ApplyError, EditHistory, EngineSession, LayerSource};
+use shift_engine::scene::{Scene, SceneChangeSet, SceneIntent, SceneNode};
+use shift_engine::{
+    ApplyError, EditHistory, EditLocation, EngineSession, LayerSource, RecordCache, RecordSource,
+    Recording, Replayed, StoreReadError, StoreReaderClient,
+};
 use shift_font::{
-    AppliedIntents, Contour, Font, FontChangeImpact, FontIntent, FontIntentSet, GlyphId,
-    GlyphLayer, LayerId, SetPositions, TouchedLayer,
+    AppliedIntents, Contour, Font, FontChangeImpact, FontIntent, FontIntentSet, GlyphDataCategory,
+    GlyphId, GlyphLayer, LayerId, NamedGlyph, TouchedLayer,
 };
 use shift_wire::replacement::FontReplacement;
-use shift_wire::{AnchorData, ComponentData, ContourData, intents};
+use shift_wire::{AnchorData, ComponentData, ContourData, values};
 use wasm_bindgen::prelude::*;
 
-use crate::engine_reads::InternedIds;
+use crate::engine_reads::{FontVariation, InternedIds};
+use crate::page_layout::RunLayouts;
+use crate::shaping::TextShaping;
 
 #[wasm_bindgen(typescript_custom_section)]
 const ENGINE_TYPES: &str = r#"
 import type {
   ContourData,
   ContourId,
-  FontIntent,
-  FontReplacement,
   GlyphId,
   GlyphStructure,
   KerningGroupId,
   LayerId,
+  NodeId,
 } from "@shift/types";
 
 /**
- * Where an engine session reads layers it has not loaded: the saved and
- * persisted store, read synchronously. It must not call back into the engine.
+ * Sends one request of shift-engine's `StoreReader` protocol, encoded by the
+ * engine, to the store's reader unchanged, and returns the reader's reply. The
+ * engine calls it within an edit, synchronously; it must not call back into
+ * the engine.
  */
-export interface EngineLayerSource {
-  /** The content of `layerIds` as one MessagePack array of named-field layers. */
-  load(layerIds: string[]): Uint8Array;
-  /** `glyphIds` plus every glyph their components use, transitively. */
-  componentClosure(glyphIds: string[]): string[];
-  /** Glyphs with a component of a glyph that owns one of `layerIds`. */
-  dependents(layerIds: string[]): string[];
+export type StoreRequest = (
+  method: number,
+  numbers: Float64Array,
+  blobs: Uint8Array[],
+) => StoreReply;
+
+/** A `StoreReader` reply, as the native reader returns it. */
+export interface StoreReply {
+  numbers: Float64Array;
+  blobs: Uint8Array[];
 }
 
-/** What one edit did: the layers it touched and the font-level records it changed. */
-export interface EngineEdit {
+/**
+ * What one edit did: the layers it touched. The font-level records it changed
+ * cross packed, through `EngineEdits.replacement`.
+ */
+export interface EngineEditLayers {
   layers: EngineLayer[];
   /**
-   * Each font-level collection the edit changed, whole, as the workspace's
-   * echo carries it; absent when it changed none. Glyph records never come
-   * from the engine: they need the store's component references and glyph
-   * categories.
+   * What its changes invalidate, as `FontChangeImpact` bits: bit `i` is the
+   * `i`th `FontChangeFlag`, in declaration order.
    */
-  next?: FontReplacement;
+  impact: number;
   /** For an undo or redo: its change set, as named MessagePack, to persist. */
   changeSet?: Uint8Array;
   /** For an undo or redo: whether it left the font as last saved. */
   matchesSaved?: boolean;
+  /**
+   * For an undo or redo: whether it changed the font, not only the scene
+   * (pages, text runs and placed glyphs).
+   */
+  changesFont?: boolean;
 }
 
 /**
  * What applying intents within the open edit did, without the font-level
- * records an `EngineEdit` carries: the layers they touched, and whether they
- * changed what the engine's kerning and source-metric reads return.
+ * records an `EngineEdit` carries: the layers they touched, and what their
+ * changes invalidate, as `EngineEditLayers.impact`.
  */
 export interface EngineStage {
   layers: EngineLayer[];
-  kerning: boolean;
-  sourceMetrics: boolean;
+  impact: number;
 }
 
 /** A contour an edit kept as it was: the one with this id in the structure the edit started from. */
@@ -82,7 +101,7 @@ export interface KeptContour {
 
 /** A layer's structure after a structural edit; the contours it kept come by id alone. */
 export interface EngineStructure extends Omit<GlyphStructure, "contours"> {
-  contours: (ContourData | KeptContour)[];
+  contours: readonly (ContourData | KeptContour)[];
 }
 
 /**
@@ -103,36 +122,20 @@ export interface EngineLayer {
 }
 "#;
 
-#[wasm_bindgen]
-extern "C" {
-    /// The editor's synchronous reader of the store.
-    #[wasm_bindgen(typescript_type = "EngineLayerSource")]
-    pub type EngineLayerSource;
-
-    #[wasm_bindgen(method, catch)]
-    fn load(this: &EngineLayerSource, layer_ids: Array) -> Result<Uint8Array, JsValue>;
-
-    #[wasm_bindgen(method, catch, js_name = componentClosure)]
-    fn component_closure(this: &EngineLayerSource, glyph_ids: Array) -> Result<Array, JsValue>;
-
-    #[wasm_bindgen(method, catch)]
-    fn dependents(this: &EngineLayerSource, layer_ids: Array) -> Result<Array, JsValue>;
-}
-
-/// Why the editor's source failed to answer.
+/// Why the store did not answer.
 #[derive(Debug, thiserror::Error)]
 enum HostError {
-    #[error("the layer source threw: {0}")]
+    #[error("the store request threw: {0}")]
     Threw(String),
 
-    #[error("the layer source returned layers that do not decode: {0}")]
-    Decode(#[from] rmp_serde::decode::Error),
+    #[error("the store request's reply has {0}")]
+    NotAReply(&'static str),
 
-    #[error("the layer source returned an invalid {kind}: {value}")]
-    InvalidId {
-        kind: intents::IdKind,
-        value: String,
-    },
+    #[error(transparent)]
+    Store(#[from] StoreReadError),
+
+    #[error("the store returned layers that do not decode: {0}")]
+    Decode(#[from] rmp_serde::decode::Error),
 }
 
 impl From<JsValue> for HostError {
@@ -141,61 +144,312 @@ impl From<JsValue> for HostError {
     }
 }
 
-impl From<intents::WireError> for HostError {
-    fn from(error: intents::WireError) -> Self {
-        match error {
-            intents::WireError::InvalidId { kind, value } => Self::InvalidId { kind, value },
-            other => Self::Threw(other.to_string()),
-        }
-    }
+/// A `StoreReply`'s keys, made once: each `JsValue::from_str` decodes its text
+/// into a new JavaScript string.
+struct ReplyKeys {
+    numbers: JsValue,
+    blobs: JsValue,
 }
 
-/// The editor's source as the session's [`LayerSource`].
-struct HostLayers<'a>(&'a EngineLayerSource);
+thread_local! {
+    static REPLY_KEYS: ReplyKeys = ReplyKeys {
+        numbers: JsValue::from_str("numbers"),
+        blobs: JsValue::from_str("blobs"),
+    };
+}
+
+/// `value` as a `T`, or [`HostError::NotAReply`] saying it is `what`.
+fn cast<T: JsCast>(value: JsValue, what: &'static str) -> Result<T, HostError> {
+    value.dyn_into().map_err(|_| HostError::NotAReply(what))
+}
+
+/// Sends one encoded request through the editor's `StoreRequest` and reads
+/// its reply into this module's memory, the one copy each blob makes.
+fn send(request: &Function, method: u32, message: Packed) -> Result<Packed, HostError> {
+    let blobs: Array = message
+        .blobs
+        .iter()
+        .map(|blob| JsValue::from(Uint8Array::from(&blob[..])))
+        .collect();
+    let reply = request.call3(
+        &JsValue::NULL,
+        &JsValue::from(method),
+        &Float64Array::from(&message.numbers[..]),
+        &blobs,
+    )?;
+    let (numbers, blobs) = REPLY_KEYS.with(|keys| {
+        Ok::<_, HostError>((
+            Reflect::get(&reply, &keys.numbers)?,
+            Reflect::get(&reply, &keys.blobs)?,
+        ))
+    })?;
+    let numbers = cast::<Float64Array>(numbers, "numbers that are not a Float64Array")?.to_vec();
+    let blobs = cast::<Array>(blobs, "blobs that are not an array")?
+        .iter()
+        .map(|blob| Ok(cast::<Uint8Array>(blob, "a blob that is not a Uint8Array")?.to_vec()))
+        .collect::<Result<_, HostError>>()?;
+    Ok(Packed { numbers, blobs })
+}
+
+/// The editor's `StoreRequest` as the session's [`LayerSource`], through a
+/// [`StoreReaderClient`].
+struct HostLayers<'a>(&'a Function);
+
+impl HostLayers<'_> {
+    fn client(
+        &self,
+    ) -> StoreReaderClient<CarryingNames<impl Fn(u32, Packed) -> Result<Packed, HostError> + '_>>
+    {
+        StoreReaderClient(CarryingNames(|method, message| {
+            send(self.0, method, message)
+        }))
+    }
+}
 
 impl LayerSource for HostLayers<'_> {
     type Error = HostError;
 
     fn load_layers(&mut self, layer_ids: &[LayerId]) -> Result<Vec<GlyphLayer>, HostError> {
-        let bytes = self.0.load(texts(layer_ids))?;
-        Ok(rmp_serde::from_slice(&bytes.to_vec())?)
+        let bytes = self.client().layers(layer_ids.to_vec())??;
+        Ok(rmp_serde::from_slice(&bytes.0)?)
     }
 
-    fn component_closure(&mut self, roots: &[GlyphId]) -> Result<Vec<GlyphId>, HostError> {
-        ids(&self.0.component_closure(texts(roots))?)
+    fn bases_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, HostError> {
+        Ok(self.client().bases_of(glyph_ids.to_vec())??)
     }
 
-    fn dependents(&mut self, layer_ids: &[LayerId]) -> Result<Vec<GlyphId>, HostError> {
-        ids(&self.0.dependents(texts(layer_ids))?)
+    fn composites_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, HostError> {
+        Ok(self.client().composites_of(glyph_ids.to_vec())??)
     }
 }
 
-/// Ids as the JavaScript strings the source takes.
-fn texts<T: ToString>(values: &[T]) -> Array {
-    values
-        .iter()
-        .map(|value| JsValue::from_str(&value.to_string()))
-        .collect()
+impl RecordSource for HostLayers<'_> {
+    type Error = HostError;
+
+    fn component_bases(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<Vec<GlyphId>>, HostError> {
+        if glyph_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self.client().component_bases(glyph_ids.to_vec())??)
+    }
+
+    fn glyph_data_categories(
+        &mut self,
+        glyphs: &[NamedGlyph],
+    ) -> Result<Vec<GlyphDataCategory>, HostError> {
+        if glyphs.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.client().glyph_data_categories(glyphs.to_vec())
+    }
+
+    fn attaching_anchor_layers(
+        &mut self,
+        layer_ids: &[LayerId],
+    ) -> Result<Vec<LayerId>, HostError> {
+        if layer_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .client()
+            .attaching_anchor_layers(layer_ids.to_vec())??)
+    }
 }
 
-/// Glyph ids from the JavaScript strings the source returns.
-fn ids(values: &Array) -> Result<Vec<GlyphId>, HostError> {
-    let texts: Vec<String> = values
-        .iter()
-        .filter_map(|value| value.as_string())
-        .collect();
-    Ok(intents::parse_id_list::<GlyphId>(&texts)?)
+impl From<HostError> for StoreReadError {
+    fn from(error: HostError) -> Self {
+        match error {
+            HostError::Store(error) => error,
+            error => Self::Unreadable {
+                detail: error.to_string(),
+            },
+        }
+    }
 }
 
-/// An open session, the source it reads from, its undo history, the
+/// What happened to a session's edit, as far as what the reads built from
+/// the font cares ([`Engine::on`]).
+enum EditEvent {
+    /// Intents applied, with the impact of their changes.
+    Applied(FontChangeImpact),
+    /// The session went back to where the open edit began, keeping it open.
+    Rewound,
+    /// The edit closed and stays: committed, or an undo or redo.
+    Committed,
+    /// The edit closed and the session went back to where it began.
+    Cancelled,
+}
+
+/// An open session, the store request it reads through, its undo history, the
 /// session as it stood when the open edit began, to go back to if it is
 /// cancelled, and the ids the editor's reads name by number.
 pub(crate) struct Engine {
     pub(crate) session: EngineSession,
-    source: EngineLayerSource,
+    source: Function,
     history: EditHistory,
     before_edit: Option<EngineSession>,
     pub(crate) ids: InternedIds,
+    /// The intents `EngineEdits::hold` sent, which the next apply, stage or
+    /// preview takes.
+    pub(crate) held: Vec<FontIntent>,
+    /// The scene intents `EngineEdits::hold_scene` sent, which the next apply
+    /// or stage takes.
+    pub(crate) held_scene: Vec<SceneIntent>,
+    /// Where the latest undo or redo's edit was made, until
+    /// `EngineEdits::replayed_location` takes it.
+    pub(crate) replayed_location: Option<EditLocation>,
+    /// The font-level records the latest apply, undo or redo changed, until
+    /// `EngineEdits::replacement` takes them.
+    pub(crate) replaced: Option<FontReplacement>,
+    /// The variation the reads evaluate, derived from the session's font on
+    /// first read and again once the font's axes, mappings or source
+    /// locations differ from the ones it was derived from; read it through
+    /// [`Engine::variation`].
+    variation: RefCell<Option<Rc<FontVariation>>>,
+    /// The shaper text shapes with, compiled from the session's font when
+    /// text is first shaped.
+    pub(crate) shaping: TextShaping,
+    /// Each text run as page layout last measured it, kept until its text,
+    /// the font or the place it lays out at changes.
+    pub(crate) page_runs: RefCell<RunLayouts>,
+    /// The store's answers for glyph records and the shaper's source, each
+    /// asked once: glyph data's categories by name and codepoints, and the
+    /// attaching anchors of layers the session has not loaded.
+    records: RefCell<RecordCache>,
+    /// What the open edit's applies changed so far, so that what was built
+    /// from them is dropped when the session goes back to where it began
+    /// ([`EditEvent`]).
+    edit_impact: FontChangeImpact,
+    /// The font as the gesture under way previews it, until an edit or
+    /// [`engine_end_preview`]: what text lays out from while it is shown.
+    pub(crate) previewed: Option<Font>,
+}
+
+impl Engine {
+    /// What an edit did as an `EngineEditLayers`: its touched layers. Keeps the
+    /// font-level records it changed for `EngineEdits::replacement`, in the
+    /// native workspace's packed shape, with the records of the glyphs it
+    /// changed as they now stand.
+    fn edit_object(
+        &mut self,
+        before: &Font,
+        applied: &AppliedIntents,
+        scene: &SceneChangeSet,
+    ) -> Result<Object, JsError> {
+        let layers = engine_layers(before, &applied.layers)?;
+        let edit = Object::new();
+        set(&edit, "layers", &layers)?;
+        let impact = applied.changes.impact() | scene.impact();
+        self.on(EditEvent::Applied(impact));
+        set(&edit, "impact", &JsValue::from(impact.bits()))?;
+        let mut replaced = FontReplacement::changed_by(
+            self.session.font(),
+            impact.difference(FontChangeImpact::GLYPHS),
+        )?;
+        if impact.contains(FontChangeImpact::GLYPHS) {
+            let glyph_changes = self
+                .session
+                .glyph_record_changes(
+                    &mut self
+                        .records
+                        .borrow_mut()
+                        .reading(&mut HostLayers(&self.source)),
+                    &applied.changes,
+                )
+                .map_err(js_error)?;
+            replaced
+                .get_or_insert_with(FontReplacement::default)
+                .glyph_changes = Some(glyph_changes);
+        }
+        self.replaced = replaced;
+        Ok(edit)
+    }
+
+    /// Keeps what the reads built from the font in step with `event`: an
+    /// apply drops what its changes touched and adds them to the open edit's;
+    /// going back to where the edit began drops what the edit's applies
+    /// touched; closing the edit forgets them.
+    fn on(&mut self, event: EditEvent) {
+        self.previewed = None;
+        match event {
+            EditEvent::Applied(impact) => {
+                self.forget_if_changed(impact);
+                self.edit_impact |= impact;
+            }
+            EditEvent::Rewound | EditEvent::Cancelled => {
+                self.forget_if_changed(self.edit_impact);
+                self.edit_impact = FontChangeImpact::empty();
+            }
+            EditEvent::Committed => self.edit_impact = FontChangeImpact::empty(),
+        }
+    }
+
+    /// Drops what text was shaped and laid out from, when a change with
+    /// `impact` may have changed it.
+    fn forget_if_changed(&self, impact: FontChangeImpact) {
+        self.shaping.forget_if_changed(impact);
+        self.page_runs.borrow_mut().forget_if_changed(impact);
+    }
+
+    /// The variation the reads evaluate for the session's font as it stands.
+    pub(crate) fn variation(&self) -> Rc<FontVariation> {
+        FontVariation::of(&self.variation, self.session.font())
+    }
+
+    /// Every glyph's record, in name order, as the session's font stands.
+    pub(crate) fn glyph_records(&self) -> Result<shift_font::GlyphRecords, StoreReadError> {
+        Ok(self.session.glyph_records(
+            &mut self
+                .records
+                .borrow_mut()
+                .reading(&mut HostLayers(&self.source)),
+        )?)
+    }
+
+    /// What the font's shaper font compiles from, as the session's font stands.
+    pub(crate) fn shaper_font_source(
+        &self,
+    ) -> Result<shift_font::ShaperFontSource, StoreReadError> {
+        Ok(self.session.shaper_font_source(
+            &mut self
+                .records
+                .borrow_mut()
+                .reading(&mut HostLayers(&self.source)),
+        )?)
+    }
+
+    /// The intents held for this apply, stage or preview, as one set.
+    fn take_held(&mut self) -> FontIntentSet {
+        FontIntentSet {
+            intents: std::mem::take(&mut self.held),
+        }
+    }
+
+    /// Applies the held font and scene intents within the open edit and
+    /// records both: what the font intents did, the font as it was before
+    /// them, and what the scene intents changed.
+    fn apply_held(&mut self) -> Result<(AppliedIntents, Font, SceneChangeSet), JsError> {
+        let intents = self.take_held();
+        let scene_intents = std::mem::take(&mut self.held_scene);
+        if !self.history.is_open() {
+            return Err(JsError::new("no edit is open; begin one first"));
+        }
+        let before = self.session.font().clone();
+        let applied = if intents.intents.is_empty() {
+            AppliedIntents {
+                changes: shift_font::FontChangeSet::default(),
+                layers: Vec::new(),
+            }
+        } else {
+            self.session
+                .apply(&mut HostLayers(&self.source), &intents)
+                .map_err(apply_error)?
+        };
+        let scene = self.session.apply_scene(&scene_intents).map_err(js_error)?;
+        self.history.record(applied.changes.clone());
+        self.history.record_scene(scene.clone());
+        Ok((applied, before, scene))
+    }
 }
 
 impl Engine {
@@ -203,7 +457,7 @@ impl Engine {
     pub(crate) fn load_layers(&mut self, layer_ids: Vec<LayerId>) -> Result<(), JsError> {
         self.session
             .load_layers(&mut HostLayers(&self.source), layer_ids)
-            .map_err(|error| JsError::new(&error.to_string()))
+            .map_err(js_error)
     }
 }
 
@@ -227,15 +481,32 @@ pub(crate) fn with_engine<T>(
 }
 
 /// Opens a session over a font directory, as named MessagePack from the
-/// store's reader, with every layer a placeholder. Returns its handle.
+/// store's reader, with every layer a placeholder; it loads layers through
+/// `source`, a `StoreRequest`. `scene` is the document's scene as the store's
+/// `scene_nodes` returns it; without one the session's scene is empty, for a
+/// reader of the font's records alone. Returns its handle.
 ///
 /// # Errors
 ///
-/// Fails when `directory` does not decode to a font.
+/// Fails when `directory` does not decode to a font, or `scene` to scene
+/// nodes.
 #[wasm_bindgen(js_name = engineOpen)]
-pub fn engine_open(directory: &[u8], source: EngineLayerSource) -> Result<u32, JsError> {
+pub fn engine_open(
+    directory: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "StoreRequest")] source: Function,
+    scene: Option<Vec<u8>>,
+) -> Result<u32, JsError> {
     let font: Font = rmp_serde::from_slice(directory)?;
-    let session = EngineSession::open_directory(font);
+    let mut session = EngineSession::open_directory(font);
+    if let Some(scene) = scene {
+        let nodes: Vec<SceneNode> = rmp_serde::from_slice(&scene)?;
+        session = session.with_scene(nodes.into_iter().collect::<Scene>());
+    }
+    open(session, source)
+}
+
+/// Keeps `session`, reading through `source`, and returns its handle.
+fn open(session: EngineSession, source: Function) -> Result<u32, JsError> {
     ENGINES.with_borrow_mut(|engines| {
         let handle = u32::try_from(engines.len())?;
         engines.push(Some(Engine {
@@ -244,6 +515,16 @@ pub fn engine_open(directory: &[u8], source: EngineLayerSource) -> Result<u32, J
             history: EditHistory::default(),
             before_edit: None,
             ids: InternedIds::default(),
+            held: Vec::new(),
+            held_scene: Vec::new(),
+            replayed_location: None,
+            replaced: None,
+            variation: RefCell::default(),
+            shaping: TextShaping::default(),
+            page_runs: RefCell::default(),
+            records: RefCell::new(RecordCache::default()),
+            edit_impact: FontChangeImpact::empty(),
+            previewed: None,
         }));
         Ok(handle)
     })
@@ -256,41 +537,36 @@ pub fn engine_open(directory: &[u8], source: EngineLayerSource) -> Result<u32, J
 /// # Errors
 ///
 /// Fails on an unknown handle.
+///
+/// `page` is the page the editor shows, which the edit's undo step records as
+/// where it was made; absent with no page shown.
 #[wasm_bindgen(js_name = engineBeginEdit)]
-pub fn engine_begin_edit(handle: u32) -> Result<(), JsError> {
+pub fn engine_begin_edit(
+    handle: u32,
+    #[wasm_bindgen(unchecked_param_type = "NodeId | undefined")] page: Option<String>,
+) -> Result<(), JsError> {
+    let page = page.map(|page| page.parse()).transpose()?;
     with_engine(handle, |engine| {
         engine.before_edit = Some(engine.session.clone());
-        engine.history.begin();
+        engine.history.begin(page);
         Ok(())
     })
 }
 
-/// Applies `intents`, in the shape the workspace takes, as part of the open
-/// edit: loads what they read, applies them, and returns every layer they
-/// touched and the font-level records they changed.
+/// Applies the intents `EngineEdits::hold` sent as part of the open edit:
+/// loads what they read, applies them, and returns every layer they touched
+/// and the font-level records they changed. Takes the held intents, so a
+/// second call applies none.
 ///
 /// # Errors
 ///
-/// Fails when no edit is open, when an intent does not decode, when the source
-/// fails, or when the intents are invalid; the session is then as loading left
-/// it.
-#[wasm_bindgen(js_name = engineApply, unchecked_return_type = "EngineEdit")]
-pub fn engine_apply(
-    handle: u32,
-    #[wasm_bindgen(unchecked_param_type = "FontIntent[]")] intents: JsValue,
-) -> Result<JsValue, JsError> {
-    let intents = intent_set(&intents)?;
+/// Fails when no edit is open, when the source fails, or when the intents are
+/// invalid; the session is then as loading left it.
+#[wasm_bindgen(js_name = engineApply, unchecked_return_type = "EngineEditLayers")]
+pub fn engine_apply(handle: u32) -> Result<JsValue, JsError> {
     with_engine(handle, |engine| {
-        if !engine.history.is_open() {
-            return Err(JsError::new("no edit is open; begin one first"));
-        }
-        let before = engine.session.font().clone();
-        let applied = engine
-            .session
-            .apply(&mut HostLayers(&engine.source), &intents)
-            .map_err(apply_error)?;
-        let edit = edit_object(engine.session.font(), &before, &applied)?;
-        engine.history.record(applied.changes);
+        let (applied, before, scene) = engine.apply_held()?;
+        let edit = engine.edit_object(&before, &applied, &scene)?;
         Ok(edit.into())
     })
 }
@@ -310,66 +586,62 @@ pub fn engine_rewind_edit(handle: u32) -> Result<(), JsError> {
             .clone()
             .ok_or_else(|| JsError::new("no edit is open; begin one first"))?;
         engine.session = before;
-        engine.history.begin();
+        engine.on(EditEvent::Rewound);
+        engine.history.restart();
         Ok(())
     })
 }
 
-/// Applies `intents` as part of the open edit, as [`engine_apply`] does, but
-/// returns only the layers they touched and which reads they changed, not the
-/// font-level records: a gesture's frame, whose records are built once when
-/// it commits.
+/// Applies the held intents as part of the open edit, as [`engine_apply`]
+/// does, but returns only the layers they touched and which reads they
+/// changed, not the font-level records: a gesture's frame, whose records are
+/// built once when it commits.
 ///
 /// # Errors
 ///
 /// As [`engine_apply`].
 #[wasm_bindgen(js_name = engineStage, unchecked_return_type = "EngineStage")]
-pub fn engine_stage(
-    handle: u32,
-    #[wasm_bindgen(unchecked_param_type = "FontIntent[]")] intents: JsValue,
-) -> Result<JsValue, JsError> {
-    let intents = intent_set(&intents)?;
+pub fn engine_stage(handle: u32) -> Result<JsValue, JsError> {
     with_engine(handle, |engine| {
-        if !engine.history.is_open() {
-            return Err(JsError::new("no edit is open; begin one first"));
-        }
-        let before = engine.session.font().clone();
-        let applied = engine
-            .session
-            .apply(&mut HostLayers(&engine.source), &intents)
-            .map_err(apply_error)?;
+        let (applied, before, scene) = engine.apply_held()?;
         let layers = engine_layers(&before, &applied.layers)?;
-        let impact = applied.changes.impact();
-        engine.history.record(applied.changes);
+        let impact = applied.changes.impact() | scene.impact();
+        engine.on(EditEvent::Applied(impact));
 
         let stage = Object::new();
         set(&stage, "layers", &layers)?;
-        set(
-            &stage,
-            "kerning",
-            &JsValue::from_bool(impact.intersects(FontChangeImpact::KERNING)),
-        )?;
-        set(
-            &stage,
-            "sourceMetrics",
-            &JsValue::from_bool(impact.intersects(FontChangeImpact::SOURCE_METRICS)),
-        )?;
+        set(&stage, "impact", &JsValue::from(impact.bits()))?;
         Ok(stage.into())
     })
 }
 
-/// Closes the open edit as one undo step and returns its change set, as named
-/// MessagePack, to persist; `undefined` when it changed nothing.
+/// Closes the open edit and returns its document change set, font and scene
+/// together, as named MessagePack, to persist; `undefined` when it changed
+/// nothing. An `undoable` edit is the latest undo step; an `unrecorded` one is
+/// kept but undo passes over it.
 ///
 /// # Errors
 ///
-/// Fails on an unknown handle, or when the edit's changes cannot be coalesced
-/// or encoded.
+/// Fails on an unknown handle, an unknown recording, or when the edit's
+/// changes cannot be coalesced or encoded.
 #[wasm_bindgen(js_name = engineEndEdit)]
-pub fn engine_end_edit(handle: u32) -> Result<Option<Uint8Array>, JsError> {
+pub fn engine_end_edit(
+    handle: u32,
+    #[wasm_bindgen(unchecked_param_type = "\"undoable\" | \"unrecorded\"")] recording: &str,
+) -> Result<Option<Uint8Array>, JsError> {
+    let recording = match recording {
+        "undoable" => Recording::Undoable,
+        "unrecorded" => Recording::Unrecorded,
+        other => return Err(JsError::new(&format!("unknown recording {other:?}"))),
+    };
     with_engine(handle, |engine| {
         engine.before_edit = None;
-        let Some(change_set) = engine.history.end(engine.session.font())? else {
+        engine.on(EditEvent::Committed);
+        let Some(change_set) =
+            engine
+                .history
+                .end(engine.session.font(), engine.session.scene(), recording)?
+        else {
             return Ok(None);
         };
         Ok(Some(Uint8Array::from(
@@ -388,6 +660,7 @@ pub fn engine_cancel_edit(handle: u32) -> Result<(), JsError> {
     with_engine(handle, |engine| {
         if let Some(before) = engine.before_edit.take() {
             engine.session = before;
+            engine.on(EditEvent::Cancelled);
         }
         engine.history.cancel();
         Ok(())
@@ -401,7 +674,7 @@ pub fn engine_cancel_edit(handle: u32) -> Result<(), JsError> {
 ///
 /// Fails when the source fails or the inverse no longer applies; the edit
 /// stays undoable.
-#[wasm_bindgen(js_name = engineUndo, unchecked_return_type = "EngineEdit | undefined")]
+#[wasm_bindgen(js_name = engineUndo, unchecked_return_type = "EngineEditLayers | undefined")]
 pub fn engine_undo(handle: u32) -> Result<JsValue, JsError> {
     with_engine(handle, |engine| {
         let before = engine.session.font().clone();
@@ -419,7 +692,7 @@ pub fn engine_undo(handle: u32) -> Result<JsValue, JsError> {
 /// # Errors
 ///
 /// As [`engine_undo`].
-#[wasm_bindgen(js_name = engineRedo, unchecked_return_type = "EngineEdit | undefined")]
+#[wasm_bindgen(js_name = engineRedo, unchecked_return_type = "EngineEditLayers | undefined")]
 pub fn engine_redo(handle: u32) -> Result<JsValue, JsError> {
     with_engine(handle, |engine| {
         let before = engine.session.font().clone();
@@ -444,23 +717,33 @@ pub fn engine_discard_redo(handle: u32) -> Result<(), JsError> {
     })
 }
 
-/// An undo or redo as an `EngineEdit` carrying its change set and whether it
-/// left the font as last saved, or `undefined`.
+/// An undo or redo as an `EngineEdit` carrying its change set, whether it
+/// left the document as last saved and whether it changed the font rather
+/// than only the scene, or `undefined`. Keeps where the edit was
+/// made for `EngineEdits::replayed_location`.
 fn replayed(
-    engine: &Engine,
+    engine: &mut Engine,
     before: &Font,
-    applied: Option<AppliedIntents>,
+    replayed: Option<Replayed>,
 ) -> Result<JsValue, JsError> {
-    let Some(applied) = applied else {
+    let Some(replayed) = replayed else {
         return Ok(JsValue::UNDEFINED);
     };
-    let edit = edit_object(engine.session.font(), before, &applied)?;
-    let change_set = rmp_serde::to_vec_named(&applied.changes.compact())?;
+    let edit = engine.edit_object(before, &replayed.applied, &replayed.scene)?;
+    // An undo or redo is a whole edit of its own.
+    engine.on(EditEvent::Committed);
+    let change_set = rmp_serde::to_vec_named(&replayed.change_set().compact())?;
+    engine.replayed_location = Some(replayed.location);
     set(&edit, "changeSet", &Uint8Array::from(&change_set[..]))?;
     set(
         &edit,
         "matchesSaved",
         &JsValue::from_bool(engine.history.matches_saved()),
+    )?;
+    set(
+        &edit,
+        "changesFont",
+        &JsValue::from_bool(!replayed.applied.changes.is_empty()),
     )?;
     Ok(edit.into())
 }
@@ -479,94 +762,71 @@ pub fn engine_mark_saved(handle: u32) -> Result<(), JsError> {
     })
 }
 
-/// What an edit did as an `EngineEdit`: its touched layers and the font-level
-/// records it changed. Glyph records are left to the workspace's echo.
-fn edit_object(font: &Font, before: &Font, applied: &AppliedIntents) -> Result<Object, JsError> {
-    let layers = engine_layers(before, &applied.layers)?;
-    let edit = Object::new();
-    set(&edit, "layers", &layers)?;
-    let impact = applied
-        .changes
-        .impact()
-        .difference(FontChangeImpact::GLYPHS);
-    if let Some(next) = FontReplacement::changed_by(font, impact)? {
-        let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
-        set(&edit, "next", &next.serialize(&serializer)?)?;
-    }
-    Ok(edit)
-}
-
-/// Returns every layer applying `intents` would touch, as they would be,
-/// without keeping the edit: a preview for a gesture under way. What the
+/// Returns every layer applying the held intents would touch, as they would
+/// be, without keeping the edit: a preview for a gesture under way. What the
 /// intents read stays loaded.
 ///
 /// # Errors
 ///
 /// As [`engine_apply`].
 #[wasm_bindgen(js_name = enginePreview, unchecked_return_type = "EngineLayer[]")]
-pub fn engine_preview(
-    handle: u32,
-    #[wasm_bindgen(unchecked_param_type = "FontIntent[]")] intents: JsValue,
-) -> Result<Array, JsError> {
-    let set = intent_set(&intents)?;
+pub fn engine_preview(handle: u32) -> Result<Array, JsError> {
     with_engine(handle, |engine| {
-        let previewed = engine
+        let set = engine.take_held();
+        let staged = engine
             .session
-            .preview(&mut HostLayers(&engine.source), &set)
+            .stage_loaded(&mut HostLayers(&engine.source), &set)
             .map_err(apply_error)?;
-        // A preview keeps nothing, so the session's font is what it started from.
-        engine_layers(engine.session.font(), &previewed.layers)
+        // A preview keeps nothing, so the session's font is what it started
+        // from; text lays out from the previewed font while it is shown.
+        let layers = engine_layers(engine.session.font(), staged.touched())?;
+        engine.previewed = Some(staged.font().clone());
+        Ok(layers)
     })
 }
 
-/// `intents`, in the shape the workspace takes, as one set.
-fn intent_set(intents: &JsValue) -> Result<FontIntentSet, JsError> {
-    let intents = Array::from(intents)
-        .iter()
-        .map(|intent| {
-            if let Some(intent) = positions_intent(&intent)? {
-                return Ok(intent);
-            }
-            let wire: intents::FontIntent = serde_wasm_bindgen::from_value(plain_arrays(&intent)?)?;
-            Ok(FontIntent::try_from(wire)?)
-        })
-        .collect::<Result<_, JsError>>()?;
-    Ok(FontIntentSet { intents })
+/// Lays text out from what the held intents would leave, without keeping
+/// them or answering with layers: a drag frame the editor draws itself.
+///
+/// # Errors
+///
+/// As [`engine_apply`].
+#[wasm_bindgen(js_name = engineShowPreview)]
+pub fn engine_show_preview(handle: u32) -> Result<(), JsError> {
+    with_engine(handle, |engine| {
+        let set = engine.take_held();
+        let staged = engine
+            .session
+            .stage_loaded(&mut HostLayers(&engine.source), &set)
+            .map_err(apply_error)?;
+        engine.previewed = Some(staged.font().clone());
+        Ok(())
+    })
 }
 
-/// A `setPositions` intent read straight from its object, or `None` for any
-/// other kind. Its positions, a hundred thousand numbers on a large glyph,
-/// cross as one copied block; through serde they were read one at a time,
-/// which cost ten times the edit.
-fn positions_intent(intent: &JsValue) -> Result<Option<FontIntent>, JsError> {
-    let field = |object: &JsValue, key: &str| Reflect::get(object, &JsValue::from_str(key)).ok();
-    if field(intent, "kind")
-        .and_then(|kind| kind.as_string())
-        .as_deref()
-        != Some("setPositions")
-    {
-        return Ok(None);
-    }
-    let payload =
-        field(intent, "setPositions").ok_or_else(|| JsError::new("setPositions has no payload"))?;
-    let layer_id = field(&payload, "layerId")
-        .and_then(|id| id.as_string())
-        .ok_or_else(|| JsError::new("setPositions has no layer id"))?;
-    let positions = field(&payload, "positions")
-        .ok_or_else(|| JsError::new("setPositions has no positions"))?;
-    Ok(Some(
-        SetPositions {
-            layer_id: intents::parse::<LayerId>(&layer_id)?,
-            positions: Float64Array::new(&positions).to_vec(),
-        }
-        .into(),
-    ))
+/// Stops showing the gesture's preview: text lays out from the session's
+/// font again.
+///
+/// # Errors
+///
+/// Fails on an unknown handle.
+#[wasm_bindgen(js_name = engineEndPreview)]
+pub fn engine_end_preview(handle: u32) -> Result<(), JsError> {
+    with_engine(handle, |engine| {
+        engine.previewed = None;
+        Ok(())
+    })
+}
+
+/// A Rust error as the `Error` an engine call throws, carrying its message.
+fn js_error(error: impl std::fmt::Display) -> JsError {
+    JsError::new(&error.to_string())
 }
 
 fn apply_error(error: ApplyError<HostError>) -> JsError {
     match error {
-        ApplyError::Load(error) => JsError::new(&error.to_string()),
-        ApplyError::Engine(error) => JsError::new(&error.to_string()),
+        ApplyError::Load(error) => js_error(error),
+        ApplyError::Engine(error) => js_error(error),
     }
 }
 
@@ -578,12 +838,18 @@ fn apply_error(error: ApplyError<HostError>) -> JsError {
 /// Fails on an unknown handle or glyph id, or when the source fails.
 #[wasm_bindgen(js_name = enginePreload)]
 pub fn engine_preload(handle: u32, glyph_ids: Vec<String>) -> Result<(), JsError> {
-    let glyph_ids = intents::parse_id_list::<GlyphId>(&glyph_ids)?;
+    let glyph_ids = values::parse_id_list::<GlyphId>(&glyph_ids)?;
     with_engine(handle, |engine| {
         engine
             .session
             .load_glyph_closure(&mut HostLayers(&engine.source), glyph_ids)
-            .map_err(|error| JsError::new(&error.to_string()))
+            .map_err(js_error)?;
+        // Runs laid out from the placeholders of what loaded lay out again.
+        engine
+            .page_runs
+            .borrow_mut()
+            .forget_if_changed(FontChangeImpact::LAYERS);
+        Ok(())
     })
 }
 
@@ -598,30 +864,6 @@ pub fn engine_release(handle: u32) {
             *slot = None;
         }
     });
-}
-
-/// `intent` with its payload's typed-array fields copied into plain arrays.
-///
-/// The wire intent is internally tagged, so serde reads its payload through
-/// `deserialize_any`, which serde-wasm-bindgen cannot take a typed array to.
-/// The caller's intent stays as it was: the workspace reads it next.
-fn plain_arrays(intent: &JsValue) -> Result<JsValue, JsError> {
-    let copy = Object::assign(&Object::new(), &Object::from(intent.clone()));
-    for entry in Object::entries(&copy).iter() {
-        let entry = Array::from(&entry);
-        let Some(payload) = entry.get(1).dyn_ref::<Object>().cloned() else {
-            continue;
-        };
-        let payload = Object::assign(&Object::new(), &payload);
-        for field in Object::entries(&payload).iter() {
-            let field = Array::from(&field);
-            if let Some(values) = field.get(1).dyn_ref::<Float64Array>() {
-                set_value(&payload, &field.get(0), &Array::from(values))?;
-            }
-        }
-        set_value(&copy, &entry.get(0), &payload)?;
-    }
-    Ok(copy.into())
 }
 
 /// Sets `key` on `object`, which fails only on a frozen or proxied object.

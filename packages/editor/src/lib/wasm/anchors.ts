@@ -1,6 +1,6 @@
 import type { MatModel } from "@shift/geo";
-import { composeTransform } from "@shift/glyph-state";
-import { followAnchors, type FollowingComponent } from "./generated/layouts";
+import { anchors, geometry } from "@shift/wasm";
+import type { AnchorKind, FollowingComponent } from "@shift/wasm/protocol";
 
 /**
  * Returns where each component shows while an edit is in progress.
@@ -11,5 +11,14 @@ import { followAnchors, type FollowingComponent } from "./generated/layouts";
  * and unset ones last accepted on their anchors, sit on the current anchors.
  */
 export function followingPlacements(components: readonly FollowingComponent[]): MatModel[] {
-  return followAnchors(components).map((following) => composeTransform(following.transform));
+  return anchors
+    .followAnchors(components)
+    .map((following) => geometry.composeTransform(following.transform));
 }
+
+/** The role fontc reads from an anchor's name in mark positioning. */
+export function anchorKind(name: string): AnchorKind {
+  return anchors.anchorKind(name);
+}
+
+export type { AnchorKind };

@@ -28,6 +28,7 @@ impl FontMetrics {
 /// authoring data until an exporter explicitly understands its meaning.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub enum MetricKind {
     Ascender,
     CapHeight,
@@ -83,6 +84,7 @@ impl MetricKind {
 /// reordering a definition never changes which authored values it addresses.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct MetricDefinition {
     id: MetricId,
     kind: MetricKind,
@@ -116,11 +118,20 @@ impl MetricDefinition {
         self.name = name;
     }
 
-    /// Creates the standard Latin metric rows used by a new font.
+    /// Creates the standard Latin metric rows used by a new font. Each row's
+    /// id is derived from its kind, the same in every font, so two reads of
+    /// one font file key its sources' metric values alike.
     pub fn defaults() -> Vec<Self> {
         MetricKind::STANDARD
             .into_iter()
-            .map(|kind| Self::new(kind, kind.default_name().to_string()))
+            .map(|kind| {
+                let name = kind.default_name();
+                Self::with_id(
+                    MetricId::derived("standard metric", name),
+                    kind,
+                    name.to_string(),
+                )
+            })
             .collect()
     }
 }
@@ -130,6 +141,7 @@ impl MetricDefinition {
 /// Both values are expressed in font units. Overshoots are positive above a
 /// metric line and negative below it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 #[serde(rename_all = "camelCase")]
 pub struct MetricValue {
     pub position: f64,

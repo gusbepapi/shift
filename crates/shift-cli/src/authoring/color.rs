@@ -28,11 +28,12 @@ pub(crate) fn set_palettes(args: &SetPalettesArgs) -> Result<AuthoringReport> {
         .iter()
         .map(|text| parse_palette(text))
         .collect::<Result<Vec<_>>>()?;
+    let intent = SetColorPalettes::new(&palettes).map_err(|error| miette!("{error}"))?;
     apply_mutation(
         &args.path,
         &args.mutation,
         &FontIntentSet {
-            intents: vec![FontIntent::SetColorPalettes(SetColorPalettes { palettes })],
+            intents: vec![FontIntent::SetColorPalettes(intent)],
         },
     )
 }
@@ -59,16 +60,16 @@ pub(crate) fn set_color_glyph(args: &SetColorGlyphArgs) -> Result<AuthoringRepor
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let intent = SetColorGlyph::new(&ColorGlyph {
+        glyph,
+        paint: Paint::Layers { layers },
+    })
+    .map_err(|error| miette!("{error}"))?;
     apply_mutation(
         &args.path,
         &args.mutation,
         &FontIntentSet {
-            intents: vec![FontIntent::SetColorGlyph(SetColorGlyph {
-                color_glyph: ColorGlyph {
-                    glyph,
-                    paint: Paint::Layers { layers },
-                },
-            })],
+            intents: vec![FontIntent::SetColorGlyph(intent)],
         },
     )
 }

@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::{CommitId, DocumentId, StoreError, connection::configure_common, schema};
 
 const RECOVERY_APPLICATION_ID: i64 = 0x5348_4652;
-const RECOVERY_SCHEMA_VERSION: i64 = 4;
+const RECOVERY_SCHEMA_VERSION: i64 = 5;
 
 const RECOVERY_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS recovery_metadata (
@@ -132,7 +132,12 @@ impl RecoveryOverlay {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         configure_recovery_connection(&conn)?;
         let version = validate_recovery_header(&conn)?;
-        schema::migrate(&conn, version, RECOVERY_SCHEMA_VERSION)?;
+        schema::migrate(
+            &conn,
+            version,
+            RECOVERY_SCHEMA_VERSION,
+            schema::SceneUpgrade::TableOnly,
+        )?;
         let overlay = Self {
             conn,
             path: path.to_path_buf(),
@@ -247,6 +252,16 @@ impl RecoveryOverlay {
     /// Returns [`StoreError::Sqlite`] when the overlay cannot be cleared.
     pub fn discard(&mut self, saved_commit_id: &CommitId) -> Result<(), StoreError> {
         self.set_clean(saved_commit_id)
+    }
+
+    /// Marks the overlay clean and keeps its rows, which hold only what the
+    /// save already has or navigation, such as glyph pages.
+    pub(crate) fn mark_clean(&mut self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE recovery_metadata SET state = 'clean', pending_commit_id = NULL WHERE id = 1",
+            [],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn begin_save(&mut self) -> Result<CommitId, StoreError> {

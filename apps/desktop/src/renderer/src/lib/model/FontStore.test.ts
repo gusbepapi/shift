@@ -23,7 +23,7 @@ import {
   type Unicode,
 } from "@shift/types";
 import { segmentIdFor } from "@shift/glyph-state";
-import type { WorkspaceSnapshot } from "@shared/workspace/protocol";
+import type { WorkspaceSnapshot } from "@shared/workspace/lanes";
 import { effect, track } from "@shift/editor/signals";
 import { Font, FontStore } from "@shift/editor/model";
 import { createWorkspaceStack } from "@/testing/workspaceStack";
@@ -66,10 +66,10 @@ describe("FontStore glyph snapshot application", () => {
     });
     store.applyGlyphSnapshots([glyphSnapshot(LAYER_A_ID, structure())]);
 
-    store.confirmEdit({
+    store.applyEngineEdit({
+      impact: 0,
       next: { glyphChanges: { updated: snapshot("document-a", LAYER_B_ID).glyphs, removed: [] } },
       layers: [],
-      dependents: [],
     });
 
     expect(store.layerState(LAYER_A_ID)).toBeNull();
@@ -86,6 +86,8 @@ describe("FontStore record index", () => {
       unicodes: [],
       componentBaseGlyphIds: [],
       layers: [],
+      mark: false,
+      nonspacingMark: false,
     });
     const store = new FontStore({
       workspace: {
@@ -95,15 +97,16 @@ describe("FontStore record index", () => {
     });
     const font = new Font({ store });
 
-    store.confirmEdit({
+    store.applyEngineEdit({
+      impact: 0,
       next: {
         glyphChanges: {
           updated: [record("glyph_m", "Z"), record("glyph_b", "B")],
           removed: ["glyph_t" as GlyphId],
+          order: [GLYPH_ID, "glyph_b" as GlyphId, "glyph_m" as GlyphId],
         },
       },
       layers: [],
-      dependents: [],
     });
 
     expect(font.glyphEntries().map(({ name }) => name)).toEqual(["A", "B", "Z"]);
@@ -117,6 +120,8 @@ describe("FontStore record index", () => {
       unicodes: [180 as Unicode, 65 as Unicode],
       componentBaseGlyphIds: [],
       layers: [],
+      mark: false,
+      nonspacingMark: false,
     };
     const aacute = {
       id: "glyph_aacute" as GlyphId,
@@ -124,6 +129,8 @@ describe("FontStore record index", () => {
       unicodes: [193 as Unicode],
       componentBaseGlyphIds: [GLYPH_ID, acute.id],
       layers: [{ id: LAYER_B_ID, sourceId: SOURCE_ID }],
+      mark: false,
+      nonspacingMark: false,
     };
     const store = new FontStore({
       workspace: { ...base, glyphs: [...base.glyphs, acute, aacute] },
@@ -140,10 +147,10 @@ describe("FontStore record index", () => {
     expect(font.dependentNamesForName("acute" as GlyphName)).toEqual(["Aacute"]);
     expect(font.nameForUnicode(193 as Unicode)).toBe("Aacute");
 
-    store.confirmEdit({
-      next: { glyphChanges: { updated: [], removed: [aacute.id] } },
+    store.applyEngineEdit({
+      impact: 0,
+      next: { glyphChanges: { updated: [], removed: [aacute.id], order: [GLYPH_ID, acute.id] } },
       layers: [],
-      dependents: [],
     });
 
     expect(font.hasGlyph(aacute.id)).toBe(false);
@@ -188,6 +195,7 @@ describe("FontStore glyph object ownership", () => {
       anchorId: NEXT_ANCHOR_ID,
     });
     store.applyEngineEdit({
+      impact: 0,
       layers: [
         {
           layerId: LAYER_A_ID,
@@ -219,8 +227,12 @@ describe("FontStore glyph object ownership", () => {
       anchorId: NEXT_ANCHOR_ID,
     });
 
-    store.confirmEdit({
+    store.applyEngineEdit({
+      impact: 0,
       next: { glyphChanges: { updated: snapshot("document-a", LAYER_B_ID).glyphs, removed: [] } },
+      layers: [],
+    });
+    store.confirmEdit({
       layers: [
         {
           layerId: LAYER_B_ID,
@@ -340,6 +352,8 @@ function snapshot(workspaceId: string, layerId: LayerId): WorkspaceSnapshot {
         unicodes: [65 as Unicode],
         componentBaseGlyphIds: [],
         layers: [{ id: layerId, sourceId: SOURCE_ID }],
+        mark: false,
+        nonspacingMark: false,
       },
     ],
     sources: [
@@ -347,7 +361,8 @@ function snapshot(workspaceId: string, layerId: LayerId): WorkspaceSnapshot {
         id: SOURCE_ID,
         name: "Regular",
         location: { values: {} },
-        metricValues: [],
+        metricValues: {},
+        role: "master",
       },
     ],
     axes: [],

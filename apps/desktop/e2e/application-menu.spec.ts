@@ -12,10 +12,12 @@ import {
   applicationMenuSummary,
   clickApplicationMenuItem,
   clipboardText,
+  convertPreview,
   openFontFromLauncher,
   sessionMode,
   writeClipboardText,
 } from "./fixtures/documentLifecycle";
+import { glyphSearch, openFontInfo } from "./fixtures/appLocators";
 import { EditorDriver } from "./fixtures/EditorDriver";
 import { selectedComponentHitPoint } from "./fixtures/editorInteractions";
 import { openCubicPointTypes, openScratchGlyph, WAVE_CONTOUR } from "./fixtures/scratchGlyph";
@@ -72,6 +74,7 @@ launcherTest(
 
     expect(menu.settingsInstalled).toBe(true);
     expect(menu.fileIds).not.toContain("app.showSettings");
+    expect(menu.fileIds).toEqual(expect.arrayContaining(["tab.close", "window.close"]));
     expect(menu.editIds.includes("app.showSettings")).toBe(menu.platform !== "darwin");
     expect(menu.glyphIds).toContain("glyph.addComponent");
     expect(menu.addComponentAccelerator).toBe("CmdOrCtrl+Shift+C");
@@ -99,15 +102,20 @@ launcherTest(
   },
 );
 
-launcherTest(
-  "Update uses platform-appropriate window controls",
-  { tag: "@os" },
-  async ({ page }) => {
-    await page.goto(`${page.url().split("#")[0]}#/update?state=ready&version=1.2.3`);
-    await page.waitForURL(/#\/update\?state=ready&version=1\.2\.3$/);
+const simulatedUpdateTest = launcherTest.extend({ simulatedUpdate: true });
 
-    await expectCloseOnlyWindowControls(page);
-    await expect(page.getByRole("button", { name: "Restart and install" })).toBeVisible();
+simulatedUpdateTest(
+  "An update is offered, downloaded and put off in the update strip",
+  async ({ page }) => {
+    const strip = page.getByRole("status", { name: /9\.9\.9 update$/ });
+
+    await expect(strip.getByText("Update available")).toBeVisible({ timeout: 15_000 });
+    await strip.getByRole("button", { name: "Download" }).click();
+    await expect(strip.getByText("Downloaded")).toBeVisible({ timeout: 15_000 });
+    await expect(strip.getByRole("button", { name: "Restart" })).toBeVisible();
+
+    await strip.getByRole("button", { name: "Later" }).click();
+    await expect(strip).toBeHidden();
   },
 );
 
@@ -292,7 +300,7 @@ authoredTest(
 authoredTest(
   "Settings rounds mapping display without losing editing precision",
   async ({ editor, page }) => {
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await openFontInfo(page);
     const settings = page.getByRole("dialog", { name: "Settings" });
     await settings.getByRole("button", { name: "Axes", exact: true }).click();
     await settings.getByRole("button", { name: "Create axis", exact: true }).click();
@@ -327,7 +335,7 @@ authoredTest(
 authoredTest(
   "Mapping graph keeps a crossed-point drag as one undoable edit",
   async ({ editor, electronApp, page }) => {
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await openFontInfo(page);
     const settings = page.getByRole("dialog", { name: "Settings" });
     await settings.getByRole("button", { name: "Axes", exact: true }).click();
     await settings.getByRole("button", { name: "Create axis", exact: true }).click();
@@ -551,7 +559,9 @@ convertiblePreviewTest(
       .poll(() => applicationMenuItemEnabled(workspacePage, electronApp, "edit.copy"))
       .toBe(false);
 
-    await clickApplicationMenuItem(workspacePage, electronApp, "file.save");
+    await convertPreview(workspacePage, () =>
+      clickApplicationMenuItem(workspacePage, electronApp, "file.save"),
+    );
     await waitForWorkspaceReady(workspacePage);
     await expect.poll(() => sessionMode(workspacePage, electronApp)).toBe("workspace");
     expect(fs.existsSync(saveShiftPath)).toBe(true);
@@ -574,9 +584,9 @@ authoredTest(
       .toBe(true);
     await expect.poll(() => applicationMenuItemEnabled(page, electronApp, "edit.copy")).toBe(true);
 
-    const search = page.getByPlaceholder("Search glyphs...");
+    const search = await glyphSearch(page);
     await search.fill("Alpha");
-    await search.evaluate((input: HTMLInputElement) => input.select());
+    await search.selectText();
     await clickApplicationMenuItem(page, electronApp, "edit.copy");
     await expect.poll(() => clipboardText(electronApp)).toBe("Alpha");
 

@@ -77,7 +77,7 @@ fn colour_change_sets_apply_and_reverse() {
 }
 
 #[test]
-fn version_three_documents_gain_empty_colour_tables_on_open() {
+fn version_four_documents_gain_empty_colour_tables_on_open() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("Old.shift");
     let original = sample_font();
@@ -85,7 +85,7 @@ fn version_three_documents_gain_empty_colour_tables_on_open() {
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 3;",
+            "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 4;",
         )
         .unwrap();
     }

@@ -1,312 +1,587 @@
-//! Text shaping in the editor: shift-shape over the shaper font the
-//! workspace compiled.
+//! Text layout in the editor: shift-text's layout over the session's font and a
+//! shaper font the editing engine compiles from it (shift-text's `shaper_font`,
+//! fea-rs compile), answered by
+//! [`EngineReads::layout_text`](crate::engine_reads::EngineReads::layout_text).
 //!
-//! The exports exist only with the `shaping` feature, which builds them into
-//! `@shift/wasm/shaping`, a module of its own that the editor loads when
-//! text first needs shaping. The layouts below are declared either way, so
-//! the editor's side generates without the feature.
-//!
-//! This module is a separate instance from `@shift/wasm`, with its own name
-//! table, so nothing here crosses as an interned name: units, locations, and
-//! tags are numbers.
+//! The shaper itself ([`TextShaping`]) exists only with the `engine`
+//! feature, held by each session.
 
-use crate::layout::layout;
-
-layout! {
-    /// How one shaper axis's user coordinates normalize, at each mapping point.
-    pub struct ShaperAxis {
-        pub user: Vec<f64>,
-        pub normalized: Vec<f64>,
-    }
+/// Why the session has no shaper to shape with. `detail` is the Rust error's
+/// text; a paragraph it leaves unshaped carries it as its reason.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ShapingFailure {
+    /// The font cannot make a shaper font, as for invalid units per em or
+    /// axes, and none has been made before.
+    #[error("{detail}")]
+    Uncompilable { detail: String },
+    /// The store's reader could not answer what the shaper font compiles from.
+    #[error("{detail}")]
+    Unreadable { detail: String },
 }
 
-layout! {
-    /// A registered shaper's axes, in `fvar` order, and character mapping.
-    pub struct ShaperGlyphs {
-        pub shaper: usize,
-        pub axes: Vec<ShaperAxis>,
-        /// Characters as code points, each mapping to the shaper glyph at the same index of `glyphs`.
-        pub codepoints: Vec<f64>,
-        pub glyphs: Vec<f64>,
-    }
-}
+#[cfg(feature = "engine")]
+pub(crate) use exports::{TextPlace, TextShaping};
 
-layout! {
-    /// A feature setting for every run of a paragraph.
-    pub struct FeatureInput {
-        /// The feature tag's four bytes, big-endian.
-        pub tag: f64,
-        /// `0` turns the feature off, `1` on; larger values pick an alternate.
-        pub value: f64 => setting,
-    }
-}
-
-layout! {
-    /// One paragraph to shape.
-    pub struct ParagraphInput {
-        /// Each unit: a code point, or `-(glyph + 1)` for a glyph inserted by name as its shaper glyph id.
-        pub units: Vec<f64>,
-        /// The user coordinate on each shaper axis, in order; NaN for the axis default.
-        pub location: Vec<f64>,
-        /// A BCP 47 language tag as UTF-16 code units; empty for the default language system.
-        pub language: Vec<f64>,
-        pub features: Vec<FeatureInput>,
-    }
-}
-
-layout! {
-    /// Paragraphs to shape with one registered shaper.
-    pub struct ShapeParagraphs {
-        pub shaper: usize,
-        pub paragraphs: Vec<ParagraphInput>,
-    }
-}
-
-layout! {
-    /// One shaped glyph, in font units.
-    pub struct ShapedGlyphOutput {
-        /// The shaper glyph; null for `.notdef`.
-        pub glyph: Option<usize>,
-        /// The paragraph unit the glyph's cluster starts at.
-        pub cluster: usize,
-        pub x_advance: f64,
-        pub y_advance: f64,
-        pub x_offset: f64,
-        pub y_offset: f64,
-    }
-}
-
-layout! {
-    /// One run of a shaped paragraph, in logical order.
-    pub struct ShapedRunOutput {
-        /// The paragraph units the run covers, from `start` up to `end`.
-        pub start: usize,
-        pub end: usize,
-        /// The run's ISO 15924 script tag's four bytes, big-endian; 0 when the run has no specific script.
-        pub script: f64,
-        pub right_to_left: bool,
-        /// The run's glyphs in visual order.
-        pub glyphs: Vec<ShapedGlyphOutput>,
-    }
-}
-
-#[cfg(feature = "shaping")]
+#[cfg(feature = "engine")]
 mod exports {
     use std::cell::RefCell;
-    use std::collections::HashMap;
 
-    use shift_shape::{
-        AxisNormalization, FeatureSetting, GlyphSource, NOTDEF, ParagraphRequest, ShapeError,
-        Shaper, Tag, TextDirection, Unit, character_glyphs,
+    use shift_font::interpolation::KerningBlend;
+    use shift_font::{DesignLocation, ExternalLocation, Font, FontChangeImpact, ShaperFontSource};
+    use shift_text::layout::{
+        LayoutError, LayoutFont, LayoutRequest, LineMetrics, PlacementKeys, TextLayout,
     };
-    use wasm_bindgen::prelude::*;
-
-    use crate::layout::whole;
-
-    use super::{
-        ParagraphInput, ShapeParagraphs, ShapedGlyphOutput, ShapedRunOutput, ShaperGlyphs,
+    use shift_text::shape::ShapeError;
+    use shift_text::shaper_font::{
+        LiveShaper, ShaperFontError, ShaperFontRequest, ShaperFontState,
     };
-    use crate::layout::call;
 
-    thread_local! {
-        static SHAPERS: RefCell<Vec<Option<Registered>>> = const { RefCell::new(Vec::new()) };
+    use super::ShapingFailure;
+    use crate::engine_reads::{FeatureListError, FeatureSubstitution, FontFeature};
+
+    /// A session's shaper: the shaper font compiled from the session's font,
+    /// and a shaper over it that maps characters through the font's Unicode
+    /// values. Built when text is first shaped, and brought up to date before
+    /// the next shape after an edit that may have changed what it reads.
+    ///
+    /// Interior mutability lets reads, which borrow the session shared,
+    /// bring it up to date.
+    pub(crate) struct TextShaping {
+        state: RefCell<ShaperState>,
+        /// The placement keys this session's layouts carry.
+        placements: RefCell<PlacementKeys>,
     }
 
-    /// A shaper font registered from the editor, and the editor's view of it.
-    struct Registered {
-        shaper: Shaper,
-        glyphs: EditorGlyphs,
+    struct ShaperState {
+        /// Carries the last compilation forward: a source equal to it is not
+        /// compiled again, and feature code with errors keeps its font.
+        compilation: ShaperFontState,
+        shaper: Option<LiveShaper>,
+        /// Why there is no shaper, after the last try to make one failed.
+        failure: Option<ShapingFailure>,
+        /// Whether the session's font may have changed what the shaper reads
+        /// since it was last brought up to date.
+        stale: bool,
     }
 
-    /// Glyphs as the editor names them, shaper glyph ids, with characters
-    /// mapped from the live font and zero advances, which the editor
-    /// replaces with live ones.
-    #[derive(Default)]
-    struct EditorGlyphs {
-        characters: HashMap<u32, u32>,
-        axes: Vec<AxisNormalization>,
-    }
-
-    impl GlyphSource for EditorGlyphs {
-        type Glyph = u32;
-
-        fn shaper_glyph(&self, glyph: &u32) -> Option<u32> {
-            Some(*glyph)
-        }
-
-        fn host_glyph(&self, shaper_glyph: u32) -> Option<u32> {
-            (shaper_glyph != NOTDEF).then_some(shaper_glyph)
-        }
-
-        fn character_glyph(&self, codepoint: u32) -> Option<u32> {
-            self.characters.get(&codepoint).copied()
-        }
-
-        fn advance(&self, _shaper_glyph: u32) -> Option<i32> {
-            Some(0)
-        }
-    }
-
-    /// Registers a shaper font's bytes and returns its handle. Parses the
-    /// font's layout tables once; set its glyphs with `setShaperGlyphs`.
-    #[wasm_bindgen(js_name = registerShaper)]
-    pub fn register_shaper(bytes: &[u8]) -> Result<u32, JsError> {
-        let shaper = Shaper::new(bytes.to_vec())?;
-        SHAPERS.with_borrow_mut(|shapers| {
-            let handle = u32::try_from(shapers.len())?;
-            shapers.push(Some(Registered {
-                shaper,
-                glyphs: EditorGlyphs::default(),
-            }));
-            Ok(handle)
-        })
-    }
-
-    /// Releases a registered shaper; its handle shapes nothing afterwards.
-    #[wasm_bindgen(js_name = releaseShaper)]
-    pub fn release_shaper(handle: u32) {
-        SHAPERS.with_borrow_mut(|shapers| {
-            if let Some(slot) = usize::try_from(handle)
-                .ok()
-                .and_then(|index| shapers.get_mut(index))
-            {
-                *slot = None;
+    impl Default for TextShaping {
+        fn default() -> Self {
+            Self {
+                state: RefCell::new(ShaperState {
+                    compilation: ShaperFontState::default(),
+                    shaper: None,
+                    failure: None,
+                    stale: true,
+                }),
+                placements: RefCell::default(),
             }
-        });
+        }
     }
 
-    /// Input: `ShaperGlyphs`. Output: whether the shaper is registered.
-    #[wasm_bindgen(js_name = setShaperGlyphs)]
-    pub fn set_shaper_glyphs(input: &[f64]) -> Vec<f64> {
-        call(input, |glyphs: ShaperGlyphs| {
-            SHAPERS.with_borrow_mut(|shapers| {
-                let Some(Some(registered)) = shapers.get_mut(glyphs.shaper) else {
-                    return false;
-                };
-                registered.glyphs = EditorGlyphs {
-                    characters: character_glyphs(
-                        glyphs.codepoints.iter().zip(&glyphs.glyphs).filter_map(
-                            |(&codepoint, &glyph)| Some((whole(codepoint)?, whole(glyph)?)),
-                        ),
-                    ),
-                    axes: glyphs
-                        .axes
-                        .into_iter()
-                        .map(|axis| {
-                            AxisNormalization::new(
-                                axis.user.into_iter().zip(axis.normalized).collect(),
-                            )
-                        })
-                        .collect(),
-                };
-                true
-            })
-        })
+    impl From<ShaperFontError> for ShapingFailure {
+        fn from(error: ShaperFontError) -> Self {
+            Self::Uncompilable {
+                detail: error.to_string(),
+            }
+        }
     }
 
-    /// Input: `ShapeParagraphs`. Output: each paragraph's runs, or null for
-    /// a paragraph that cannot be shaped or an unregistered shaper.
-    #[wasm_bindgen(js_name = shapeParagraphs)]
-    pub fn shape_paragraphs(input: &[f64]) -> Vec<f64> {
-        call(input, |request: ShapeParagraphs| {
-            SHAPERS.with_borrow(|shapers| {
-                let registered = shapers.get(request.shaper).and_then(Option::as_ref);
-                request
-                    .paragraphs
-                    .iter()
-                    .map(|paragraph| {
-                        registered.and_then(|registered| shape(registered, paragraph).ok())
-                    })
-                    .collect::<Vec<_>>()
-            })
-        })
+    impl From<ShapeError> for ShapingFailure {
+        fn from(error: ShapeError) -> Self {
+            Self::Uncompilable {
+                detail: error.to_string(),
+            }
+        }
     }
 
-    fn shape(
-        registered: &Registered,
-        paragraph: &ParagraphInput,
-    ) -> Result<Vec<ShapedRunOutput>, ShapeError> {
-        let units: Vec<Unit<u32>> = paragraph
-            .units
-            .iter()
-            .filter_map(|&unit| unit_of(unit))
-            .collect();
-        let coords: Vec<_> = registered
-            .glyphs
-            .axes
-            .iter()
-            .enumerate()
-            .map(|(index, axis)| axis.normalize(paragraph.location.get(index).copied()))
-            .collect();
-        let language = (!paragraph.language.is_empty()).then(|| {
-            let code_units: Vec<u16> = paragraph
-                .language
-                .iter()
-                .filter_map(|&unit| u16::try_from(whole(unit)?).ok())
-                .collect();
-            String::from_utf16_lossy(&code_units)
-        });
-        let features = paragraph
-            .features
-            .iter()
-            .filter_map(|feature| {
-                Some(FeatureSetting {
-                    tag: Tag::new(&whole(feature.tag)?.to_be_bytes()),
-                    value: whole(feature.value)?,
+    impl TextShaping {
+        /// What a change with this impact may change of the shaper: the glyph
+        /// directory (order, names, categories, Unicode values) and the axes
+        /// and their mappings. Units per em and the feature source have no
+        /// edit, so they change only when a session opens.
+        pub(crate) const INPUTS: FontChangeImpact = FontChangeImpact::GLYPHS
+            .union(FontChangeImpact::AXES.union(FontChangeImpact::AXIS_MAPPINGS));
+
+        /// What a change with this impact may change of laid-out text: what
+        /// the shaper reads, kerning, the source metrics lines are spaced by,
+        /// and the glyph layers glyphs are placed from.
+        pub(crate) const LAYOUT_INPUTS: FontChangeImpact = Self::INPUTS
+            .union(FontChangeImpact::KERNING)
+            .union(FontChangeImpact::SOURCE_METRICS)
+            .union(FontChangeImpact::SOURCES)
+            .union(FontChangeImpact::LAYERS);
+
+        /// How many times the shaper font was compiled; a glyph change the
+        /// compile does not read leaves it.
+        #[cfg(test)]
+        fn compiles(&self) -> u64 {
+            self.state.borrow().compilation.compiles()
+        }
+
+        /// Brings the shaper up to date before the next shape when an edit
+        /// with `impact` may have changed what it reads.
+        pub(crate) fn forget_if_changed(&self, impact: FontChangeImpact) {
+            if impact.intersects(Self::INPUTS) {
+                self.state.borrow_mut().stale = true;
+            }
+        }
+
+        /// Lays `request` out over `font` at `place`, with the shaper brought
+        /// up to date first; text that cannot be shaped is laid out as typed,
+        /// saying why.
+        ///
+        /// When the font may have changed since the last layout, `source`
+        /// reads what the shaper font compiles from and the shaper is brought
+        /// up to date first; an equal source is not compiled again. When no
+        /// shaper can be made (the store's reader cannot answer, or the font
+        /// cannot make a shaper font), text lays out as typed for that reason
+        /// until the next edit that may change it. Once a shaper has been
+        /// made, a failure to update it keeps it, and it shapes as before.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`LayoutError::TooLong`] for text too long to index.
+        pub(crate) fn layout_text<E: std::fmt::Display>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+            request: &LayoutRequest,
+            place: TextPlace,
+        ) -> Result<TextLayout, LayoutError> {
+            let mut layout =
+                self.with_layout_font(font, source, place, |font| TextLayout::new(font, request))?;
+            self.placements.borrow_mut().assign(&mut layout);
+            Ok(layout)
+        }
+
+        /// Calls `with` with the font text lays out over at `place`, as
+        /// [`Self::layout_text`] does, without placement keys: for laying
+        /// out many texts, or one text at many widths, with one shaper
+        /// update and one font. The shaper stays borrowed while `with` runs.
+        pub(crate) fn with_layout_font<E: std::fmt::Display, R>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+            place: TextPlace,
+            with: impl FnOnce(&LayoutFont<'_>) -> R,
+        ) -> R {
+            let state = self.current(font, source);
+            let class = |glyph| state.compilation.class(glyph);
+            let layout_font = LayoutFont::new(
+                font,
+                &place.design,
+                place.external,
+                place.kerning,
+                state.shaper(),
+                &class,
+                LineMetrics::at(font, &place.design),
+            );
+            with(&layout_font)
+        }
+
+        /// The features the shaper font defines, in tag order, with the
+        /// shaper brought up to date first as for [`Self::layout_text`].
+        ///
+        /// # Errors
+        ///
+        /// Returns [`FeatureListError::NoShaper`] when no shaper could be
+        /// made, with why, and [`FeatureListError::Unreadable`] when its
+        /// font cannot be read.
+        pub(crate) fn features<E: std::fmt::Display>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+        ) -> Result<Vec<FontFeature>, FeatureListError> {
+            let state = self.current(font, source);
+            let shaper = state
+                .shaper()
+                .map_err(|reason| FeatureListError::NoShaper { reason })?;
+            shaper.features().map_err(FeatureListError::unreadable)
+        }
+
+        /// Every substitution feature `tag` can make in the shaper font, with
+        /// the shaper brought up to date first as for [`Self::layout_text`];
+        /// empty for a feature that substitutes nothing.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`FeatureListError`] for a tag that is not four
+        /// characters, when there is no shaper font, saying why, or when its
+        /// `GSUB` cannot be read.
+        pub(crate) fn feature_substitutions<E: std::fmt::Display>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+            tag: &str,
+        ) -> Result<Vec<FeatureSubstitution>, FeatureListError> {
+            let tag = shift_text::shape::Tag::new_checked(tag.as_bytes()).map_err(|_| {
+                FeatureListError::InvalidTag {
+                    tag: tag.to_string(),
+                }
+            })?;
+            let state = self.current(font, source);
+            let shaper = state
+                .shaper()
+                .map_err(|reason| FeatureListError::NoShaper { reason })?;
+            let rules = shaper
+                .feature_substitutions(tag)
+                .map_err(FeatureListError::unreadable)?;
+            Ok(rules
+                .into_iter()
+                .map(|rule| FeatureSubstitution {
+                    input: rule.input,
+                    output: rule.output,
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect())
+        }
 
-        let runs = registered.shaper.shape_paragraph(
-            &registered.glyphs,
-            &ParagraphRequest {
-                units: &units,
-                location: coords.as_slice(),
-                language: language.as_deref(),
-                features: &features,
-            },
-        )?;
-        Ok(runs
-            .into_iter()
-            .map(|run| ShapedRunOutput {
-                start: index_of(run.units.start),
-                end: index_of(run.units.end),
-                script: run.script.as_deref().map_or(0.0, script_tag),
-                right_to_left: run.direction == TextDirection::RightToLeft,
-                glyphs: run
-                    .glyphs
-                    .into_iter()
-                    .map(|glyph| ShapedGlyphOutput {
-                        glyph: glyph.glyph_id.map(index_of),
-                        cluster: index_of(glyph.cluster),
-                        x_advance: f64::from(glyph.x_advance),
-                        y_advance: f64::from(glyph.y_advance),
-                        x_offset: f64::from(glyph.x_offset),
-                        y_offset: f64::from(glyph.y_offset),
+        /// Whether shaping applies feature `tag` when text sets it to
+        /// `setting`, as `FeatureDefault::applies` decides for the shaper
+        /// font's feature, with the shaper brought up to date first as for
+        /// [`Self::layout_text`]; false for a tag the shaper font does not
+        /// define.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`FeatureListError`] when there is no shaper font, saying
+        /// why, or it cannot be read.
+        pub(crate) fn feature_applies<E: std::fmt::Display>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+            tag: &str,
+            setting: Option<u32>,
+        ) -> Result<bool, FeatureListError> {
+            let features = self.features(font, source)?;
+            Ok(features
+                .iter()
+                .find(|feature| feature.tag == tag)
+                .is_some_and(|feature| feature.default.applies(setting)))
+        }
+
+        /// The shaper state, brought up to date with `font` when an edit may
+        /// have changed what it reads.
+        fn current<E: std::fmt::Display>(
+            &self,
+            font: &Font,
+            source: impl FnOnce() -> Result<ShaperFontSource, E>,
+        ) -> std::cell::RefMut<'_, ShaperState> {
+            let mut state = self.state.borrow_mut();
+            if state.stale {
+                state.stale = false;
+                let updated = source()
+                    .map_err(|error| ShapingFailure::Unreadable {
+                        detail: error.to_string(),
+                    })
+                    .and_then(|source| state.update(font, &source));
+                state.failure = updated.err().filter(|_| state.shaper.is_none());
+            }
+            state
+        }
+    }
+
+    /// Where text is laid out: its design and user-space locations and the
+    /// kerning there.
+    pub(crate) struct TextPlace {
+        pub(crate) design: DesignLocation,
+        pub(crate) external: ExternalLocation,
+        pub(crate) kerning: KerningBlend,
+    }
+
+    impl ShaperState {
+        /// The shaper, or why there is none.
+        fn shaper(&self) -> Result<&LiveShaper, String> {
+            match (&self.shaper, &self.failure) {
+                (Some(shaper), _) => Ok(shaper),
+                (None, failure) => Err(failure
+                    .as_ref()
+                    .map_or_else(|| "no shaper font".to_string(), ToString::to_string)),
+            }
+        }
+
+        /// Brings the compilation up to `source`, compiling only when
+        /// something the compile reads changed, and maps characters through
+        /// `font`'s Unicode values over the compilation's glyph order, which
+        /// holds glyphs added since the last compile past the font's own.
+        fn update(&mut self, font: &Font, source: &ShaperFontSource) -> Result<(), ShapingFailure> {
+            let request = ShaperFontRequest::new(source)?;
+            let font_changed = self.compilation.update(request)?;
+            if font_changed || self.shaper.is_none() {
+                let compiled = self.compilation.font().cloned().ok_or_else(|| {
+                    ShapingFailure::Uncompilable {
+                        detail: "the source compiled to no shaper font".to_string(),
+                    }
+                })?;
+                self.shaper = Some(LiveShaper::new(compiled, font.character_map())?);
+            }
+            if let Some(shaper) = self.shaper.as_mut() {
+                shaper.set_glyphs(self.compilation.glyph_order(), font.character_map());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::convert::Infallible;
+
+        use shift_font::{
+            Font, FontChangeImpact, Glyph, GlyphClasses, GlyphDataCategory, ShaperFontSource,
+        };
+
+        use shift_font::interpolation::KerningBlend;
+        use shift_font::{DesignLocation, ExternalLocation};
+        use shift_text::layout::{LayoutRequest, LayoutUnit, TextLayout, TextOptions};
+
+        use shift_engine::scene::{RunSettings, TextItem, TextRun};
+        use shift_font::TextItemId;
+
+        use super::{TextPlace, TextShaping};
+        use crate::engine_reads::{
+            FeatureDefault, FeatureGroup, FeatureListError, FeatureSubstitution, FontFeature,
+        };
+
+        const LIGATURE: &str = "feature liga { sub f i by f_i; } liga;";
+
+        fn font_with(glyphs: &[(&str, Option<char>)]) -> Font {
+            let mut font = Font::new();
+            for (name, character) in glyphs {
+                add(&mut font, name, *character);
+            }
+            font.features_mut()
+                .set_fea_source(Some(LIGATURE.to_string()));
+            font
+        }
+
+        fn add(font: &mut Font, name: &str, character: Option<char>) {
+            let mut glyph = Glyph::new(name);
+            if let Some(character) = character {
+                glyph.add_unicode(u32::from(character));
+            }
+            font.insert_glyph(glyph).unwrap();
+        }
+
+        fn source(font: &Font) -> ShaperFontSource {
+            let classes = GlyphClasses::of_loaded(font.glyphs(), font.lib(), |_| {
+                GlyphDataCategory::default()
+            });
+            font.shaper_font_source(&classes)
+        }
+
+        /// Lays `text` out shaped and names its glyphs.
+        fn shaped(shaping: &TextShaping, font: &Font, text: &str) -> Vec<String> {
+            let laid_out = laid_out(shaping, font, text, true);
+            assert_eq!(laid_out.unshaped, None);
+            laid_out
+                .glyphs
+                .iter()
+                .map(|glyph| {
+                    font.glyph(glyph.glyph_id.unwrap())
+                        .unwrap()
+                        .name()
+                        .to_string()
+                })
+                .collect()
+        }
+
+        fn edited(shaping: &TextShaping) {
+            shaping.forget_if_changed(FontChangeImpact::GLYPHS);
+        }
+
+        #[test]
+        fn a_glyph_the_features_do_not_name_shapes_without_a_recompile() {
+            let mut font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+            assert_eq!(shaped(&shaping, &font, "fi"), ["f_i"]);
+            assert_eq!(shaping.compiles(), 1);
+
+            add(&mut font, "x", Some('x'));
+            edited(&shaping);
+
+            assert_eq!(shaped(&shaping, &font, "fix"), ["f_i", "x"]);
+            assert_eq!(shaping.compiles(), 1);
+        }
+
+        #[test]
+        fn adding_or_renaming_a_glyph_the_features_name_recompiles() {
+            let mut font = font_with(&[("f", Some('f')), ("i", Some('i'))]);
+            let shaping = TextShaping::default();
+            assert_eq!(shaped(&shaping, &font, "fi"), ["f", "i"]);
+            let first = shaping.compiles();
+
+            add(&mut font, "f_i", None);
+            edited(&shaping);
+            assert_eq!(shaped(&shaping, &font, "fi"), ["f_i"]);
+            assert_eq!(shaping.compiles(), first + 1);
+
+            let ligature = font.glyph_by_name("f_i").unwrap().id();
+            font.rename_glyph(ligature, "f_i.liga".into()).unwrap();
+            edited(&shaping);
+            // The source no longer compiles, so the last font shapes on.
+            assert_eq!(shaped(&shaping, &font, "fi"), ["f_i.liga"]);
+            assert_eq!(shaping.compiles(), first + 2);
+        }
+
+        fn laid_out(
+            shaping: &TextShaping,
+            font: &Font,
+            text: &str,
+            shaping_on: bool,
+        ) -> TextLayout {
+            let request = LayoutRequest {
+                units: text
+                    .chars()
+                    .map(|character| LayoutUnit::Character {
+                        codepoint: u32::from(character),
                     })
                     .collect(),
-            })
-            .collect())
-    }
-
-    /// Reads a unit: a code point, or `-(glyph + 1)` for an inserted glyph.
-    fn unit_of(unit: f64) -> Option<Unit<u32>> {
-        if unit < 0.0 {
-            return whole(-unit - 1.0).map(Unit::Glyph);
+                options: TextOptions {
+                    shaping: shaping_on,
+                    ..TextOptions::default()
+                },
+            };
+            let place = TextPlace {
+                design: DesignLocation::new(),
+                external: ExternalLocation::new(),
+                kerning: KerningBlend::default(),
+            };
+            shaping
+                .layout_text(font, || Ok::<_, Infallible>(source(font)), &request, place)
+                .unwrap()
         }
-        char::from_u32(whole(unit)?).map(Unit::Character)
-    }
 
-    fn index_of(value: u32) -> usize {
-        usize::try_from(value).unwrap_or(usize::MAX)
-    }
+        #[test]
+        fn features_say_why_when_there_is_no_shaper_font() {
+            let font = font_with(&[("f", Some('f'))]);
+            let shaping = TextShaping::default();
 
-    /// Returns a script tag such as `Arab` as its four bytes, big-endian.
-    fn script_tag(script: &str) -> f64 {
-        let mut bytes = [b' '; 4];
-        for (byte, source) in bytes.iter_mut().zip(script.bytes()) {
-            *byte = source;
+            let features = shaping.features(&font, || Err::<ShaperFontSource, _>("closed"));
+
+            assert!(matches!(features, Err(FeatureListError::NoShaper { .. })));
         }
-        f64::from(u32::from_be_bytes(bytes))
+
+        #[test]
+        fn features_list_the_shaper_font_s_with_their_names_and_defaults() {
+            let font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+
+            let features = shaping
+                .features(&font, || Ok::<_, Infallible>(source(&font)))
+                .unwrap();
+
+            assert_eq!(
+                features,
+                [FontFeature {
+                    tag: "liga".to_string(),
+                    name: Some("Standard Ligatures".to_string()),
+                    default: FeatureDefault::On,
+                    group: FeatureGroup::Ligatures,
+                }]
+            );
+        }
+
+        #[test]
+        fn substitutions_list_what_a_feature_brings_in_by_glyph_id() {
+            let font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+            let id = |name: &str| font.glyph_by_name(name).unwrap().id();
+            let read = |tag: &str| {
+                shaping.feature_substitutions(&font, || Ok::<_, Infallible>(source(&font)), tag)
+            };
+
+            assert_eq!(
+                read("liga"),
+                Ok(vec![FeatureSubstitution {
+                    input: vec![id("f"), id("i")],
+                    output: id("f_i"),
+                }])
+            );
+            assert_eq!(read("ss01"), Ok(Vec::new()));
+            assert!(matches!(
+                read("ligatures"),
+                Err(FeatureListError::InvalidTag { .. })
+            ));
+        }
+
+        #[test]
+        fn a_feature_applies_as_the_text_sets_it_over_its_default() {
+            let font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+            let applies = |tag: &str, setting: Option<u32>| {
+                shaping.feature_applies(&font, || Ok::<_, Infallible>(source(&font)), tag, setting)
+            };
+
+            assert_eq!(applies("liga", None), Ok(true));
+            assert_eq!(applies("liga", Some(0)), Ok(false));
+            // A tag the font does not define never applies.
+            assert_eq!(applies("ss01", Some(1)), Ok(false));
+        }
+
+        #[test]
+        fn text_lays_out_with_the_session_s_shaper_or_as_typed() {
+            let font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+
+            let shaped = laid_out(&shaping, &font, "fi", true);
+            let typed = laid_out(&shaping, &font, "fi", false);
+
+            let ligature = font.glyph_by_name("f_i").unwrap().id();
+            assert_eq!(shaped.glyphs.len(), 1);
+            assert_eq!(shaped.glyphs[0].glyph_id, Some(ligature));
+            assert_eq!(typed.glyphs.len(), 2);
+            assert_eq!(shaped.carets.len(), 3);
+            assert_eq!(shaping.compiles(), 1);
+        }
+
+        #[test]
+        fn a_run_lays_out_with_the_features_its_settings_turn_off() {
+            let font = font_with(&[("f", Some('f')), ("i", Some('i')), ("f_i", None)]);
+            let shaping = TextShaping::default();
+            let run = |features: &[(&str, bool)]| TextRun {
+                items: "fi"
+                    .chars()
+                    .enumerate()
+                    .map(|(index, character)| TextItem::Character {
+                        id: TextItemId::from_raw(index.to_string()),
+                        codepoint: u32::from(character),
+                    })
+                    .collect(),
+                settings: RunSettings {
+                    features: features
+                        .iter()
+                        .map(|&(tag, on)| (tag.to_string(), on))
+                        .collect(),
+                    ..RunSettings::default()
+                },
+            };
+            let names = |run: &TextRun| {
+                let place = TextPlace {
+                    design: DesignLocation::new(),
+                    external: ExternalLocation::new(),
+                    kerning: KerningBlend::default(),
+                };
+                shaping
+                    .layout_text(
+                        &font,
+                        || Ok::<_, Infallible>(source(&font)),
+                        &run.layout_request(),
+                        place,
+                    )
+                    .unwrap()
+                    .glyphs
+                    .iter()
+                    .map(|glyph| {
+                        font.glyph(glyph.glyph_id.unwrap())
+                            .unwrap()
+                            .name()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            assert_eq!(names(&run(&[])), ["f_i"]);
+            assert_eq!(names(&run(&[("liga", true)])), ["f_i"]);
+            assert_eq!(names(&run(&[("liga", false)])), ["f", "i"]);
+        }
     }
 }

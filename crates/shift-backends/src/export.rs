@@ -192,7 +192,7 @@ impl FontExporter {
         font: &impl FontView,
         color_tables: &ColorTables,
     ) -> Result<Vec<u8>, ExportError> {
-        let source = ShiftIrSource::from_font_view(font).map_err(map_source_error)?;
+        let source = ShiftIrSource::from_font_view(font)?;
         let bytes = compile_ttf(source)?;
         let names = font
             .glyphs()
@@ -257,8 +257,7 @@ impl FontExporter {
         &self,
         font: &impl FontView,
     ) -> Result<Vec<PropagatedGlyphAnchors>, ExportError> {
-        ShiftIrSource::from_font_view(font)
-            .map_err(map_source_error)?
+        ShiftIrSource::from_font_view(font)?
             .propagated_anchors()
             .map_err(|error| compile_error(&error))
     }
@@ -270,14 +269,16 @@ impl Default for FontExporter {
     }
 }
 
-/// Marker fontc appends to every version string (name ID 5) it compiles.
-const FONTC_VERSION_MARKER: &str = ";fontc ";
-
+/// Compiles `source` with fontc and strips the compiler's version stamp.
 fn compile_ttf(source: ShiftIrSource) -> Result<Vec<u8>, ExportError> {
     let bytes = fontc::generate_font(Box::new(source), fontc::Options::default())
         .map_err(|error| compile_error(&error))?;
+
     strip_compiler_version(&bytes)
 }
+
+/// Marker fontc appends to every version string (name ID 5) it compiles.
+const FONTC_VERSION_MARKER: &str = ";fontc ";
 
 /// Removes the `;fontc <version>` suffix fontc stamps onto version strings, so
 /// an exported font reports exactly the version its author entered.
@@ -326,14 +327,16 @@ fn compile_error(error: &impl std::fmt::Display) -> ExportError {
     }
 }
 
-fn map_source_error(error: ShiftIrSourceError) -> ExportError {
-    match error {
-        ShiftIrSourceError::UnsupportedCrossAxisMappings { mapping_count } => {
-            ExportError::UnsupportedCrossAxisMappings { mapping_count }
+impl From<ShiftIrSourceError> for ExportError {
+    fn from(error: ShiftIrSourceError) -> Self {
+        match error {
+            ShiftIrSourceError::UnsupportedCrossAxisMappings { mapping_count } => {
+                Self::UnsupportedCrossAxisMappings { mapping_count }
+            }
+            error => Self::InvalidSource {
+                message: error.to_string(),
+            },
         }
-        error => ExportError::InvalidSource {
-            message: error.to_string(),
-        },
     }
 }
 
@@ -519,7 +522,7 @@ mod tests {
         font: &Font,
         glyph_id: shift_font::GlyphId,
         source_id: shift_font::SourceId,
-        categories: &std::collections::BTreeMap<shift_font::GlyphId, crate::RecordCategory>,
+        categories: &std::collections::BTreeMap<shift_font::GlyphId, shift_font::RecordCategory>,
     ) -> shift_font::anchor_propagation::PropagatedAnchors {
         use shift_font::anchor_propagation::{
             PropagationAnchor, PropagationComponent, PropagationGlyph, compiled_anchors,
@@ -560,8 +563,8 @@ mod tests {
             components: &components,
             is_mark: category.mark,
             is_ligature: match category.ligature {
-                Some(crate::PropagationLigature::Explicit) => true,
-                Some(crate::PropagationLigature::Subcategory) => attaching,
+                Some(shift_font::Ligature::Explicit) => true,
+                Some(shift_font::Ligature::Subcategory) => attaching,
                 None => false,
             },
         })

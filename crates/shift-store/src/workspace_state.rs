@@ -158,27 +158,66 @@ pub enum SaveState {
     /// against its saved rows and discards the recovery overlay only when it
     /// holds.
     MatchesSaved,
+    /// The change is navigation, such as opening a glyph page: its rows are
+    /// kept, so the page survives reopening, but whether the document is
+    /// saved stays as it was.
+    Unchanged,
+}
+
+/// Whether a write advances the revision that addresses font-derived caches,
+/// such as the Slug atlas.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Revision {
+    /// The write changed the font: caches built from it are stale.
+    Advance,
+    /// The write changed only what no font cache reads, such as the scene.
+    Keep,
+}
+
+impl Revision {
+    /// The revision change a write of `font_changes` makes.
+    pub(crate) fn of(font_changes: &shift_font::FontChangeSet) -> Self {
+        if font_changes.is_empty() {
+            Self::Keep
+        } else {
+            Self::Advance
+        }
+    }
+
+    /// How much the write adds to the revision.
+    pub(crate) fn step(self) -> i64 {
+        match self {
+            Self::Advance => 1,
+            Self::Keep => 0,
+        }
+    }
 }
 
 pub(crate) fn mark_workspace_dirty_in_tx(tx: &Transaction<'_>) -> Result<(), StoreError> {
-    mark_workspace_changed_in_tx(tx, SaveState::Unsaved)
+    mark_workspace_changed_in_tx(tx, SaveState::Unsaved, Revision::Advance)
 }
 
 pub(crate) fn mark_workspace_changed_in_tx(
     tx: &Transaction<'_>,
     save_state: SaveState,
+    revision: Revision,
 ) -> Result<(), StoreError> {
-    let dirty = save_state == SaveState::Unsaved;
+    // NULL keeps the flag: navigation leaves the document as saved or not.
+    let dirty = match save_state {
+        SaveState::Unsaved => Some(true),
+        SaveState::MatchesSaved => Some(false),
+        SaveState::Unchanged => None,
+    };
     tx.execute(
         "
         UPDATE workspace_state
         SET
-            dirty = ?1,
-            revision = revision + 1,
-            updated_at_ms = ?2
+            dirty = COALESCE(?1, dirty),
+            revision = revision + ?2,
+            updated_at_ms = ?3
         WHERE id = 1
         ",
-        params![dirty, now_ms()],
+        params![dirty, revision.step(), now_ms()],
     )?;
     Ok(())
 }

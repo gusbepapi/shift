@@ -1,9 +1,9 @@
 import type { MessagePortMain } from "electron";
 import type {
-  WorkspaceDocumentState,
   FontExportFormat,
+  WorkspaceDocumentState,
   WorkspaceExportResult,
-} from "../../shared/workspace/protocol";
+} from "../../shared/workspace/lanes";
 import type { DocumentCallMap, DocumentEventMap } from "../../shared/ipc/contract";
 import { Channel, electronPortTransport } from "../../shared/workspace/channel";
 import { createShiftLogger, type ShiftLogger } from "../logging";

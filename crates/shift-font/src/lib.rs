@@ -34,6 +34,7 @@
 #![warn(clippy::unwrap_used, clippy::print_stdout)]
 
 pub mod anchor_attachment;
+pub mod anchor_name;
 pub mod anchor_propagation;
 pub mod changes;
 pub mod check;
@@ -43,6 +44,9 @@ pub mod curve;
 pub mod curve_fit;
 pub mod drag_rules;
 pub mod error;
+pub mod glyph_identity;
+pub mod glyph_record;
+pub mod index_key;
 pub mod intents;
 pub mod interpolation;
 pub mod ir;
@@ -50,7 +54,10 @@ pub mod layer_edit;
 pub mod naming;
 pub mod placed_blend;
 pub mod point_arrange;
+pub mod positioning;
 pub mod projection;
+pub mod proof_text;
+pub mod shaper_font_source;
 mod string_enum;
 pub mod svg_path;
 #[cfg(any(test, feature = "test-support"))]
@@ -61,6 +68,7 @@ pub use contour_edit::{
     ContourEditError, ContourEnd, ContourSide, DeleteMode, EditOption, JoinMode, UnknownEditOption,
 };
 pub use error::{CoreError, CoreResult, EntityKind, EntityRef, Require};
+pub use glyph_record::{GlyphLayerRecord, GlyphRecord, GlyphRecordChanges, GlyphRecords};
 pub use intents::*;
 pub use interpolation::*;
 pub use ir::*;
@@ -73,3 +81,5 @@ pub use ir::{
 pub use kurbo;
 pub use point_arrange::{DistributeAxis, PointAlignment, Sidebearing};
 pub use projection::*;
+pub use proof_text::{ProofItem, ProofText, ProofTextError};
+pub use shaper_font_source::{GlyphOrderEntry, NOTDEF, ShaperFontGlyph, ShaperFontSource};

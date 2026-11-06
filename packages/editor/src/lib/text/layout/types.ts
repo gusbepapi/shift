@@ -3,7 +3,6 @@ import {
   type GlyphName,
   mintTextItemId,
   type GlyphId,
-  type ShapedGlyph,
   type SourceMetrics,
   type TextItemId,
   type Unicode,
@@ -77,6 +76,13 @@ export function lineBreakTextItem(id: TextItemId = mintTextItemId()): LineBreakT
   return { id, kind: "linebreak" };
 }
 
+/** Items for text as typed: every character literally, with each line ending a line break. */
+export function typedTextItems(text: string): TextItem[] {
+  return [...text.replaceAll("\r\n", "\n")].map((char) =>
+    char === "\n" ? lineBreakTextItem() : characterTextItem(char.codePointAt(0)!),
+  );
+}
+
 export interface PositionedGlyph {
   /** Stable document glyph identity resolved during layout; null when unresolved. */
   glyphId: GlyphId | null;
@@ -98,28 +104,39 @@ export interface PositionedGlyph {
 
 export type Direction = "ltr" | "rtl";
 
-export interface SegmentedRun {
-  items: readonly ParagraphItem[];
-  /** Glyphs in visual order, clusters indexing `items`: the shaper's, or one per item for literal layout. */
-  shaped: readonly ShapedGlyph[];
-  direction: Direction;
-  script?: string;
-  language?: string;
-  features?: Record<string, boolean | "auto">;
-  clusterStart: number;
+/**
+ * Which of a caret stop's places the caret shows at: the stop's own, or, at
+ * a direction boundary, its second place, on the other run's edge.
+ */
+export type CaretEdge = "primary" | "secondary";
+
+/** Where a caret stands: the boundary before `unit`, at its stop's `edge` place. */
+export interface CaretTarget {
+  readonly unit: number;
+  readonly edge: CaretEdge;
+}
+
+/** One place a caret can show on a line, where Rust put it on screen. */
+export interface CaretPlace extends CaretTarget {
+  readonly x: number;
+  /** The direction of the text the place is an edge of. */
+  readonly direction: Direction;
 }
 
 export interface PositionedRun {
   glyphs: PositionedGlyph[];
   direction: Direction;
-  script?: string;
+  script?: string | null;
   language?: string;
   features?: Record<string, boolean | "auto">;
   advance: number;
 }
 
 export interface Line {
+  /** Runs in screen order, left to right. */
   runs: PositionedRun[];
+  /** The paragraph's base direction. */
+  direction: Direction;
   y: number;
   ascent: number;
   descent: number;
@@ -137,7 +154,6 @@ export interface Hit {
   lineIndex: number;
   runIndex: number;
   cluster: number;
-  side: "left" | "right";
 }
 
 /** A selection highlight on one line, in layout coordinates. */
@@ -152,12 +168,6 @@ export interface CaretPosition {
   x: number;
   y: number;
   lineHeight: number;
-}
-
-/** The items between two line breaks; `clusterStart` is the first item's index in the run. */
-export interface Paragraph {
-  readonly items: readonly ParagraphItem[];
-  readonly clusterStart: number;
 }
 
 export type { Point2D, SourceMetrics };

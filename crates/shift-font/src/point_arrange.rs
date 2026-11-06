@@ -13,11 +13,14 @@ use crate::{Contour, GlyphLayer, Point, PointId, Transform};
 crate::string_enum! {
     /// Where [`GlyphLayer::align_points`] puts the points, in their own box.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[cfg_attr(feature = "pack", derive(pack::Pack))]
     pub enum PointAlignment {
         Left => "left",
+        #[cfg_attr(feature = "pack", pack(rename = "center-h"))]
         CenterH => "center-h",
         Right => "right",
         Top => "top",
+        #[cfg_attr(feature = "pack", pack(rename = "center-v"))]
         CenterV => "center-v",
         Bottom => "bottom",
     }
@@ -27,6 +30,7 @@ crate::string_enum! {
 crate::string_enum! {
     /// The axis [`GlyphLayer::distribute_points`] spaces the points along.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[cfg_attr(feature = "pack", derive(pack::Pack))]
     pub enum DistributeAxis {
         Horizontal => "horizontal",
         Vertical => "vertical",
@@ -37,8 +41,11 @@ crate::string_enum! {
 crate::string_enum! {
     /// One sidebearing of a layer.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[cfg_attr(feature = "pack", derive(pack::Pack))]
     pub enum Sidebearing {
+        #[cfg_attr(feature = "pack", pack(rename = "lsb"))]
         Left => "lsb",
+        #[cfg_attr(feature = "pack", pack(rename = "rsb"))]
         Right => "rsb",
     }
     parse_error: UnknownEditOption = |text| UnknownEditOption::new(EditOption::Sidebearing, text);
@@ -124,12 +131,11 @@ impl GlyphLayer {
         };
         let start = along(positions[first]);
         let spacing = (along(positions[last]) - start) / (order.len() - 1) as f64;
-        let targets: HashMap<PointId, f64> = order
+        let interior = &order[1..order.len() - 1];
+        let targets: HashMap<PointId, f64> = interior
             .iter()
-            .enumerate()
-            .skip(1)
-            .take(order.len() - 2)
-            .map(|(rank, &index)| (point_ids[index].clone(), start + spacing * rank as f64))
+            .zip(1..)
+            .map(|(&index, rank)| (point_ids[index].clone(), start + spacing * f64::from(rank)))
             .collect();
 
         self.update_known_points(point_ids, |point| {

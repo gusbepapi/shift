@@ -8,6 +8,7 @@ use shift_font::{
 };
 use std::{fs, path::PathBuf};
 
+use shift_engine::scene::SceneIntent;
 use shift_font::{
     AnchorId, AnchorSeed, Axis, AxisId, BooleanOp, ContourId, DesignLocation, EntityChange,
     ExternalLocation, Font, FontChange, FontEntityChange, FontIntent, FontIntentSet, Glyph,
@@ -2599,12 +2600,12 @@ fn failed_redo_replay_hands_the_entry_back_for_retry() {
         .unwrap();
     workspace.undo().unwrap().expect("deleteSource should undo");
 
-    // Wipe the store's font rows so the redo's SourceDeleted change has no
-    // row to delete and the replay fails at the persistence step.
-    workspace
-        .store_mut()
-        .replace_font_state(&Font::new())
-        .unwrap();
+    // Wipe the store's font rows, metric definitions included, so the
+    // redo's SourceDeleted change has no row to delete and the replay fails
+    // at the persistence step.
+    let mut wiped = Font::new();
+    wiped.set_metric_definitions(Vec::new()).unwrap();
+    workspace.store_mut().replace_font_state(&wiped).unwrap();
 
     let Err(error) = workspace.redo() else {
         panic!("redo should fail when the store rejects the replay");
@@ -2666,11 +2667,13 @@ fn one_palette(red: u8) -> shift_font::ColorData {
     }
 }
 
-fn set_color(workspace: &mut FontWorkspace, color: shift_font::ColorData) {
+fn set_color(workspace: &mut FontWorkspace, color: &shift_font::ColorData) {
     workspace
         .apply(
             &FontIntentSet {
-                intents: vec![FontIntent::SetColor(shift_font::SetColor { color })],
+                intents: vec![FontIntent::SetColor(
+                    shift_font::SetColor::new(color).unwrap(),
+                )],
             },
             Some("Set Colour".to_string()),
         )
@@ -2684,13 +2687,13 @@ fn colour_edits_persist_across_resume_and_undo_and_redo() {
     let mut workspace = FontWorkspace::create_untitled(&store_path, NewWorkspace::new()).unwrap();
     assert!(workspace.font().color().is_empty());
 
-    set_color(&mut workspace, one_palette(10));
+    set_color(&mut workspace, &one_palette(10));
     drop(workspace);
 
     let mut workspace = FontWorkspace::resume(&store_path).unwrap();
     assert_eq!(workspace.font().color(), &one_palette(10));
 
-    set_color(&mut workspace, one_palette(200));
+    set_color(&mut workspace, &one_palette(200));
     let undone = workspace.undo().unwrap().expect("setColor should undo");
     assert!(
         undone
@@ -2738,9 +2741,114 @@ fn a_move_sent_compacted_persists_against_an_unloaded_layer() {
     let mut workspace = FontWorkspace::resume(&store_path).unwrap();
     assert_eq!(workspace.loaded_layer_count(), 0);
     workspace
-        .persist_compact_change_set(applied.changes.compact(), shift_store::SaveState::Unsaved)
+        .persist_compact_change_set(
+            shift_engine::DocumentChangeSet {
+                font: applied.changes,
+                scene: shift_engine::scene::SceneChangeSet::default(),
+            }
+            .compact(),
+            shift_store::SaveState::Unsaved,
+        )
         .unwrap();
 
     assert_eq!(workspace.font().layer(layer_id), window.layer(layer_id));
     assert_persisted_font_matches_workspace(&mut workspace);
+}
+
+/// A glyph page holding one run with one glyph, as opening a glyph tab places it.
+fn glyph_page(glyph_id: GlyphId, source_id: SourceId) -> Vec<SceneIntent> {
+    use shift_engine::scene::{BoxSizing, NodeContent, PageRole, Placement, SceneNode};
+    use shift_font::{NodeId, RunId, index_key};
+
+    let key = index_key::between(None, None).unwrap();
+    let page = NodeId::new();
+    let run = NodeId::new();
+    let node = |id: &NodeId, parent: Option<&NodeId>, content| SceneNode {
+        id: id.clone(),
+        parent_id: parent.cloned(),
+        index: key.clone(),
+        x: 0.0,
+        y: 0.0,
+        sizing: BoxSizing::default(),
+        placement: Placement::Absolute,
+        content,
+    };
+    vec![
+        SceneIntent::CreateNode(node(
+            &page,
+            None,
+            NodeContent::Page {
+                name: "Glyph".into(),
+                role: Some(PageRole::Glyph),
+            },
+        )),
+        SceneIntent::CreateNode(node(
+            &run,
+            Some(&page),
+            NodeContent::TextRun {
+                run_id: RunId::new(),
+                size: 1000.0,
+                items: Vec::new(),
+                settings: Default::default(),
+            },
+        )),
+        SceneIntent::CreateNode(node(
+            &NodeId::new(),
+            Some(&run),
+            NodeContent::Glyph {
+                glyph_id,
+                source_id,
+                item_id: None,
+            },
+        )),
+    ]
+}
+
+/// Persists `intents` as the window's engine sends a scene edit, unsaved.
+fn persist_scene(workspace: &mut FontWorkspace, intents: &[SceneIntent]) {
+    let mut scene = workspace.scene().clone();
+    let changes = scene.apply_intents(intents).unwrap();
+    workspace
+        .persist_compact_change_set(
+            shift_engine::DocumentChangeSet {
+                font: shift_font::FontChangeSet::default(),
+                scene: changes,
+            }
+            .compact(),
+            shift_store::SaveState::Unsaved,
+        )
+        .unwrap();
+}
+
+#[test]
+fn opening_a_glyph_page_leaves_the_document_saved_and_survives_reopening() {
+    let temp = tempfile::tempdir().unwrap();
+    let document_path = temp.path().join("Glyphs.shift");
+    let recovery_path = temp.path().join("recovery.sqlite");
+    drop(ShiftStore::create_document(&document_path, &Font::new()).unwrap());
+    let mut workspace = FontWorkspace::open_document(&document_path, &recovery_path).unwrap();
+    let glyph_id = create_glyph(&mut workspace, "A", vec![65]);
+    workspace.save().unwrap();
+    let source_id = workspace.font().default_source_id().unwrap();
+    let pages_before = workspace.scene().pages().count();
+
+    persist_scene(&mut workspace, &glyph_page(glyph_id, source_id));
+    assert!(
+        !workspace.is_dirty().unwrap(),
+        "opening a glyph page is navigation"
+    );
+    drop(workspace);
+
+    let mut reopened = FontWorkspace::open_document(&document_path, &recovery_path).unwrap();
+    assert_eq!(reopened.scene().pages().count(), pages_before + 1);
+    assert!(!reopened.is_dirty().unwrap());
+
+    // An edit made on the page is still unsaved work, and undoing it is not.
+    create_glyph(&mut reopened, "B", vec![66]);
+    assert!(reopened.is_dirty().unwrap());
+    reopened.undo().unwrap();
+    assert!(
+        !reopened.is_dirty().unwrap(),
+        "undo back to the save is clean"
+    );
 }

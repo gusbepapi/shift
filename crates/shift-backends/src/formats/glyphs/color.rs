@@ -35,7 +35,7 @@ use shift_font::{
 };
 
 use super::conversion::{GlyphsLayerSources, add_shape};
-use crate::{FormatBackendError, FormatBackendResult, ImportLoss, ImportLossKind, SourceGlyphIds};
+use crate::{FormatBackendError, FormatBackendResult, ImportLoss, ImportLossKind, SourceIds};
 
 /// Palette index that Glyphs spells `"*"` for the text foreground colour.
 const FOREGROUND_INDEX: i64 = 0xFFFF;
@@ -113,7 +113,7 @@ pub(super) struct ColorImport {
 /// which means a layer refers to a glyph or palette entry that does not exist.
 pub(super) fn plan_color(
     source: &GlyphsFont,
-    ids: &SourceGlyphIds,
+    ids: &SourceIds,
     sources: &GlyphsLayerSources,
     glyph_ids: &mut HashMap<String, GlyphId>,
     losses: &mut Vec<ImportLoss>,
@@ -167,7 +167,7 @@ impl ColorImport {
 
 struct Planner<'a> {
     source: &'a GlyphsFont,
-    ids: &'a SourceGlyphIds,
+    ids: &'a SourceIds,
     sources: &'a GlyphsLayerSources,
     glyph_ids: &'a mut HashMap<String, GlyphId>,
     default_master: &'a str,
@@ -187,7 +187,7 @@ struct Planner<'a> {
 impl<'a> Planner<'a> {
     fn new(
         source: &'a GlyphsFont,
-        ids: &'a SourceGlyphIds,
+        ids: &'a SourceIds,
         sources: &'a GlyphsLayerSources,
         glyph_ids: &'a mut HashMap<String, GlyphId>,
         default_master: &'a str,

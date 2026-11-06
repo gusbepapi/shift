@@ -44,3 +44,16 @@ export function parseCodepointInput(text: string): CodepointInput {
     ? { kind: "invalid" }
     : { kind: "codepoint", codepoint };
 }
+
+/**
+ * Parses a codepoint typed as hex, with or without a `U+` or `0x` prefix.
+ *
+ * @returns null when the text is not a Unicode scalar value: blank, out of range, a surrogate,
+ * or not hex.
+ */
+export function parseCodepoint(text: string): number | null {
+  const input = parseCodepointInput(text);
+  if (input.kind !== "codepoint") return null;
+
+  return input.codepoint;
+}

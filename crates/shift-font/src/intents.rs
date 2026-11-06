@@ -13,11 +13,11 @@ use crate::contour_edit::{ContourEnd, DeleteMode, JoinMode};
 use crate::error::{CoreError, CoreResult};
 use crate::interpolation::GlyphInterpolationValues;
 use crate::ir::{
-    Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, ColorGlyph, ColorPalette, Component,
-    ComponentAlignment, ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font,
-    FontMetadata, Glyph, GlyphId, GlyphLayer, GlyphName, LANGUAGES_LIB_KEY, LayerId, LibValue,
-    MetricDefinition, MetricId, MetricValue, NamedInstance, NamedInstanceId, PointId, PointType,
-    Source, SourceId, Transform,
+    Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, Component, ComponentAlignment,
+    ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font, FontMetadata,
+    Glyph, GlyphId, GlyphLayer, GlyphName, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition,
+    MetricId, MetricValue, NamedInstance, NamedInstanceId, PointId, PointType, Source, SourceId,
+    Transform,
 };
 use crate::layer_edit::BulkNodePositionUpdates;
 use crate::point_arrange::{DistributeAxis, PointAlignment, Sidebearing};
@@ -33,6 +33,7 @@ pub use layer_intents::*;
 
 /// A point to create, with stable identity minted by a trusted caller.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct PointSeed {
     pub id: PointId,
     pub x: f64,
@@ -49,6 +50,7 @@ impl PointSeed {
 
 /// One kerning pair value to set or remove at one source.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct KerningValueEdit {
     pub source_id: SourceId,
     pub pair: KerningPair,
@@ -58,6 +60,7 @@ pub struct KerningValueEdit {
 
 /// An anchor to create, with stable identity minted by a trusted caller.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 pub struct AnchorSeed {
     pub id: AnchorId,
     pub name: Option<String>,
@@ -76,6 +79,7 @@ macro_rules! font_intents {
     (layer { $($layer:ident,)* } font { $($font:ident,)* }) => {
         /// An edit a caller asks for. Each variant's struct documents it.
         #[derive(Clone, Debug)]
+        #[cfg_attr(feature = "pack", derive(pack::Pack))]
         pub enum FontIntent {
             $($layer($layer),)*
             $($font($font),)*
@@ -1214,7 +1218,7 @@ mod tests {
 
     #[test]
     fn colour_intents_edit_validate_and_undo_as_one_step() {
-        use crate::ir::{Paint, PaintColor, Rgba};
+        use crate::ir::{ColorGlyph, ColorPalette, Paint, PaintColor, Rgba};
 
         let mut font = Font::new();
         let mut ids = Vec::new();
@@ -1240,12 +1244,13 @@ mod tests {
         };
 
         let rejected = font.apply_intents(&FontIntentSet {
-            intents: vec![FontIntent::SetColorGlyph(SetColorGlyph {
-                color_glyph: ColorGlyph {
+            intents: vec![FontIntent::SetColorGlyph(
+                SetColorGlyph::new(&ColorGlyph {
                     glyph: ids[0],
                     paint: paint.clone(),
-                },
-            })],
+                })
+                .unwrap(),
+            )],
         });
         assert!(matches!(rejected, Err(CoreError::InvalidColor { .. })));
         assert_eq!(font, original);
@@ -1253,18 +1258,20 @@ mod tests {
         let applied = font
             .apply_intents(&FontIntentSet {
                 intents: vec![
-                    FontIntent::SetColorPalettes(SetColorPalettes {
-                        palettes: vec![ColorPalette {
+                    FontIntent::SetColorPalettes(
+                        SetColorPalettes::new(&[ColorPalette {
                             name: Some("Light".to_string()),
                             colors: vec![Rgba::new(255, 0, 0, 255)],
-                        }],
-                    }),
-                    FontIntent::SetColorGlyph(SetColorGlyph {
-                        color_glyph: ColorGlyph {
+                        }])
+                        .unwrap(),
+                    ),
+                    FontIntent::SetColorGlyph(
+                        SetColorGlyph::new(&ColorGlyph {
                             glyph: ids[0],
                             paint,
-                        },
-                    }),
+                        })
+                        .unwrap(),
+                    ),
                 ],
             })
             .unwrap();
@@ -1302,7 +1309,7 @@ mod tests {
 
     #[test]
     fn set_color_replaces_the_document_atomically_and_undoes_as_one_step() {
-        use crate::ir::{ColorData, Paint, PaintColor, Rgba};
+        use crate::ir::{ColorData, ColorGlyph, ColorPalette, Paint, PaintColor, Rgba};
 
         let mut font = Font::new();
         let id = GlyphId::new();
@@ -1337,9 +1344,7 @@ mod tests {
 
         let applied = font
             .apply_intents(&FontIntentSet {
-                intents: vec![FontIntent::SetColor(SetColor {
-                    color: color.clone(),
-                })],
+                intents: vec![FontIntent::SetColor(SetColor::new(&color).unwrap())],
             })
             .unwrap();
         assert_eq!(font.color(), &color);
@@ -1347,7 +1352,7 @@ mod tests {
         let mut invalid = color;
         invalid.palettes.clear();
         let rejected = font.apply_intents(&FontIntentSet {
-            intents: vec![FontIntent::SetColor(SetColor { color: invalid })],
+            intents: vec![FontIntent::SetColor(SetColor::new(&invalid).unwrap())],
         });
         assert!(matches!(rejected, Err(CoreError::InvalidColor { .. })));
         assert_eq!(font.color().palettes.len(), 1);

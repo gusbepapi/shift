@@ -2,9 +2,11 @@ import type {
   ColorData,
   FontMetrics,
   MetricDefinition,
+  MetricId,
   MetricKind,
+  MetricValue,
   FontMetadata,
-  Axis,
+  Axis as AxisRecord,
   AxisDefinition,
   AxisMapping,
   AxisMappingBasis,
@@ -18,6 +20,7 @@ import type {
   KerningGroupId,
   KerningValueEdit,
   FontIntent,
+  GlyphSnapshot,
   GlyphSnapshotRequest,
   GlyphName,
   SourceId,
@@ -26,10 +29,8 @@ import type {
   AnchorId,
   ContourId,
   LayerId,
-  LayerMatch,
   LayerRead,
   Location,
-  ShaperFont,
   PointId,
   SegmentId,
   NamedInstance,
@@ -45,6 +46,7 @@ import {
   mintNamedInstanceId,
   mintSourceId,
 } from "@shift/types";
+import type { Axis } from "./Axis";
 import {
   batch,
   computed,
@@ -56,6 +58,7 @@ import {
   type Signal,
 } from "../signals/signal";
 import type {
+  EngineVariation,
   FontEngine,
   FontOptions,
   FontRecordIndex,
@@ -63,8 +66,16 @@ import type {
   WorkspaceEditCoordinator,
 } from "../../types/font";
 import type { InterpolatedMetrics, MissingKerningOrigin } from "../wasm/engine";
-import { locationValues } from "../wasm/variation";
-import type { GlyphReader } from "../../types/glyph";
+import type {
+  Counterparts,
+  FeatureSubstitution,
+  FontFeature,
+  GlyphIdentityChange,
+  PlacedText,
+  TextRun,
+} from "@shift/wasm/protocol";
+import { EngineVariationReader, StatelessVariationReader, locationValues } from "../wasm/variation";
+import type { GlyphIdentityEdit, GlyphReader } from "../../types/glyph";
 import { Glyph, GlyphLayer } from "./Glyph";
 import type { FontStore, GlyphInvalidation } from "./FontStore";
 import type { GlyphLayerState } from "./GlyphLayerState";
@@ -82,9 +93,13 @@ import {
 } from "../variation/location";
 import { Designspace } from "../variation/Designspace";
 import { withIndependentMapping } from "../variation/independentMapping";
-import type { DesignAxisLocation, ExternalAxisLocation } from "../../types/variation";
+import type {
+  DesignAxisLocation,
+  ExternalAxisLocation,
+  VariationReader,
+} from "../../types/variation";
 import { uniqueInOrder } from "../utils/utils";
-import { fallbackGlyphNameForUnicode } from "../utils/unicode";
+import { fallbackGlyphNameForUnicode, parseCodepoint } from "../utils/unicode";
 import { createBatchRequest } from "../utils/batchRequest";
 
 /**
@@ -256,7 +271,7 @@ export class Font {
   readonly #loadedCell: Signal<boolean>;
 
   readonly #metricsCell: Signal<FontMetrics>;
-  readonly #metricDefinitionsCell: Signal<MetricDefinition[]>;
+  readonly #metricDefinitionsCell: Signal<readonly MetricDefinition[]>;
 
   readonly #sourceMetricsRevisionCell: Signal<number>;
   readonly #kerningCell: Signal<Kerning>;
@@ -264,15 +279,15 @@ export class Font {
   readonly #defaultSourceMetricsCell: Signal<SourceMetrics>;
 
   readonly #metadataCell: Signal<FontMetadata>;
-  readonly #sourcesCell: Signal<Source[]>;
+  readonly #sourcesCell: Signal<readonly Source[]>;
 
-  readonly #axesCell: Signal<Axis[]>;
+  readonly #axesCell: ComputedSignal<readonly Axis[]>;
   readonly #externalAxesCell: Signal<readonly Axis[]>;
-  readonly #axisMappingsCell: Signal<AxisMapping[]>;
-  readonly #axisMappingBasesCell: Signal<AxisMappingBasis[]>;
+  readonly #axisMappingsCell: Signal<readonly AxisMapping[]>;
+  readonly #axisMappingBasesCell: Signal<readonly AxisMappingBasis[]>;
   readonly #designspace: Designspace;
 
-  readonly #namedInstancesCell: Signal<NamedInstance[]>;
+  readonly #namedInstancesCell: Signal<readonly NamedInstance[]>;
   readonly #languageIdsCell: Signal<readonly string[] | null>;
 
   readonly #unicodesCell: Signal<Unicode[]>;
@@ -310,23 +325,38 @@ export class Font {
     this.#metricsCell = computed(() => fontCell.value?.metrics ?? DEFAULT_FONT_METRICS);
     this.#metricDefinitionsCell = computed(() => fontCell.value?.metricDefinitions ?? []);
 
-    this.#sourceMetricsRevisionCell = store.engine?.sourceMetricsRevisionCell ?? NO_REVISIONS;
+    this.#sourceMetricsRevisionCell = store.engine?.revision("sourceMetrics") ?? NO_REVISIONS;
     this.#kerningCell = store.kerningCell;
     this.#colorCell = computed(() => store.workspaceCell.value?.color ?? EMPTY_COLOR_DATA);
 
     this.#metadataCell = computed(() => fontCell.value?.metadata ?? {});
     this.#sourcesCell = computed(() => fontCell.value?.sources ?? []);
-    this.#axesCell = computed(() => fontCell.value?.axes ?? []);
+    this.#axisMappingsCell = computed(() => fontCell.value?.axisMappings ?? []);
+    this.#axisMappingBasesCell = computed(() => fontCell.value?.axisMappingBases ?? []);
+    const axisRecordsCell = computed(() => fontCell.value?.axes ?? NO_AXES);
+    const variationCells = {
+      axesCell: axisRecordsCell,
+      mappingBasesCell: this.#axisMappingBasesCell,
+      sourcesCell: this.#sourcesCell,
+    };
+    const stateless = new StatelessVariationReader(axisRecordsCell, this.#axisMappingBasesCell);
+    const engineVariationCell = store.engine?.variationCell ?? NO_ENGINE_VARIATION;
+    // The engine's reader while a session is open, one per session: a set's
+    // number is the session's own.
+    const variationCell = computed<VariationReader>(
+      () => {
+        const engineVariation = engineVariationCell.value;
+        return engineVariation
+          ? new EngineVariationReader(engineVariation, variationCells)
+          : stateless;
+      },
+      { name: "font.variation" },
+    );
+    this.#designspace = new Designspace({ ...variationCells, variationCell });
+    this.#axesCell = this.#designspace.axesCell;
     this.#externalAxesCell = computed(() =>
       this.#axesCell.value.filter((axis) => axis.role === "external"),
     );
-    this.#axisMappingsCell = computed(() => fontCell.value?.axisMappings ?? []);
-    this.#axisMappingBasesCell = computed(() => fontCell.value?.axisMappingBases ?? []);
-    this.#designspace = new Designspace({
-      axesCell: this.#axesCell,
-      mappingBasesCell: this.#axisMappingBasesCell,
-      sourcesCell: this.#sourcesCell,
-    });
     this.#defaultSourceMetricsCell = computed(() => {
       const designspace = this.#designspace;
       track(this.#metricsCell);
@@ -394,7 +424,7 @@ export class Font {
   }
 
   /** Reactive font-owned identities for authored metric rows. */
-  get metricDefinitionsCell(): Signal<MetricDefinition[]> {
+  get metricDefinitionsCell(): Signal<readonly MetricDefinition[]> {
     return this.#metricDefinitionsCell;
   }
 
@@ -437,7 +467,7 @@ export class Font {
   }
 
   /** Reactive committed variation axes for sidebar controls. */
-  get axesCell(): Signal<Axis[]> {
+  get axesCell(): Signal<readonly Axis[]> {
     return this.#axesCell;
   }
 
@@ -453,12 +483,12 @@ export class Font {
   }
 
   /** Reactive font-owned independent and cross-axis mappings. */
-  get axisMappingsCell(): Signal<AxisMapping[]> {
+  get axisMappingsCell(): Signal<readonly AxisMapping[]> {
     return this.#axisMappingsCell;
   }
 
   /** Reactive authored product presets in external axis coordinates. */
-  get namedInstancesCell(): Signal<NamedInstance[]> {
+  get namedInstancesCell(): Signal<readonly NamedInstance[]> {
     return this.#namedInstancesCell;
   }
 
@@ -475,7 +505,7 @@ export class Font {
   }
 
   /** Reactive committed variation sources for sidebar controls. */
-  get sourcesCell(): Signal<Source[]> {
+  get sourcesCell(): Signal<readonly Source[]> {
     return this.#sourcesCell;
   }
 
@@ -764,6 +794,50 @@ export class Font {
   }
 
   /**
+   * Renames a glyph, as shift-font allows (`Font::glyph_rename`): surrounding
+   * whitespace dropped, a blank, invalid or taken name refused.
+   *
+   * @remarks
+   * The rename is undoable; an unchanged name changes nothing.
+   *
+   * @throws When the window's engine is not open.
+   */
+  renameGlyph(glyphId: GlyphId, name: string): GlyphIdentityEdit {
+    return this.#applyIdentityChange(glyphId, this.#requireEngine().glyphRename(glyphId, name));
+  }
+
+  /**
+   * Sets a glyph's primary codepoint, the one it is listed and typed by, as
+   * shift-font allows (`Font::glyph_primary_codepoint`).
+   *
+   * @remarks
+   * The codepoint replaces the primary one and the glyph keeps its others; a
+   * blank `text` removes the primary one. A codepoint another glyph has is
+   * refused. Undoable.
+   *
+   * @param text - the codepoint as hex, `U+` optional; blank removes it.
+   * @throws When the window's engine is not open.
+   */
+  setPrimaryCodepoint(glyphId: GlyphId, text: string): GlyphIdentityEdit {
+    const blank = text.trim() === "";
+    const codepoint = blank ? null : parseCodepoint(text);
+    if (!blank && codepoint === null) {
+      return { kind: "refused", conflict: { kind: "invalidCodepoint", text } };
+    }
+
+    const change = this.#requireEngine().glyphPrimaryCodepoint(glyphId, codepoint);
+    return this.#applyIdentityChange(glyphId, change);
+  }
+
+  #applyIdentityChange(glyphId: GlyphId, change: GlyphIdentityChange | null): GlyphIdentityEdit {
+    if (!change || change.kind === "unchanged") return { kind: "unchanged" };
+    if (change.kind === "refused") return change;
+
+    this.updateGlyphIdentity(glyphId, change.name, [...change.unicodes] as Unicode[]);
+    return { kind: "changed" };
+  }
+
+  /**
    * Updates an existing glyph's name and Unicode assignment.
    *
    * @throws {Error} always — glyph mutations return with workspace change sets.
@@ -832,6 +906,8 @@ export class Font {
       unicodes,
       componentBaseGlyphIds: [],
       layers: [{ id: layerId, sourceId }],
+      mark: false,
+      nonspacingMark: false,
     };
   }
 
@@ -1201,13 +1277,26 @@ export class Font {
   }
 
   /**
-   * Derives Rust-owned entity mappings between two authored layers.
+   * The `target` layer's points, anchors and components for `ids` in
+   * `reference`, each in the order given, as the window's engine matches the
+   * two layers (shift-font's `LayerMatch::counterparts`), unsaved edits
+   * included. A synchronous read: the engine loads the glyph first if it has
+   * not yet.
    *
-   * Incomplete results contain structural diagnostics but no partial entity
-   * mappings. The layers must belong to the same glyph.
+   * @returns null when the layers don't match completely, or there is no
+   * engine, as in a preview.
+   * @throws When no glyph owns `reference`, the engine's store cannot answer,
+   * or the engine cannot match the layers (layers of two glyphs, an id
+   * `reference` lacks).
    */
-  matchLayers(referenceLayerId: LayerId, targetLayerId: LayerId): Promise<LayerMatch> {
-    return this.editCoordinator.matchLayers(referenceLayerId, targetLayerId);
+  counterparts(reference: LayerId, target: LayerId, ids: Counterparts): Counterparts | null {
+    const engine = this.#store.engine;
+    if (!engine) return null;
+
+    const glyphId = this.#store.glyphIdForLayer(reference);
+    if (!glyphId) throw new Error(`no glyph owns layer ${reference}`);
+
+    return engine.counterparts(glyphId, reference, target, ids);
   }
 
   /**
@@ -1245,12 +1334,13 @@ export class Font {
       const snapshots = await this.#reader.read(queue);
       const byGlyphId = new Map(snapshots.map((snapshot) => [snapshot.glyphId, snapshot]));
       for (const glyphId of queue) {
-        if (!byGlyphId.get(glyphId)?.projection) {
+        const snapshot = byGlyphId.get(glyphId);
+        if (!snapshot || !hasGeometry(snapshot)) {
           throw new Error(`source did not return glyph projection ${glyphId}`);
         }
       }
       for (const snapshot of snapshots) {
-        if (!this.#store.entryForId(snapshot.glyphId) || !snapshot.projection) {
+        if (!this.#store.entryForId(snapshot.glyphId) || !hasGeometry(snapshot)) {
           throw new Error(`source returned invalid glyph projection ${snapshot.glyphId}`);
         }
       }
@@ -1432,12 +1522,96 @@ export class Font {
   }
 
   /**
-   * Returns the shaper font compiled from the font's feature code, after
-   * pending edits settle, or null while `knownRevision` is still current.
-   * The editor shapes with it itself, in `@shift/wasm/shaping`.
+   * Lays a run's text out in the window's engine, as it holds the font:
+   * unsaved edits included, with the options Rust builds from the run's
+   * settings. Tracks the revision of each change flag layout reads,
+   * so a computed that lays text out does again after any edit that may
+   * change the result.
+   *
+   * A pure read: glyphs the engine has not loaded lay out from placeholders
+   * and are listed in `unloaded`, for {@link preloadLaidOut}.
+   *
+   * @param location - External location displayed by editor controls.
+   * @param sourceId - Source being edited, which takes precedence over `location`.
+   * @returns null without an open engine.
    */
-  shaperFont(knownRevision: number | null): Promise<ShaperFont | null> {
-    return this.editCoordinator.shaperFont(knownRevision);
+  layoutText(
+    run: TextRun,
+    location: ExternalAxisLocation,
+    sourceId: SourceId | null,
+  ): PlacedText | null {
+    const engine = this.#store.engine;
+    if (!engine) return null;
+    for (const flag of engine.layoutInputs()) track(engine.revision(flag));
+    const place = this.#peekDesignspace((designspace): KerningPlace => {
+      if (sourceId && designspace.source(sourceId)) return { kind: "source", sourceId };
+      return {
+        kind: "location",
+        location: locationValues(designspace.axes, designspace.toDesign(location)),
+      };
+    });
+    return engine.layoutText(run, place);
+  }
+
+  /**
+   * Loads into the window's engine the glyphs a layout listed as unloaded;
+   * readers of {@link layoutText} then lay out again. Nothing without an
+   * engine.
+   *
+   * @throws When the engine's store cannot answer.
+   */
+  preloadLaidOut(glyphIds: readonly GlyphId[]): void {
+    this.#store.engine?.preload(glyphIds);
+  }
+
+  /**
+   * The features the font's compiled feature code defines, in tag order,
+   * each with the name it is shown by, its default and its group, from the
+   * window's engine's shaper font. Tracks the revision of each change flag
+   * the shaper font reads, so a computed that lists them does again after an
+   * edit that may change it.
+   *
+   * @returns empty without an open engine, as in a preview.
+   * @throws When the engine has no shaper font, saying why, or it cannot be read.
+   */
+  fontFeatures(): readonly FontFeature[] {
+    const engine = this.#store.engine;
+    if (!engine) return [];
+    for (const flag of engine.shaperInputs()) track(engine.revision(flag));
+    return engine.fontFeatures() ?? [];
+  }
+
+  /**
+   * Every substitution a feature can make, ordered by output glyph then
+   * input, from the window's engine's shaper font: the glyphs the feature
+   * brings in and what each replaces. Tracks what the shaper font reads, as
+   * {@link fontFeatures} does.
+   *
+   * @returns empty without an open engine, as in a preview.
+   * @throws When `tag` is no feature tag, the engine has no shaper font, or
+   * its `GSUB` cannot be read.
+   */
+  featureSubstitutions(tag: string): readonly FeatureSubstitution[] {
+    const engine = this.#store.engine;
+    if (!engine) return [];
+    for (const flag of engine.shaperInputs()) track(engine.revision(flag));
+    return engine.featureSubstitutions(tag) ?? [];
+  }
+
+  /**
+   * Whether shaping applies a feature when a run turns it on or off (`on`,
+   * null when it leaves it), as Rust decides from the feature's default in the
+   * window's engine's shaper font. Tracks what the shaper font reads, as
+   * {@link fontFeatures} does.
+   *
+   * @returns false without an open engine, or for a tag the font does not define.
+   * @throws When the engine has no shaper font, or it cannot be read.
+   */
+  featureApplies(tag: string, on: boolean | null): boolean {
+    const engine = this.#store.engine;
+    if (!engine) return false;
+    for (const flag of engine.shaperInputs()) track(engine.revision(flag));
+    return engine.featureApplies(tag, on);
   }
 
   /** @knipclassignore — used by VariationPanel component */
@@ -1483,14 +1657,14 @@ export class Font {
       kind: "createSource",
       createSource: { sourceId, name, location: designLocation },
     });
-    if (metrics.metricValues.length === this.#metricDefinitionsCell.peek().length) {
+    if (Object.keys(metrics.metricValues).length === this.#metricDefinitionsCell.peek().length) {
       this.editCoordinator.push({
         kind: "updateSource",
         updateSource: {
           sourceId,
           name,
           location: designLocation,
-          metricValues: [...metrics.metricValues],
+          metricValues: metrics.metricValues,
           italicAngle: metrics.italicAngle,
           lineGap: metrics.lineGap,
           underlinePosition: metrics.underlinePosition,
@@ -1531,7 +1705,7 @@ export class Font {
   setColor(color: ColorData): void {
     this.editCoordinator.push({
       kind: "setColor",
-      setColor: { colorData: JSON.stringify(color) },
+      setColor: { color: JSON.stringify(color) },
     });
   }
 
@@ -1557,7 +1731,7 @@ export class Font {
    * @param axis - Complete replacement axis returned from the current font model.
    * @throws {Error} when the definition is invalid or cannot be persisted.
    */
-  async updateAxis(axis: Axis): Promise<void> {
+  async updateAxis(axis: AxisRecord): Promise<void> {
     await this.editCoordinator.apply(
       [
         {
@@ -1593,7 +1767,7 @@ export class Font {
    *
    * @throws {Error} when the resulting collection is invalid or cannot be persisted.
    */
-  async setIndependentAxisMapping(axis: Axis, mapping: AxisMapping): Promise<void> {
+  async setIndependentAxisMapping(axis: AxisRecord, mapping: AxisMapping): Promise<void> {
     await this.setAxisMappings(withIndependentMapping(this.getAxisMappings(), axis, mapping));
   }
 
@@ -1695,27 +1869,27 @@ export class Font {
   }
 
   /** @knipclassignore — used by VariationPanel component */
-  getAxes(): Axis[] {
+  getAxes(): readonly Axis[] {
     return this.#axesCell.peek();
   }
 
   /** Returns the current font-owned mapping collection. */
-  getAxisMappings(): AxisMapping[] {
+  getAxisMappings(): readonly AxisMapping[] {
     return this.#axisMappingsCell.peek();
   }
 
   /** Returns the Rust-compiled mapping bases for external-to-design evaluation. */
-  getAxisMappingBases(): AxisMappingBasis[] {
+  getAxisMappingBases(): readonly AxisMappingBasis[] {
     return this.#axisMappingBasesCell.peek();
   }
 
   /** Returns font-owned identities and semantics for authored metric rows. */
-  get metricDefinitions(): MetricDefinition[] {
+  get metricDefinitions(): readonly MetricDefinition[] {
     return this.#metricDefinitionsCell.peek();
   }
 
   /** Returns the current explicit named product presets. */
-  get namedInstances(): NamedInstance[] {
+  get namedInstances(): readonly NamedInstance[] {
     return this.#namedInstancesCell.peek();
   }
 
@@ -1730,7 +1904,7 @@ export class Font {
   }
 
   /** @knipclassignore — used by VariationPanel component */
-  get sources(): Source[] {
+  get sources(): readonly Source[] {
     return this.#sourcesCell.peek();
   }
 
@@ -1775,9 +1949,7 @@ export class Font {
     });
     if (exactSource) return this.#metricsForSource(exactSource);
 
-    const interpolated = this.#store.engine?.sourceMetricsAt(
-      Array.from(locationValues(axes, designLocation)),
-    );
+    const interpolated = this.#store.engine?.sourceMetricsAt(locationValues(axes, designLocation));
     return (interpolated && this.#interpolatedMetrics(interpolated)) ?? this.defaultSourceMetrics;
   }
 
@@ -1826,7 +1998,7 @@ export class Font {
       if (sourceId && designspace.source(sourceId)) return { kind: "source", sourceId };
       return {
         kind: "location",
-        location: Array.from(locationValues(designspace.axes, designspace.toDesign(location))),
+        location: locationValues(designspace.axes, designspace.toDesign(location)),
       };
     });
     return this.#kerningCell.peek().between(pairs, place);
@@ -1961,14 +2133,12 @@ export class Font {
     const definitions = this.#metricDefinitionsCell.peek();
     if (interpolated.metrics.length !== definitions.length) return null;
 
-    const metricValues = definitions.map((definition, index) => ({
-      metricId: definition.id,
-      position: interpolated.metrics[index]!.position,
-      overshoot: interpolated.metrics[index]!.overshoot,
-    }));
+    const metricValues: Record<MetricId, MetricValue> = Object.fromEntries(
+      definitions.map((definition, index) => [definition.id, interpolated.metrics[index]!]),
+    );
     const position = (kind: MetricKind): number | undefined => {
-      const index = definitions.findIndex((definition) => definition.kind === kind);
-      return index < 0 ? undefined : metricValues[index]!.position;
+      const definition = definitions.find((candidate) => candidate.kind === kind);
+      return definition ? metricValues[definition.id]?.position : undefined;
     };
     return {
       unitsPerEm,
@@ -1992,22 +2162,22 @@ export class Font {
       const definition = definitions.find((candidate) => candidate.kind === kind);
       if (!definition) return undefined;
 
-      return source?.metricValues.find((value) => value.metricId === definition.id)?.position;
+      return source?.metricValues[definition.id]?.position;
     };
     const unloaded = source === null;
 
     return {
       unitsPerEm,
-      metricValues: source?.metricValues ?? [],
+      metricValues: source?.metricValues ?? {},
       ascender: position("ascender") ?? unitsPerEm * 0.8,
       descender: position("descender") ?? unitsPerEm * -0.2,
       baseline: position("baseline") ?? 0,
       capHeight: position("capHeight") ?? (unloaded ? unitsPerEm * 0.7 : undefined),
       xHeight: position("xHeight") ?? (unloaded ? unitsPerEm * 0.5 : undefined),
-      lineGap: source?.lineGap,
-      italicAngle: source?.italicAngle,
-      underlinePosition: source?.underlinePosition,
-      underlineThickness: source?.underlineThickness,
+      lineGap: source?.lineGap ?? undefined,
+      italicAngle: source?.italicAngle ?? undefined,
+      underlinePosition: source?.underlinePosition ?? undefined,
+      underlineThickness: source?.underlineThickness ?? undefined,
     };
   }
 
@@ -2036,6 +2206,13 @@ export class Font {
 
 /** Never changes: the revision of reads a font without an engine answers. */
 const NO_REVISIONS: Signal<number> = computed(() => 0);
+const NO_ENGINE_VARIATION: Signal<EngineVariation | null> = computed(() => null);
+const NO_AXES: readonly AxisRecord[] = [];
+
+/** Whether a read glyph has something to draw: a projection, or authored layers. */
+function hasGeometry(snapshot: GlyphSnapshot): boolean {
+  return Boolean(snapshot.projection) || snapshot.layers.length > 0;
+}
 
 /** The intent that moves one glyph into a kerning group, or out of its group with null. */
 function memberIntent(

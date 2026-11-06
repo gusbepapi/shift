@@ -139,8 +139,8 @@ describe("ShiftFontReader serves public reads of accepted font state", () => {
     expect(reader.instance({ instanceId: instance!.id })).toEqual(instance);
     expect(reader.instance({ name: "Nope" })).toBeNull();
     expect(() => reader.getInstance({ name: "Nope" })).toThrow("Instance Nope is not in this font");
-    expect(reader.axis({ tag: axis!.tag })).toEqual(axis);
-    expect(reader.axis({ axisId: axis!.id })).toEqual(axis);
+    expect(reader.axis({ tag: axis!.tag })).toEqual(axis!.record);
+    expect(reader.axis({ axisId: axis!.id })).toEqual(axis!.record);
     expect(reader.axis({ tag: "nope" })).toBeNull();
   });
 
@@ -156,9 +156,11 @@ describe("ShiftFontReader serves public reads of accepted font state", () => {
     const mapping = {
       id: mintAxisMappingId(),
       name: `${axis!.name} mapping`,
+      description: null,
       inputs: [axis!.id],
       outputs: [axis!.id],
       points: [0, 250, 1000].map((value, i) => ({
+        description: null,
         input: { values: { [axis!.id]: value } },
         output: { values: { [axis!.id]: [0, 400, 1000][i]! } },
       })),

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{CoreError, CoreResult, GlyphId};
 
@@ -10,6 +10,47 @@ pub const MAX_PALETTE_ENTRIES: usize = 0xFFFE;
 
 /// Deepest paint nesting accepted by validation.
 const MAX_PAINT_DEPTH: usize = 8;
+
+/// Colour values as the JSON text every transport carries, because the paint
+/// graph is recursive and has no flat packed layout.
+///
+/// An intent holds its colour payload this way so the whole intent packs; the
+/// intent parses it when it applies, and refuses malformed text.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
+pub struct ColorJson(String);
+
+impl ColorJson {
+    /// Writes `value` as JSON text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when `value` has no JSON form, such
+    /// as a gradient coordinate that is not finite.
+    pub fn of<T: Serialize>(value: &T) -> CoreResult<Self> {
+        let text = serde_json::to_string(value).map_err(|error| CoreError::InvalidColor {
+            message: error.to_string(),
+        })?;
+
+        Ok(Self(text))
+    }
+
+    /// Reads the JSON text as a `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidColor`] when the text is not a `T`.
+    pub fn parse<T: DeserializeOwned>(&self) -> CoreResult<T> {
+        serde_json::from_str(&self.0).map_err(|error| CoreError::InvalidColor {
+            message: error.to_string(),
+        })
+    }
+
+    /// The JSON text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// An eight-bit RGBA colour in the sRGB colour space.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

@@ -1,21 +1,19 @@
 // Builds crates/shift-wasm into src/generated: the wasm-bindgen glue and the
 // module embedded as base64, so every consumer loads it synchronously with no
 // bundler plugin. The engine variant is the exception: it ships as its own
-// shift_wasm_bg.wasm, which `@shift/wasm/engine` compiles on import, because
-// parsing and decoding its 3.8 MB of base64 cost a window about 60 MB. It also builds the test-only `reference` feature into
-// src/generated-reference, which `@shift/wasm/reference` loads for tests that
-// compare the editor's TypeScript rules against shift-font. Neither output is
-// committed: rustc's output depends on the build host, so both are built like
+// shift_wasm_bg.wasm, which `@shift/wasm/engine` compiles in initEngine, because
+// parsing and decoding its 3.8 MB of base64 cost a window about 60 MB. No
+// output is committed: rustc's output depends on the build host, so both are built like
 // the native addon, by turbo, before anything that imports them. Needs the Nix
 // dev shell's wasm-bindgen (CI: .github/actions/wasm-toolchain), which must
 // match the crate version in Cargo.lock exactly; wasm-opt comes from the
 // pinned binaryen devDependency.
 //
 // A plain run builds the variants the app loads (`generated`,
-// `generated-shaping`); `--reference` builds only the test-only reference
-// variant. With `--types`, it writes every variant's declarations
-// (shift_wasm.d.ts and module.d.ts) from a debug build, for typecheck. Release
-// builds write the same declarations, so the two never disagree.
+// `generated-engine`). With `--types`, it writes every
+// variant's declarations (shift_wasm.d.ts and module.d.ts) from a debug build,
+// for typecheck. Release builds write the same declarations, so the two never
+// disagree. Every run also writes src/generated-protocol (scripts/protocol.mjs).
 //
 // wasm-opt only shrinks the module, so it runs only with SHIFT_WASM_OPT=1, which
 // the Nightly, release and perf workflows set; everywhere else, including
@@ -25,13 +23,18 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { withLock } from "../../../scripts/target-lock.mjs";
+import { writeProtocol } from "./protocol.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
 const src = resolve(import.meta.dirname, "../src");
 const typesOnly = process.argv.includes("--types");
-const referenceOnly = process.argv.includes("--reference");
 const optimise = process.env.SHIFT_WASM_OPT === "1";
 const profile = typesOnly ? "debug" : "release";
+// Declarations build each variant at once in its own target directory, except
+// on CI, where nothing is cached between runs and three directories would each
+// compile every dependency.
+const parallel = typesOnly && !process.env.CI;
 const run = (command, args, env = process.env) =>
   new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd: root, stdio: "inherit", env });
@@ -53,33 +56,52 @@ if (locked !== cli) {
 }
 
 /**
- * Each build: its folder under src, the crate features it enables, whether
- * only tests load it, and whether its module ships as a file beside the glue
- * rather than embedded. Largest module first, so its wasm-opt pass overlaps
+ * Each build: its folder under src, the crate features it enables, and
+ * whether its module ships as a file beside the glue rather than embedded. Largest module first, so its wasm-opt pass overlaps
  * the other variants' compiles.
  */
-const allVariants = [
-  { folder: "generated-engine", features: ["engine"], testOnly: false, file: true },
-  { folder: "generated-shaping", features: ["shaping"], testOnly: false, file: false },
-  { folder: "generated-reference", features: ["reference"], testOnly: true, file: false },
-  { folder: "generated", features: [], testOnly: false, file: false },
+const variants = [
+  { folder: "generated-engine", features: ["engine"], file: true },
+  { folder: "generated", features: [], file: false },
 ];
-const variants = typesOnly
-  ? allVariants
-  : allVariants.filter((variant) => variant.testOnly === referenceOnly);
 
-// Compiles run in turn: they share one target directory, so later variants
-// reuse the crates the first one compiled. Each variant's optimisation then
-// runs while the next one compiles.
-const finishing = [];
-for (const variant of variants) {
-  const staged = await compile(variant.folder, variant.features);
-  const out = join(src, variant.folder);
-  mkdirSync(out, { recursive: true });
-  writeDeclarations(staged, out, variant.file);
-  if (!typesOnly) finishing.push(finish(staged, out, variant.file));
+// Each build reads the module and staging folder it wrote under target/,
+// which other checkouts sharing target/ write too, so it holds a lock from
+// compile to install.
+const targetRoot = join(root, "target");
+if (parallel) {
+  // Variants with different features in one directory replace each other's
+  // shift-wasm build, so every run rebuilt all of them. The protocol check has
+  // its own target directory too, so it runs alongside.
+  await Promise.all([
+    ...variants.map((variant) =>
+      withLock(targetRoot, `wasm-types-${variant.folder}`, async () => {
+        const staged = await compile(variant.folder, variant.features);
+        const out = join(src, variant.folder);
+        mkdirSync(out, { recursive: true });
+        writeDeclarations(staged, out, variant.file);
+      }),
+    ),
+    run(process.execPath, [join(import.meta.dirname, "protocol.mjs")]),
+  ]);
+} else {
+  // Compiles run in turn: they share one target directory, so later variants
+  // reuse the crates the first one compiled. Each variant's optimisation then
+  // runs while the next one compiles.
+  await withLock(targetRoot, `wasm-${profile}`, async () => {
+    const finishing = [];
+    for (const variant of variants) {
+      const staged = await compile(variant.folder, variant.features);
+      const out = join(src, variant.folder);
+      mkdirSync(out, { recursive: true });
+      writeDeclarations(staged, out, variant.file);
+      if (!typesOnly) finishing.push(finish(staged, out, variant.file));
+    }
+    // The generated classes over the modules' request exports.
+    await writeProtocol();
+    await Promise.all(finishing);
+  });
 }
-await Promise.all(finishing);
 
 /**
  * Compiles shift-wasm with `features` and writes the wasm-bindgen output to a
@@ -96,6 +118,7 @@ async function compile(folder, features) {
   // RUSTFLAGS replaces the target flags in .cargo/config.toml, so they are
   // repeated here.
   const cargoHome = process.env.CARGO_HOME ?? join(homedir(), ".cargo");
+  const targetDir = parallel ? join(root, "target", "wasm-types", folder) : "target";
   await run(
     "cargo",
     [
@@ -104,11 +127,14 @@ async function compile(folder, features) {
       "shift-wasm",
       "--target",
       "wasm32-unknown-unknown",
+      ...(parallel ? ["--target-dir", targetDir] : []),
       ...(typesOnly ? [] : ["--release"]),
       ...features.flatMap((feature) => ["--features", feature]),
     ],
     {
       ...process.env,
+      // Declarations need no debug info, which makes the module 8x larger.
+      CARGO_PROFILE_DEV_DEBUG: typesOnly ? "0" : process.env.CARGO_PROFILE_DEV_DEBUG,
       RUSTFLAGS: [
         `--remap-path-prefix=${cargoHome}=/cargo`,
         "--cfg",
@@ -123,7 +149,7 @@ async function compile(folder, features) {
     "shift_wasm",
     "--out-dir",
     staged,
-    `target/wasm32-unknown-unknown/${profile}/shift_wasm.wasm`,
+    join(targetDir, "wasm32-unknown-unknown", profile, "shift_wasm.wasm"),
   ]);
   return staged;
 }

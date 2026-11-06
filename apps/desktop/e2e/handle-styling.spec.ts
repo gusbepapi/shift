@@ -88,11 +88,13 @@ previewTest(
   "TTF source handles keep source styling without becoming hoverable",
   async ({ page, electronApp }) => {
     const workspaceWindow = electronApp.waitForEvent("window");
-    await page.getByRole("button", { name: "Open Font…", exact: true }).click();
+    await page.getByRole("button", { name: "Open…", exact: true }).click();
     const workspacePage = await workspaceWindow;
     await workspacePage.waitForURL(/#\/home$/);
     await clickFirstCatalogGlyph(workspacePage);
     const workspace = new EditorDriver(workspacePage, electronApp);
+    // Every handle of no glyph is idle too, so wait for the glyph to open first.
+    await expect.poll(async () => (await workspace.editorView()).glyph).not.toBeNull();
     await expectEveryHandleDrawnAs(workspace, "idle");
 
     // The glyph's first point as the canvas draws it.

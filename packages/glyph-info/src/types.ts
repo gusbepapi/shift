@@ -52,6 +52,8 @@ export interface Language {
   name: string;
   autonym: string | null;
   script: string;
+  /** The script's ISO 15924 code, such as `Arab`. */
+  scriptCode: string;
   baseCodepoints: number[];
   status: LanguageStatus;
   validity: LanguageValidity;

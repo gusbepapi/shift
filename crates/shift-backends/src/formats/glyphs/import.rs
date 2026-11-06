@@ -1,22 +1,23 @@
-use crate::SourceGlyphIds;
 use std::{collections::HashMap, path::Path, sync::Arc};
 
-use glyphs_reader::Font as GlyphsFont;
+use glyphs_reader::{Font as GlyphsFont, Shape};
 use rayon::prelude::*;
-use shift_font::{ColorData, Font, Glyph, GlyphId};
+use shift_font::{Anchor, ColorData, Font, Glyph, GlyphId, GlyphLayer};
 
 use super::{
+    GlyphsAnchorExt,
     color::{ColorImport, SynthesizedGlyph, plan_color},
     conversion::{
-        GlyphsLayerSources, add_intermediate_sources, convert_glyph, convert_kerning, font_header,
-        imported_layer_count,
+        GlyphsLayerSources, add_intermediate_sources, component_base_id, convert_glyph,
+        convert_kerning, font_header, glyph_identity, imported_layer_count,
     },
     families::InstanceFamilies,
     format4::load_source,
     report::{discarded_colour_layer_losses, import_report},
 };
+use crate::font_source::authored::{AuthoredEntry, AuthoredGlyphs};
 use crate::{
-    FormatBackendError, FormatBackendResult, ImportReport,
+    FormatBackendError, FormatBackendResult, ImportReport, SourceIds,
     import::{GlyphDirectoryEntry, GlyphStream, ImportBatchLimit},
 };
 
@@ -29,6 +30,7 @@ pub(crate) struct GlyphsGlyphStream {
     synthesized: Vec<SynthesizedGlyph>,
     color: ColorData,
     sources: GlyphsLayerSources,
+    ids: SourceIds,
     next_glyph: usize,
 }
 
@@ -51,6 +53,7 @@ impl GlyphsGlyphStream {
                 &self.source.glyphs[name.as_str()],
                 &self.glyph_ids,
                 &self.sources,
+                &self.ids,
             ),
             None => self.synthesized[index - self.glyph_names.len()]
                 .convert(&self.source, &self.glyph_ids),
@@ -105,6 +108,68 @@ impl GlyphStream for GlyphsGlyphStream {
     }
 }
 
+/// A Glyphs file's glyphs read one at a time, through the import stream.
+pub(crate) struct GlyphsAuthoredGlyphs {
+    stream: GlyphsGlyphStream,
+}
+
+impl GlyphsAuthoredGlyphs {
+    pub(crate) fn new(stream: GlyphsGlyphStream) -> Self {
+        Self { stream }
+    }
+
+    fn source_glyph(&self, index: usize) -> &glyphs_reader::Glyph {
+        &self.stream.source.glyphs[self.stream.glyph_names[index].as_str()]
+    }
+}
+
+impl AuthoredGlyphs for GlyphsAuthoredGlyphs {
+    fn glyph_count(&self) -> usize {
+        self.stream.glyph_names.len()
+    }
+
+    fn entry(&self, index: usize) -> FormatBackendResult<AuthoredEntry> {
+        let glyph = self.source_glyph(index);
+        let mut entry = AuthoredEntry::new(glyph_identity(glyph, &self.stream.glyph_ids));
+        for (layer, source_id) in self.stream.sources.imported(glyph) {
+            let layer_id = self
+                .stream
+                .ids
+                .layer_id(glyph.name.as_str(), &layer.layer_id);
+            entry.glyph.set_layer(GlyphLayer::with_width(
+                layer_id,
+                source_id,
+                layer.width.into_inner(),
+            ));
+            for shape in &layer.shapes {
+                if let Shape::Component(component) = shape {
+                    entry.bases.insert(component_base_id(
+                        &self.stream.glyph_ids,
+                        component.name.as_str(),
+                    )?);
+                }
+            }
+            let attaching = layer
+                .anchors
+                .iter()
+                .any(|anchor| Anchor::name_attaches_marks(anchor.name_and_position().0.as_deref()));
+            if attaching {
+                entry.attaching.push(layer_id);
+            }
+        }
+        Ok(entry)
+    }
+
+    fn glyph(&self, index: usize) -> FormatBackendResult<Glyph> {
+        convert_glyph(
+            self.source_glyph(index),
+            &self.stream.glyph_ids,
+            &self.stream.sources,
+            &self.stream.ids,
+        )
+    }
+}
+
 pub(crate) fn stream_font(
     path: &str,
 ) -> FormatBackendResult<(Font, GlyphsGlyphStream, ImportReport)> {
@@ -130,24 +195,24 @@ pub(crate) fn stream_retained(
         .values()
         .map(|glyph| glyph.name.to_string())
         .collect::<Vec<_>>();
-    let source_glyph_ids = SourceGlyphIds::for_path(path);
+    let ids = SourceIds::for_path(path);
     let mut glyph_ids = glyph_names
         .iter()
-        .map(|name| (name.clone(), source_glyph_ids.glyph_id(name)))
+        .map(|name| (name.clone(), ids.glyph_id(name)))
         .collect::<HashMap<_, _>>();
-    *header.kerning_mut() =
-        convert_kerning(&source, &glyph_ids, &source_ids_by_master_id, &mut report);
-    let sources = add_intermediate_sources(&mut header, &source, source_ids_by_master_id);
+    *header.kerning_mut() = convert_kerning(
+        &source,
+        &glyph_ids,
+        &source_ids_by_master_id,
+        &ids,
+        &mut report,
+    );
+    let sources = add_intermediate_sources(&mut header, &source, source_ids_by_master_id, &ids);
+    ids.identify(&mut header)?;
     let ColorImport {
         data: color,
         glyphs: synthesized,
-    } = plan_color(
-        &source,
-        &source_glyph_ids,
-        &sources,
-        &mut glyph_ids,
-        &mut report.losses,
-    )?;
+    } = plan_color(&source, &ids, &sources, &mut glyph_ids, &mut report.losses)?;
 
     Ok((
         header,
@@ -158,6 +223,7 @@ pub(crate) fn stream_retained(
             synthesized,
             color,
             sources,
+            ids,
             next_glyph: 0,
         },
         report,

@@ -6,8 +6,8 @@ use shift_font as font;
 use crate::StoreError;
 use crate::connection::configure_common;
 use crate::layer::{
-    dependent_glyph_ids_for_layers_from_conn, load_glyph_layers_from_conn,
-    referenced_glyph_closure_from_conn,
+    bases_of_from_conn, component_bases_from_conn, composites_of_from_conn,
+    load_glyph_layers_from_conn, present_layer_ids_from_conn,
 };
 use crate::recovery::attach_merged_views;
 use crate::schema;
@@ -71,28 +71,74 @@ impl StoreReader {
         self.read(|conn| load_glyph_layers_from_conn(conn, layer_ids))
     }
 
-    /// As [`crate::ShiftStore::referenced_glyph_closure`].
+    /// As [`crate::ShiftStore::bases_of`].
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Sqlite`] when a read fails.
-    pub fn referenced_glyph_closure(
-        &self,
-        roots: impl IntoIterator<Item = font::GlyphId>,
-    ) -> Result<Vec<font::GlyphId>, StoreError> {
-        self.read(|conn| referenced_glyph_closure_from_conn(conn, roots))
+    pub fn bases_of(&self, glyph_ids: &[font::GlyphId]) -> Result<Vec<font::GlyphId>, StoreError> {
+        self.read(|conn| bases_of_from_conn(conn, glyph_ids))
     }
 
-    /// As [`crate::ShiftStore::dependent_glyph_ids_for_layers`].
+    /// The direct component bases of each of `glyph_ids`, in request order,
+    /// each list in id order; empty for a glyph with no components or one the
+    /// store lacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when a read fails.
+    pub fn component_bases(
+        &self,
+        glyph_ids: &[font::GlyphId],
+    ) -> Result<Vec<Vec<font::GlyphId>>, StoreError> {
+        self.read(|conn| component_bases_from_conn(conn, glyph_ids))
+    }
+
+    /// Every node of the store's scene, unsaved edits included, in id order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when the rows cannot be read and
+    /// [`StoreError::SceneNodeDecoding`] when one does not decode.
+    pub fn scene_nodes(&self) -> Result<Vec<shift_engine::scene::SceneNode>, StoreError> {
+        crate::scene::scene_nodes_from_conn(&self.conn)
+    }
+
+    /// Those of `layer_ids` that carry an anchor marks attach to
+    /// ([`font::Anchor::attaches_marks`]), in id order; a layer the store
+    /// lacks is left out. Anchors are inside each layer's payload, so every
+    /// layer is decoded.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load_glyph_layers`], except that a missing layer is not an
+    /// error.
+    pub fn attaching_anchor_layers(
+        &self,
+        layer_ids: &[font::LayerId],
+    ) -> Result<Vec<font::LayerId>, StoreError> {
+        self.read(|conn| {
+            let present = present_layer_ids_from_conn(conn, layer_ids)?;
+            let mut attaching: Vec<font::LayerId> = load_glyph_layers_from_conn(conn, &present)?
+                .iter()
+                .filter(|layer| layer.anchors().iter().any(font::Anchor::attaches_marks))
+                .map(font::GlyphLayer::id)
+                .collect();
+            attaching.sort();
+            Ok(attaching)
+        })
+    }
+
+    /// As [`crate::ShiftStore::composites_of`].
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Sqlite`] when the read fails.
-    pub fn dependent_glyph_ids_for_layers(
+    pub fn composites_of(
         &self,
-        layer_ids: &[font::LayerId],
+        glyph_ids: &[font::GlyphId],
     ) -> Result<Vec<font::GlyphId>, StoreError> {
-        self.read(|conn| dependent_glyph_ids_for_layers_from_conn(conn, layer_ids))
+        self.read(|conn| composites_of_from_conn(conn, glyph_ids))
     }
 
     /// Runs `read` in one read transaction, so every query in it sees the
@@ -143,6 +189,32 @@ mod tests {
             store.load_glyph_layers(&layer_ids).unwrap().len(),
             layer_ids.len()
         );
+    }
+
+    #[test]
+    fn a_reader_lists_the_layers_marks_attach_to_and_skips_missing_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("working.sqlite");
+        let font = shift_font::test_support::sample_font();
+        let mut store = ShiftStore::open(&path).unwrap();
+        store.replace_font_state(&font).unwrap();
+        let reader = StoreReader::open_working_store(&path).unwrap();
+        let mut layer_ids: Vec<font::LayerId> = font.layer_ids().collect();
+        let mut expected: Vec<font::LayerId> = layer_ids
+            .iter()
+            .copied()
+            .filter(|layer_id| {
+                let layer = font.layer(*layer_id).unwrap();
+                layer.anchors().iter().any(font::Anchor::attaches_marks)
+            })
+            .collect();
+        expected.sort();
+        layer_ids.push(font::LayerId::from_raw("missing"));
+
+        let attaching = reader.attaching_anchor_layers(&layer_ids).unwrap();
+
+        assert!(!expected.is_empty(), "the sample font has a base anchor");
+        assert_eq!(attaching, expected);
     }
 
     #[test]

@@ -195,105 +195,148 @@ type SourceId = string & {
 type ShiftId = NodeId | PointId | AnchorId | ContourId | SegmentId | ComponentId | TextItemId;
 /** Identifies objects that can be selected by the editor. */
 type SelectableId = ShiftId;
-//#endregion
-//#region ../types/src/bridge/generated.d.ts
+/** A glyph's authored name, such as `A` or `uni0041`. */
 type GlyphName = string;
-interface Axis {
-  id: AxisId;
-  tag: string;
-  name: string;
-  role: AxisRole;
-  axisType: AxisType;
-  minimum?: number;
-  default: number;
-  maximum?: number;
-  values?: Array<number>;
-  labels: Array<AxisLabel>;
-  hidden: boolean;
-}
-interface AxisLabel {
-  id: AxisLabelId;
-  name: string;
-  value: number;
-  minimum?: number;
-  maximum?: number;
-  linkedValue?: number;
-  elidable: boolean;
-}
-interface AxisMapping {
-  id: AxisMappingId;
-  name: string;
-  description?: string;
-  inputs: Array<AxisId>;
-  outputs: Array<AxisId>;
-  points: Array<AxisMappingPoint>;
-}
-interface AxisMappingPoint {
-  description?: string;
-  input: Location;
-  output: Location;
-}
-type AxisRole = "external" | "internal";
-type AxisType = "continuous" | "discrete";
+//#endregion
+//#region ../types/src/bridge/protocol.d.ts
 interface FontMetadata {
-  familyName?: string;
-  styleName?: string;
-  versionMajor?: number;
-  versionMinor?: number;
-  copyright?: string;
-  trademark?: string;
-  designer?: string;
-  designerUrl?: string;
-  manufacturer?: string;
-  manufacturerUrl?: string;
-  license?: string;
-  licenseUrl?: string;
-  description?: string;
-  note?: string;
-}
-type KerningPosition = "first" | "second";
-interface Location {
-  values: Record<AxisId, number>;
-}
-interface MetricDefinition {
-  id: MetricId;
-  kind: MetricKind;
-  name: string;
-}
-type MetricKind = "ascender" | "capHeight" | "xHeight" | "baseline" | "descender" | "custom";
-/** NAPI projection of one explicit named product preset. */
-interface NamedInstance {
-  id: NamedInstanceId;
-  name: string;
-  location: Location;
-  postscriptName?: string;
+  readonly familyName?: string | null;
+  readonly styleName?: string | null;
+  readonly versionMajor?: number | null;
+  readonly versionMinor?: number | null;
+  readonly copyright?: string | null;
+  readonly trademark?: string | null;
+  readonly designer?: string | null;
+  readonly designerUrl?: string | null;
+  readonly manufacturer?: string | null;
+  readonly manufacturerUrl?: string | null;
+  readonly license?: string | null;
+  readonly licenseUrl?: string | null;
+  readonly description?: string | null;
+  readonly note?: string | null;
 }
 interface FontMetrics {
-  unitsPerEm: number;
+  readonly unitsPerEm: number;
 }
+type MetricKind = "ascender" | "capHeight" | "xHeight" | "baseline" | "descender" | "custom";
+interface MetricDefinition {
+  readonly id: MetricId;
+  readonly kind: MetricKind;
+  readonly name: string;
+}
+interface Location {
+  readonly values: Readonly<Record<AxisId, number>>;
+}
+/**
+ * One source's authored position and alignment-zone overshoot for a metric.
+ *
+ * Both values are expressed in font units. Overshoots are positive above a
+ * metric line and negative below it.
+ */
+interface MetricValue {
+  readonly position: number;
+  readonly overshoot: number;
+}
+/**
+ * How a source participates in the font. A `Master` is a genuine
+ * designspace source: it has a design-space location and earns a
+ * `<source>` entry when the font is written as a designspace. A `Layer`
+ * only carries a format layer that rides along with its file's masters
+ * (e.g. a plain UFO background layer) and must never gain a designspace
+ * `<source>` entry on save.
+ */
+type SourceRole = "master" | "layer";
 interface Source {
-  id: SourceId;
-  name: string;
-  location: Location;
-  filename?: string;
-  metricValues: Array<SourceMetricValue>;
-  italicAngle?: number;
-  lineGap?: number;
-  underlinePosition?: number;
-  underlineThickness?: number;
+  readonly id: SourceId;
+  readonly name: string;
+  readonly location: Location;
+  readonly metricValues: Readonly<Record<MetricId, MetricValue>>;
+  readonly italicAngle?: number | null;
+  readonly lineGap?: number | null;
+  readonly underlinePosition?: number | null;
+  readonly underlineThickness?: number | null;
+  readonly filename?: string | null;
+  readonly color?: string | null;
+  readonly role: SourceRole;
+  readonly layerName?: string | null;
 }
+type AxisRole = "external" | "internal";
+type AxisKind =
+  | {
+      readonly kind: "continuous";
+      readonly minimum: number;
+      readonly default: number;
+      readonly maximum: number;
+    }
+  | {
+      readonly kind: "discrete";
+      readonly values: readonly number[];
+      readonly default: number;
+    };
+interface AxisLabelRange {
+  readonly minimum: number;
+  readonly maximum: number;
+}
+/**
+ * One authored external-axis name and its stable identity.
+ *
+ * Labels describe values for authoring UI and STAT output. They do not create
+ * products or reference sources.
+ */
+interface AxisLabel {
+  readonly id: AxisLabelId;
+  readonly name: string;
+  readonly value: number;
+  readonly range?: AxisLabelRange | null;
+  readonly linkedValue?: number | null;
+  readonly elidable: boolean;
+}
+interface Axis {
+  readonly id: AxisId;
+  readonly tag: string;
+  readonly name: string;
+  readonly role: AxisRole;
+  readonly kind: AxisKind;
+  readonly labels: readonly AxisLabel[];
+  readonly hidden: boolean;
+}
+interface AxisMappingPoint {
+  readonly description?: string | null;
+  readonly input: Location;
+  readonly output: Location;
+}
+interface AxisMapping {
+  readonly id: AxisMappingId;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly inputs: readonly AxisId[];
+  readonly outputs: readonly AxisId[];
+  readonly points: readonly AxisMappingPoint[];
+}
+/**
+ * Wire projection of an explicit named product preset.
+ *
+ * `location` is complete external authoring state, not a normalized or
+ * compiler-owned coordinate record.
+ */
+interface NamedInstance {
+  readonly id: NamedInstanceId;
+  readonly name: string;
+  readonly location: Location;
+  readonly postscriptName?: string | null;
+}
+/**
+ * Pair position a kerning group applies to: `First` kerns a glyph's right
+ * edge, `Second` its left edge.
+ */
+type KerningPosition = "first" | "second";
 type PointType = "onCurve" | "offCurve" | "qCurve";
-interface SourceMetricValue {
-  metricId: MetricId;
-  position: number;
-  overshoot: number;
-}
 //#endregion
 //#region ../types/src/domain.d.ts
 /** Standard and technical metrics resolved for one authored source. */
 type SourceMetrics = Readonly<
   FontMetrics & {
-    metricValues: readonly SourceMetricValue[];
+    metricValues: Readonly<Record<MetricId, MetricValue>>;
     ascender: number;
     descender: number;
     baseline: number;
@@ -367,15 +410,30 @@ export interface EditorTool {
   id: string;
   state: string;
 }
+/**
+ * One of the document's pages, as the pages list shows it: the editor's
+ * `PageNode` identity and name. Pages that show a single glyph, such as a
+ * glyph tab's, are left out.
+ */
+export interface EditorPage {
+  id: NodeId;
+  name: string;
+}
 /** Renderer-owned facts for one live Shift window. */
 export interface EditorView {
   route: string;
   glyph: EditorGlyph | null;
+  /** The document's pages, in list order. */
+  pages: EditorPage[];
+  /** The page the canvas shows; null while the document has no page. */
+  shownPageId: NodeId | null;
   activeSourceId: SourceId | null;
   editingSourceIds: SourceId[];
   externalLocation: AxisCoordinate[];
   selectionIds: SelectableId[];
   tool: EditorTool | null;
+  /** Where the canvas looks and how close. */
+  viewport: EditorViewport;
   dragging: boolean;
   editing: boolean;
   applyStatus: "idle" | "queued" | "applying" | null;
@@ -399,6 +457,76 @@ export interface EditorInspection extends EditorView {
   windowId: number;
   sessionId: string;
   mode: ShiftSessionMode;
+}
+/**
+ * The canvas camera.
+ *
+ * @remarks
+ * `center` is in the open glyph's units (font units, y up, as `layers.get`
+ * gives points) while a glyph is open, and in the shown page's units (y down)
+ * otherwise. It is null while the canvas has no size, such as before it is
+ * first shown.
+ */
+export interface EditorViewport {
+  /** Screen pixels per font unit. */
+  zoom: number;
+  /** The point at the middle of the canvas. */
+  center: Point2D | null;
+}
+/** A command's stable id, as `commands.list` gives it, such as `view.zoomIn`. */
+export type CommandId = string;
+/** One command an agent may run in a window, as its menu item shows it. */
+export interface CommandSummary {
+  id: CommandId;
+  /** The menu item's label. */
+  title: string;
+  /** Its keyboard shortcut as an Electron accelerator, such as `CmdOrCtrl+Plus`; null when it has none. */
+  shortcut: string | null;
+  /** Whether it can run in the window now, as its menu item is enabled. */
+  enabled: boolean;
+}
+/** The commands an agent may run in one window. */
+export interface CommandListInput {
+  windowId: number;
+}
+/** Runs one command for a window, as choosing its menu item there does. */
+export interface CommandRunInput extends ShiftTarget {
+  command: CommandId;
+}
+/** What running a command did. */
+export interface CommandRun {
+  /** True once the window ran it; a command that cannot run fails instead. */
+  ran: boolean;
+}
+/** Makes a tool the window's active tool, as its toolbar button does. */
+export interface EditorSetToolInput extends ShiftTarget {
+  /** The tool's id, as `EditorTool.id` gives it: `select`, `pen`, `hand`, `text`, `spacing`, `kerning`, `shape`. */
+  tool: string;
+}
+/** Shows one of the document's pages, as clicking it in the pages list does. */
+export interface EditorShowPageInput extends ShiftTarget {
+  /** A page id from `EditorView.pages`. */
+  pageId: NodeId;
+}
+/** Opens a glyph in its tab, as double-clicking it in the glyph overview does. */
+export type EditorOpenGlyphInput = ShiftTarget & {
+  glyph: GlyphSelector;
+};
+/**
+ * Moves the canvas camera. Give `zoom`, `center` or both.
+ *
+ * @remarks
+ * `zoom` is clamped to the editor's range, 0.01 to 32. `center` is in the
+ * units {@link EditorViewport.center} reports.
+ */
+export interface EditorSetViewInput extends ShiftTarget {
+  zoom?: number;
+  center?: Point2D;
+}
+/** Replaces the selection with these objects, in this order; an empty list clears it. */
+export interface EditorSelectInput extends ShiftTarget {
+  /** Ids from `layers.get` (points, contours, anchors, components) or the scene's nodes. */
+  ids: SelectableId[];
 }
 /** Current font facts from one explicitly targeted live session, including Home. */
 export interface FontOverview {
@@ -752,14 +880,198 @@ export interface KerningAtInput extends ShiftTarget {
   second: GlyphSelector;
   source?: SourceSelector;
 }
+/** A point in a page's space, as a text run's position is given. */
+export interface PagePoint {
+  x: number;
+  y: number;
+}
+/** The canvas text runs on one page; the page the canvas shows when `pageId` is omitted. */
+export interface TextRunsInput extends ShiftTarget {
+  pageId?: NodeId;
+}
+/** One canvas text run, by the id of its text run node. */
+export interface TextRunGetInput extends ShiftTarget {
+  runId: NodeId;
+}
+/**
+ * A new canvas text run.
+ *
+ * `text` is proof text, as the Text tool reads pasted text and Glyphs writes
+ * it: `/` starts a glyph name, which runs to the next space, the next `/`, or
+ * the end of the text. A space that ends a name is not text, so `"/a b"` is
+ * glyph `a` then `b`, and `"/a  b"` is `a`, a space, then `b`; a `/` that ends
+ * one starts the next, so `"/a/b"` is glyphs `a` and `b`. `//` is a slash
+ * (`"1//2"` is 1/2, `"/a//b"` is `a`, a slash, `b`) and `"\n"` a line break. A `/` that names nothing fails
+ * with `ProofTextError`, and a name the font has no glyph for with
+ * `UnknownGlyphNameError`.
+ */
+export interface TextRunCreateInput extends ShiftTarget {
+  /** The page to put it on; the page the canvas shows when omitted. */
+  pageId?: NodeId;
+  text: string;
+  /** Its origin in the page's space, y down; below the page's last run when omitted. */
+  at?: PagePoint;
+}
+/** Replaces a run's text, read as {@link TextRunCreateInput.text} is. */
+export interface TextRunSetTextInput extends ShiftTarget {
+  runId: NodeId;
+  text: string;
+}
+/**
+ * Puts the Text mode caret in a run, in positions between items as
+ * {@link TextRunCaret} gives them: 0 is before the first item.
+ */
+export interface TextRunSetCaretInput extends ShiftTarget {
+  runId: NodeId;
+  /** Where the caret is: `selection.start` or `selection.end` when a selection is given. */
+  position: number;
+  /** The positions to select, `start` to `end`; a collapsed caret at `position` when omitted. */
+  selection?: {
+    start: number;
+    end: number;
+  };
+}
+/** How a run's lines line up: to where their direction starts or ends, or to a side. */
+export type TextRunAlign = "start" | "end" | "left" | "center" | "right";
+/** How a canvas text run is shaped and set, as the Text section shows it. */
+export interface TextRunOptions {
+  /** Whether the font's feature code shapes the text; off sets each item as typed. */
+  shaping: boolean;
+  /** Features forced on (`true`) or off (`false`) by tag; a tag left out keeps the font's default. */
+  features: Record<string, boolean>;
+  /** The BCP 47 language it is shaped as, such as `tr`; null for the font's default. */
+  language: string | null;
+  /** The ISO 15924 script the whole run is shaped in, such as `Arab`; null for each stretch's own. */
+  script: string | null;
+  /** The distance between baselines, in ems; null for the font's own line spacing. */
+  lineHeight: number | null;
+  /** How lines line up; null follows each line's direction. */
+  align: TextRunAlign | null;
+}
+/**
+ * Changes some of a run's options in one undo step: a field left out keeps
+ * its value. In `features`, a tag left out keeps its setting, and `null`
+ * returns it to the font's default. A feature tag, language or script that
+ * shaping cannot read, or a line height that is not positive, fails with
+ * `TextRunOptionsError` and nothing changes.
+ */
+export interface TextRunSetOptionsInput extends ShiftTarget {
+  runId: NodeId;
+  options: {
+    shaping?: boolean;
+    features?: Record<string, boolean | null>;
+    language?: string | null;
+    script?: string | null;
+    lineHeight?: number | null;
+    align?: TextRunAlign | null;
+  };
+}
+/** Removes a canvas text run. */
+export interface TextRunDeleteInput extends ShiftTarget {
+  runId: NodeId;
+}
+/** One canvas text run, as a page's list of runs shows it. */
+export interface TextRunSummary {
+  /** The id of its text run node. */
+  id: NodeId;
+  pageId: NodeId;
+  /**
+   * Its items as proof text, read as {@link TextRunCreateInput.text} is, so
+   * creating a run from it gives the same items.
+   */
+  text: string;
+  /** Its origin in the page's space, y down. */
+  at: PagePoint;
+  options: TextRunOptions;
+}
+/**
+ * Adds an empty page after the last one, as the pages list's add button
+ * does. The shown page stays shown; `editor.showPage` shows the new one.
+ */
+export interface PageCreateInput extends ShiftTarget {
+  /** Shown in the pages list; defaults to the first unused "Page N". Surrounding spaces are dropped. */
+  name?: string;
+}
+/**
+ * Renames a page, as renaming it in the pages list does. Surrounding spaces
+ * are dropped; the page's own name changes nothing and records no undo step.
+ */
+export interface PageRenameInput extends ShiftTarget {
+  /** A page id from `EditorView.pages`. */
+  pageId: NodeId;
+  name: string;
+}
+/**
+ * Deletes a page and everything on it, as the pages list does. Deleting the
+ * shown page first shows its neighbour; the last page cannot be deleted.
+ */
+export interface PageDeleteInput extends ShiftTarget {
+  /** A page id from `EditorView.pages`. */
+  pageId: NodeId;
+}
+/** A page edit's answer: the page it touched, and the document's pages after it. */
+export interface PageChange {
+  /** The page created, renamed or deleted, as it is now (a deleted page as it was). */
+  page: EditorPage;
+  /** The document's pages in list order, as `EditorView.pages` gives them. */
+  pages: EditorPage[];
+}
+/**
+ * Where an undone or redone step was made, as the window shows it: the page
+ * Shift showed for it, the glyphs it changed and the scene nodes it changed.
+ */
+export interface HistoryLocation {
+  /** The page of the first node it changed, or the page shown when it was made; null when there was none. */
+  pageId: NodeId | null;
+  /** The glyphs whose records or layers it changed, in id order. */
+  glyphIds: GlyphId[];
+  /** The scene nodes (pages, text runs, glyph nodes) it created, changed or removed. */
+  nodeIds: NodeId[];
+}
+/** What `history.undo` did. */
+export interface HistoryUndo {
+  /** False when there was nothing to undo; nothing changed. */
+  undone: boolean;
+  /** Where the step was made; null when nothing was undone or the step changed no document data, as a selection change. */
+  location: HistoryLocation | null;
+}
+/** What `history.redo` did. */
+export interface HistoryRedo {
+  /** False when there was nothing to redo; nothing changed. */
+  redone: boolean;
+  /** Where the step was made; null when nothing was redone or the step changed no document data, as a selection change. */
+  location: HistoryLocation | null;
+}
 /** Live application capabilities shared by protocol and plugin hosts. */
 export interface ShiftCapabilities {
   capture(input: ShiftCaptureInput): Promise<ShiftObservation<ShiftCapture>>;
   sessions: {
     list(): Promise<ShiftSession[]>;
   };
+  /**
+   * The app commands an agent may run: those that change only what a window
+   * shows or its session state, never font data or files. Close Tab closes a
+   * tab only while another is open; with only the glyph overview left it fails
+   * with `LastTabError` instead of closing the window.
+   */
+  commands: {
+    list(input: CommandListInput): Promise<CommandSummary[]>;
+    run(input: CommandRunInput): Promise<CommandRun>;
+  };
+  /**
+   * Inspects the editor, and changes what it shows: the tool, page, open
+   * glyph, camera and selection. None of these change font data, mark the
+   * document unsaved or move `fontRevision`; opening a glyph that has no tab
+   * yet adds a glyph page, as the glyph overview does, and the document stays
+   * saved.
+   */
   editor: {
     inspect(input: ShiftTarget): Promise<ShiftObservation<EditorInspection>>;
+    setTool(input: EditorSetToolInput): Promise<ShiftObservation<EditorInspection>>;
+    showPage(input: EditorShowPageInput): Promise<ShiftObservation<EditorInspection>>;
+    openGlyph(input: EditorOpenGlyphInput): Promise<ShiftObservation<EditorInspection>>;
+    setView(input: EditorSetViewInput): Promise<ShiftObservation<EditorInspection>>;
+    select(input: EditorSelectInput): Promise<ShiftObservation<EditorInspection>>;
   };
   font: {
     get(input: ShiftTarget): Promise<ShiftObservation<FontOverview>>;
@@ -789,7 +1101,66 @@ export interface ShiftCapabilities {
     resolve(input: KerningResolveInput): Promise<ShiftObservation<ResolvedKerningPairs>>;
     at(input: KerningAtInput): Promise<ShiftObservation<KerningMasterValue>>;
   };
+  /**
+   * The canvas text runs (proof text) and the Text mode caret: view state
+   * beside the font, never font data.
+   *
+   * @remarks
+   * Each write is one edit through the path the Text tool uses: `create`,
+   * `setText` and `delete` are one undo step each and mark the document
+   * unsaved, as typing does. `setCaret` is session state: no undo step, no
+   * unsaved change. No write changes the font, so none advances
+   * `fontRevision`; with `ifFontRevision`, a write fails with
+   * `FontChangedError` before changing anything when the font has moved on.
+   * A run or page that is not there fails with `TextRunNotFoundError` or
+   * `PageNotFoundError`, and a caret outside the run with `TextCaretError`.
+   */
+  text: {
+    runs(input: TextRunsInput): Promise<ShiftObservation<TextRunSummary[]>>;
+    get(input: TextRunGetInput): Promise<ShiftObservation<TextRunView>>;
+    create(input: TextRunCreateInput): Promise<ShiftObservation<TextRunView>>;
+    setText(input: TextRunSetTextInput): Promise<ShiftObservation<TextRunView>>;
+    /** Shows the caret in Text mode, switching to the run's page and to the Text tool when needed. */
+    setCaret(input: TextRunSetCaretInput): Promise<ShiftObservation<TextRunView>>;
+    /** Changes some of a run's options, as the Text section does, in one undo step. */
+    setOptions(input: TextRunSetOptionsInput): Promise<ShiftObservation<TextRunView>>;
+    delete(input: TextRunDeleteInput): Promise<ShiftObservation<null>>;
+  };
+  /**
+   * The document's pages, edited as the pages list edits them.
+   *
+   * @remarks
+   * `create`, `rename` and `delete` are one undo step each and mark the
+   * document unsaved; none shows a page (`editor.showPage` does), except that
+   * deleting the shown page shows its neighbour. Pages are scene data, not
+   * font data, so none advances `fontRevision`; with `ifFontRevision`, an edit
+   * fails with `FontChangedError` before changing anything when the font has
+   * moved on. An unknown page fails with `PageNotFoundError`, and deleting the
+   * last page with `LastPageError`.
+   */
+  pages: {
+    create(input: PageCreateInput): Promise<ShiftObservation<PageChange>>;
+    rename(input: PageRenameInput): Promise<ShiftObservation<PageChange>>;
+    delete(input: PageDeleteInput): Promise<ShiftObservation<PageChange>>;
+  };
+  /**
+   * The window's undo and redo, as Edit › Undo and Edit › Redo run them.
+   *
+   * @remarks
+   * Each reverses or reapplies one step of the window's history, whoever made
+   * it (the user or an agent): font edits, page edits and proof text alike,
+   * showing the page the step was made on as the menu items do. A step that
+   * changed the font moves `fontRevision`. Nothing to undo or redo answers
+   * false, not an error. A preview of a font file has no undo history, and
+   * both fail with `HistoryUnavailableError`.
+   */
+  history: {
+    undo(input: HistoryInput): Promise<ShiftObservation<HistoryUndo>>;
+    redo(input: HistoryInput): Promise<ShiftObservation<HistoryRedo>>;
+  };
 }
+/** Undoes or redoes the window's latest step. */
+export type HistoryInput = ShiftTarget;
 /** A capability input without the window and revision a read scope binds. */
 export type ShiftReadInput<Input> = Input extends unknown ? Omit<Input, keyof ShiftTarget> : never;
 /**
@@ -836,6 +1207,11 @@ export interface ShiftRead {
     pairs(input: ShiftReadInput<KerningPairsInput>): Promise<KerningPairPage>;
     resolve(input: ShiftReadInput<KerningResolveInput>): Promise<ResolvedKerningPairs>;
     at(input: ShiftReadInput<KerningAtInput>): Promise<KerningMasterValue>;
+  };
+  /** The canvas text runs, read at the bound revision; writes are not part of a read scope. */
+  text: {
+    runs(input?: ShiftReadInput<TextRunsInput>): Promise<TextRunSummary[]>;
+    get(input: ShiftReadInput<TextRunGetInput>): Promise<TextRunView>;
   };
 }
 /** The `shift` global in scripts: raw capabilities plus revision-bound reads. */
@@ -892,6 +1268,12 @@ export interface TextRunCaret {
 }
 /** The canvas text run as it shows now. */
 export interface TextRunView {
+  /** The id of its text run node. */
+  id: NodeId;
+  pageId: NodeId;
+  /** Its origin in the page's space, y down. */
+  at: PagePoint;
+  options: TextRunOptions;
   items: TextRunItem[];
   glyphs: TextRunGlyph[];
   /** The run's total advance, in its units. */

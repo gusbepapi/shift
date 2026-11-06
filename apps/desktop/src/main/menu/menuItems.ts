@@ -1,5 +1,10 @@
 import type { MenuItemConstructorOptions } from "electron";
-import { commandShortcuts, toElectronAccelerator, type CommandId } from "../../shared/commands";
+import {
+  commandShortcut,
+  helpCommandGroups,
+  toElectronAccelerator,
+  type CommandId,
+} from "../../shared/commands";
 import { commands } from "../commands/Commands";
 import { pathBasename, recentFolderLabels, type RecentDocument } from "../../shared/recents";
 import { DEBUG_OVERLAY_ITEMS, type DebugOverlayId, type DebugOverlays } from "../../shared/debug";
@@ -19,7 +24,7 @@ export function commandMenuItem(
   const command = commands.find((candidate) => candidate.id === id);
   if (!command) throw new Error(`Unknown menu command: ${id}`);
 
-  const shortcut = commandShortcuts[id];
+  const shortcut = commandShortcut(id);
 
   return {
     id,
@@ -177,15 +182,10 @@ export function helpMenuItems(
   isCommandEnabled: (id: CommandId) => boolean,
 ): MenuItemConstructorOptions[] {
   const item = (id: CommandId) => commandMenuItem(id, runCommand, isCommandEnabled);
-  const items: MenuItemConstructorOptions[] = [
-    item("help.openWebsite"),
-    item("help.openDiscord"),
-    item("help.openX"),
-    { type: "separator" },
-    item("help.reportIssue"),
-    item("help.showLogs"),
-    item("help.emailFeedback"),
-  ];
+  const items = helpCommandGroups.flatMap((group, index): MenuItemConstructorOptions[] => {
+    const groupItems = group.map(item);
+    return index === 0 ? groupItems : [{ type: "separator" }, ...groupItems];
+  });
   if (!includeApplicationItems) return items;
 
   return [

@@ -1,7 +1,7 @@
 import type { CommandId, RendererCommandId } from "../commands";
-import type { UpdateProgress } from "../update/types";
+import type { UpdateNotice } from "../update/types";
 import type { RendererErrorReport } from "../ipc/contract";
-import type { FontSessionMode, FontStoreLocation } from "../workspace/protocol";
+import type { FontSessionMode, FontStoreLocation } from "../workspace/lanes";
 import type { RecentDocument } from "../recents";
 import type { AgentConnection } from "../agent/protocol";
 import type { AgentConnectionsState } from "../agent/connections";
@@ -67,35 +67,21 @@ export interface ShiftHost {
   };
   /** Controls and observes the main-owned application update flow. */
   update: {
-    /** Starts downloading the available update and opens its progress view. */
+    /** Returns what the update strip shows now. */
+    notice: () => Promise<UpdateNotice>;
+    /** Starts downloading the available update; the strip shows its progress. */
     startDownload: () => Promise<void>;
-    /** Cancels the active update download and closes its progress window. */
-    cancelDownload: () => Promise<void>;
     /** Restarts the application after document confirmation and installs the ready update. */
     restartToUpdate: () => Promise<void>;
-    /** Closes the ready prompt while retaining the downloaded update. */
+    /** Hides the strip in every window, keeping the update and any download. */
     later: () => Promise<void>;
     /**
-     * Subscribes to cumulative update download progress.
+     * Subscribes to changes in what the update strip shows.
      *
-     * @param callback - receives the latest byte counts, speed, and percentage.
+     * @param callback - receives the new notice.
      * @returns an unsubscribe function.
      */
-    onProgress: (callback: (progress: UpdateProgress) => void) => () => void;
-    /**
-     * Subscribes to available update versions.
-     *
-     * @param callback - receives the product version available to download.
-     * @returns an unsubscribe function.
-     */
-    onAvailable: (callback: (version: string) => void) => () => void;
-    /**
-     * Subscribes to update download completion.
-     *
-     * @param callback - receives the downloaded product version.
-     * @returns an unsubscribe function.
-     */
-    onReady: (callback: (version: string) => void) => () => void;
+    onNoticeChanged: (callback: (notice: UpdateNotice) => void) => () => void;
   };
   /** Native window operations owned by the main process. */
   window: {
@@ -232,11 +218,15 @@ export interface ShiftHost {
   };
   /**
    * Synchronous, read-only access to the open workspace's stored layers, so
-   * the window's editing engine can load what an edit reads within the edit.
+   * the window's editing engine can load what an edit reads within the edit,
+   * and to the glyphs of a UFO, designspace or Glyphs file the window
+   * previews.
    *
    * @remarks
-   * Every call blocks on SQLite and returns committed state, including unsaved
-   * edits in a document's recovery overlay. Writes stay in the utility process.
+   * A store's calls block on SQLite and return committed state, including
+   * unsaved edits in a document's recovery overlay. A source file's calls
+   * convert the glyphs they read from the file, and never write. Writes stay
+   * in the utility process.
    */
   layers: LayerReaderHost;
 }
@@ -250,15 +240,37 @@ export interface LayerReaderHost {
    */
   open: (location: FontStoreLocation) => number;
   /**
-   * The content of `layerIds` as one MessagePack array of named-field layers.
+   * Opens a reader for the UFO, designspace, `.glyphs` or `.glyphspackage`
+   * file at `path`, read glyph by glyph: it imports nothing, and converts a
+   * glyph's outlines only when a request reads its layers. Its glyph ids are
+   * the ones the utility's preview of the same file uses.
    *
-   * @throws {Error} for an unknown reader, an unknown layer, or a layer that cannot be decoded.
+   * @throws {Error} when `path` is not an authored font format or cannot be read.
    */
-  load: (reader: number, layerIds: readonly string[]) => Uint8Array;
-  /** `glyphIds` plus every glyph their components use, transitively. */
-  componentClosure: (reader: number, glyphIds: readonly string[]) => string[];
-  /** Glyphs with a component of a glyph that owns one of `layerIds`. */
-  dependents: (reader: number, layerIds: readonly string[]) => string[];
+  openSource: (path: string) => number;
+  /**
+   * The font a source reader opened, with every layer a placeholder that
+   * keeps its advance, as named-field MessagePack: what an engine session
+   * opens with, as from a workspace's `encodedDirectory`.
+   *
+   * @throws {Error} for an unknown reader, one that reads a store, or one closed.
+   */
+  sourceDirectory: (reader: number) => Uint8Array;
+  /**
+   * Answers one request of shift-engine's `StoreReader` protocol, as the
+   * engine encoded it, from the reader's store or file; the window passes it on
+   * unchanged. A store failure comes back in the reply, as the method's error.
+   *
+   * @param blobs - The request's blobs, the last of them the names it uses.
+   * @returns The reply's numbers and blobs, the last of them the names it uses.
+   * @throws {Error} for an unknown reader.
+   */
+  request: (
+    reader: number,
+    method: number,
+    numbers: Float64Array,
+    blobs: readonly Uint8Array[],
+  ) => { numbers: Float64Array; blobs: Uint8Array[] };
   /** Releases a reader; unknown handles are ignored. */
   close: (reader: number) => void;
 }

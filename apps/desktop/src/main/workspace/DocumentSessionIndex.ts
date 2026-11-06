@@ -2,7 +2,7 @@ import { EntityMap } from "@shift/types";
 import type {
   WorkspaceDocumentState,
   WorkspaceDocumentIdentity,
-} from "../../shared/workspace/protocol";
+} from "../../shared/workspace/lanes";
 import type { WorkspaceProcess } from "./WorkspaceProcess";
 import type { FontSessionId } from "./FontSessionHost";
 
@@ -68,7 +68,7 @@ export class DocumentSessionIndex {
     if (documentId) {
       const existing = this.#workspaceIdByDocumentId.get(documentId);
       if (existing && existing !== workspaceId) {
-        throw new Error(`Document session already registered: ${state.documentId}`);
+        throw new Error(`Document session already registered: ${documentId}`);
       }
     }
 

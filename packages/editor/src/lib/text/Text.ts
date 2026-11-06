@@ -1,41 +1,70 @@
-import { mintRunId, type GlyphId, type RunId, type TextItemId } from "@shift/types";
-import { keyedCache, signal, untracked } from "../signals";
-import type { ComputedSignal, Signal } from "../signals";
+import {
+  mintRunId,
+  type GlyphId,
+  type GlyphName,
+  type NodeId,
+  type RunId,
+  type TextItemId,
+} from "@shift/types";
+import { computed, effect, keyedCache, signal, track, untracked } from "../signals";
+import type { ComputedSignal, Effect, Signal } from "../signals";
+import type { Point2D } from "@shift/geo";
 import type { Editor } from "../editor/Editor";
-import type { ShiftStore } from "../store/ShiftStore";
-import type { StoreIndex } from "../store/StoreIndex";
-import type { ShiftEditorRecord } from "../../types/records";
-import type { TextRunNode } from "../../types/node";
-import type { TextRunRecord } from "../../types/text";
+import type { PageNode, TextRunNode } from "../../types/node";
+import type {
+  FeatureHighlight,
+  FeatureListing,
+  ParsedText,
+  RunContent,
+  RunPlacement,
+  SubstitutionListing,
+  TextHighlight,
+  TextLayoutFailure,
+  TextRunRecord,
+  TextRunSettings,
+  TextRunSettingsChange,
+} from "../../types/text";
 import {
   characterTextItem,
   glyphTextItem,
   glyphIdForItem,
+  lineBreakTextItem,
+  typedTextItems,
   type TextItem,
   type TextLayout,
 } from "./layout";
-import { RunText, type ShapedText } from "./RunText";
-import { TextShaper } from "./TextShaper";
-import { GlyphNameParser, type TextParseContext, type TextParser } from "./parsing";
+import type {
+  FontFeature,
+  Direction,
+  TextAlign,
+  ProofTextItem,
+  TextLayout as LaidOutText,
+} from "@shift/wasm/protocol";
+import { proofTexts } from "@shift/wasm";
+import { RunText } from "./RunText";
+import { runSettingsOf } from "../editor/sceneNodes";
 
-/** Owns proof text records and one reactive layout per run identity. */
+/** The smallest size a run node sets its text at: one scene unit to the em. */
+const MIN_TEXT_SIZE = 1;
+/** The smallest distance between baselines, in ems. */
+const MIN_LINE_HEIGHT = 0.1;
+
+/**
+ * Owns proof text: each run's items, kept in the scene's text run nodes, and
+ * one reactive layout per run identity.
+ */
 export class Text {
-  readonly #store: ShiftStore<ShiftEditorRecord>;
   readonly #editor: Editor;
   readonly #glyphsLoadedCell = signal(0);
-  /** Made with the first run's layout, so shaping loads only once text exists. */
-  #shaper: TextShaper | null = null;
   // non-reactive: dedupes in-flight glyph loads; only read by the imperative load path
   readonly #loading = new Map<GlyphId, Promise<void>>();
-  readonly #runsByItem: StoreIndex<TextItemId, TextRunRecord>;
-  readonly #unsubscribeStore: () => void;
-  readonly #parseContext: TextParseContext = {
-    glyphNamed: (name) => {
-      const entry = this.#editor.font.entryForName(name);
-      return entry ? this.glyphItem(entry.id) : null;
-    },
-  };
-  #parser: TextParser = new GlyphNameParser();
+  readonly #runsByItem: ComputedSignal<ReadonlyMap<TextItemId, TextRunRecord>>;
+  // non-reactive: run nodes placed this session that go again if editing leaves them empty;
+  // read only when editing ends.
+  readonly #provisionalRuns = new Set<NodeId>();
+  readonly #acquiring: Effect;
+  /** The last reason text could not be shaped, so each is said once. */
+  #lastUnshapable: string | null = null;
   readonly #runs = keyedCache({
     name: "text.run",
     key: (runId: RunId) => runId,
@@ -47,22 +76,151 @@ export class Text {
           new RunText(this.#editor, runIdCell, {
             run: (id) => this.run(id),
             glyphsLoadedCell: this.#glyphsLoadedCell,
-            shaperCell: this.#textShaper().shaperCell,
-            onShaped: (shaped) => this.#acquireShapedGlyphs(shaped),
+            onLaidOut: (laidOut) => this.#acquireLaidOutGlyphs(laidOut),
           }),
       ),
   });
 
-  constructor(store: ShiftStore<ShiftEditorRecord>, editor: Editor) {
-    this.#store = store;
+  /**
+   * The run the user is working in: the one being typed in, otherwise the
+   * scene's only run, such as the page run around an edited glyph.
+   *
+   * @remarks
+   * Null when no text is being typed and the scene holds no run or several.
+   */
+  readonly currentRunCell: Signal<TextRunRecord | null> = computed(
+    () => {
+      const node = this.currentRunNodeCell.value;
+      return node ? this.run(node.runId) : null;
+    },
+    { name: "text.currentRun" },
+  );
+
+  /** The node that places {@link currentRunCell}'s run, whose size the Text section sets. */
+  readonly currentRunNodeCell: Signal<TextRunNode | null> = computed(
+    () => {
+      const editing = this.#editor.textEditing.stateCell.value;
+      const scene = this.#editor.scene;
+      // Scene lookups read without subscribing; rerun when its nodes change.
+      track(scene.cell);
+      return scene.nodeOfKind(editing?.nodeId ?? null, "textRun") ?? scene.only("textRun");
+    },
+    { name: "text.currentRunNode" },
+  );
+
+  /**
+   * The features the font's compiled feature code defines, in tag order,
+   * with their names, defaults and groups, as Rust lists them.
+   *
+   * @remarks
+   * Follows the shaper font: editing what it compiles from lists the new
+   * features once it recompiles. Empty in a preview, which has no engine;
+   * `failed`, with why, when the font has no shaper font or it cannot be
+   * read, so a list that could not be read is never shown as empty.
+   */
+  readonly featuresCell: Signal<FeatureListing> = computed(
+    (): FeatureListing => {
+      try {
+        return { kind: "listed", features: this.#editor.font.fontFeatures() };
+      } catch (error) {
+        return { kind: "failed", error };
+      }
+    },
+    { name: "text.features", equals: sameListing },
+  );
+
+  /**
+   * The first run whose text has no layout, or whose layout could not load
+   * what it shows, with why; null while every run lays out. The editor
+   * shows it, so a failed layout is never just an empty run.
+   */
+  readonly layoutFailureCell: ComputedSignal<TextLayoutFailure | null> = computed(
+    () => {
+      for (const runId of this.#editor.scene.runsCell.value.keys()) {
+        const failure = this.#runs.get(runId).failureCell.value;
+        if (failure) return failure;
+      }
+      return null;
+    },
+    { name: "text.layoutFailure" },
+  );
+
+  readonly #substitutions = keyedCache({
+    name: "text.featureSubstitutions",
+    key: (tag: string) => tag,
+    dispose: (substitutionsCell: ComputedSignal<SubstitutionListing>) =>
+      substitutionsCell.dispose(),
+    create: (tagCell: Signal<string>) =>
+      computed(
+        (): SubstitutionListing => {
+          try {
+            const substitutions = this.#editor.font.featureSubstitutions(tagCell.value);
+            return { kind: "listed", substitutions };
+          } catch (error) {
+            return { kind: "failed", error };
+          }
+        },
+        { name: "text.featureSubstitutions" },
+      ),
+  });
+
+  readonly #featureHighlightCell = signal<FeatureHighlight | null>(null, {
+    name: "text.featureHighlight",
+  });
+
+  /**
+   * The glyphs a highlighted feature changes in its run: what it puts in the
+   * text while it applies there, what it would replace while it does not.
+   *
+   * @remarks
+   * Null while no feature is highlighted, and while its substitutions or
+   * whether it applies cannot be read: the Features section and the preview
+   * say why. Follows the run's setting, the font's default and the shaper
+   * font, so turning the feature on or off while it is highlighted moves the
+   * highlight.
+   */
+  readonly highlightCell: Signal<TextHighlight | null> = computed(
+    () => {
+      const highlight = this.#featureHighlightCell.value;
+      const run = highlight ? this.run(highlight.runId) : null;
+      if (!highlight || !run) return null;
+
+      const listing = this.featureSubstitutionsCell(highlight.tag).value;
+      if (listing.kind === "failed") return null;
+      const applies = this.#featureApplies(highlight.tag, run.features[highlight.tag] ?? null);
+      if (applies === null) return null;
+      const glyphs = new Set(
+        listing.substitutions.flatMap(({ input, output }) => (applies ? [output] : input)),
+      );
+      return { runId: run.id, glyphs };
+    },
+    { name: "text.highlight" },
+  );
+
+  constructor(editor: Editor) {
     this.#editor = editor;
-    this.#runsByItem = store.index("textrun", (run) => run.items.map((item) => item.id));
-    this.#unsubscribeStore = store.onChange((change) => {
-      if (change.after?.type === "textrun") this.#acquireGlyphs(change.after.items);
-    });
-    for (const record of store.records()) {
-      if (record.type === "textrun") this.#acquireGlyphs(record.items);
-    }
+    this.#runsByItem = computed(
+      () => {
+        const runs = new Map<TextItemId, TextRunRecord>();
+        for (const run of editor.scene.runsCell.value.values()) {
+          for (const item of run.items) runs.set(item.id, run);
+        }
+        return runs;
+      },
+      { name: "text.runsByItem" },
+    );
+    // Loads the glyphs each run that arrived or changed shows.
+    let acquired: ReadonlyMap<RunId, TextRunRecord> = new Map();
+    this.#acquiring = effect(
+      () => {
+        const runs = editor.scene.runsCell.value;
+        for (const [id, run] of runs) {
+          if (acquired.get(id) !== run) untracked(() => this.#acquireGlyphs(run.items));
+        }
+        acquired = runs;
+      },
+      { name: "text.acquireGlyphs" },
+    );
   }
 
   /** Returns the run holding an item and the item itself, or null for an unknown id. */
@@ -100,28 +258,15 @@ export class Text {
     return this.layout(run.id)?.placedGlyphForItem(id)?.glyph.glyphId ?? null;
   }
 
-  /** Stores an independent proof text source. */
-  createRun(items: readonly TextItem[]): TextRunRecord {
-    const record: TextRunRecord = {
-      id: mintRunId(),
-      type: "textrun",
-      scope: "document",
-      items: [...items],
-    };
-    this.#store.put(record);
-    return record;
-  }
-
   /**
-   * Returns a run record.
+   * Returns a run's content.
    *
    * @remarks
    * Reactive: inside a computed or effect, the reader reruns only when this run changes.
    */
   run(id: RunId | null): TextRunRecord | null {
     if (!id) return null;
-    const record = this.#store.record(id);
-    return record?.type === "textrun" ? record : null;
+    return this.#editor.scene.run(id);
   }
 
   /**
@@ -141,13 +286,152 @@ export class Text {
    * Reactive: the reader reruns when the item is added to or removed from a run.
    */
   runForItem(id: TextItemId): TextRunRecord | null {
-    return this.#runsByItem.get(id)[0] ?? null;
+    track(this.#runsByItem);
+    return this.#runsByItem.peek().get(id) ?? null;
   }
 
   /** Replaces a run's items; the run's definition removes a child whose item went (`onContentChange`). */
   setItems(id: RunId, items: readonly TextItem[]): void {
+    this.#editor.scene.setRunItems(id, items);
+  }
+
+  /**
+   * Turns shaping on or off for a run; off lays out each item as typed.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setShaping(id: RunId, shaping: boolean): void {
+    this.#setSetting(id, "shaping", shaping);
+  }
+
+  /**
+   * Turns a feature on or off for a run, or back to the font's default.
+   *
+   * @param on - `true` or `false` to force the feature; `null` for the default.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setFeature(id: RunId, tag: string, on: boolean | null): void {
     const run = this.run(id);
-    if (run) this.#store.put({ ...run, items: [...items] });
+    if (!run || (run.features[tag] ?? null) === on) return;
+
+    const { [tag]: _previous, ...rest } = run.features;
+    this.#setSetting(id, "features", on === null ? rest : { ...rest, [tag]: on });
+  }
+
+  /**
+   * Returns every feature of a run to the font's default.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  resetFeatures(id: RunId): void {
+    const run = this.run(id);
+    if (run && Object.keys(run.features).length > 0) this.#setSetting(id, "features", {});
+  }
+
+  /**
+   * Sets the BCP 47 language a run is shaped as, or null for the font's default.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setLanguage(id: RunId, language: string | null): void {
+    this.#setSetting(id, "language", language);
+  }
+
+  /**
+   * Sets the ISO 15924 script a whole run is shaped in, or null for each
+   * stretch's own.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setScript(id: RunId, script: string | null): void {
+    this.#setSetting(id, "script", script);
+  }
+
+  /**
+   * Sets the distance between a run's baselines in ems, at least a tenth of
+   * an em, or null for the font's line spacing.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setLineHeight(id: RunId, lineHeight: number | null): void {
+    this.#setSetting(
+      id,
+      "lineHeight",
+      lineHeight === null ? null : Math.max(MIN_LINE_HEIGHT, lineHeight),
+    );
+  }
+
+  /**
+   * Sets the size a run node sets its text at: the scene units one em spans.
+   *
+   * @param size - At least one scene unit.
+   *
+   * @remarks
+   * Writes the scene node, so call it inside a history capture.
+   */
+  setSize(nodeId: NodeId, size: number): void {
+    const node = this.#editor.scene.nodeOfKind(nodeId, "textRun");
+    const clamped = Math.max(MIN_TEXT_SIZE, size);
+    if (node && node.size !== clamped) this.#editor.scene.updateNode({ id: nodeId, size: clamped });
+  }
+
+  /**
+   * Sets how a run's lines line up, or null to follow each line's direction.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture.
+   */
+  setAlign(id: RunId, align: TextAlign | null): void {
+    this.#setSetting(id, "align", align);
+  }
+
+  /**
+   * Changes several of a run's settings in one scene edit: each field given,
+   * and for `features`, each tag given, `null` returning it to the font's
+   * default. The line height is clamped as {@link setLineHeight} clamps it.
+   *
+   * @remarks
+   * Writes the run record, so call it inside a history capture. Rust checks
+   * the settings (`RunSettings::check`) and refuses the edit for a feature
+   * tag, language or script it cannot read.
+   *
+   * @throws When the engine refuses the settings; the run is unchanged.
+   */
+  setSettings(id: RunId, changes: TextRunSettingsChange): void {
+    const run = this.run(id);
+    if (!run) return;
+
+    const features = { ...run.features };
+    for (const [tag, on] of Object.entries(changes.features ?? {})) {
+      if (on === null) delete features[tag];
+      else features[tag] = on;
+    }
+    const lineHeight = changes.lineHeight === undefined ? run.lineHeight : changes.lineHeight;
+    this.#editor.scene.setRunSettings(
+      id,
+      runSettingsOf({
+        shaping: changes.shaping ?? run.shaping,
+        features,
+        language: changes.language === undefined ? run.language : changes.language,
+        script: changes.script === undefined ? run.script : changes.script,
+        lineHeight: lineHeight === null ? null : Math.max(MIN_LINE_HEIGHT, lineHeight),
+        align: changes.align === undefined ? run.align : changes.align,
+      }),
+    );
+  }
+
+  #setSetting<K extends keyof TextRunSettings>(id: RunId, key: K, value: TextRunSettings[K]): void {
+    const run = this.run(id);
+    if (run && run[key] !== value) {
+      this.#editor.scene.setRunSettings(id, runSettingsOf({ ...run, [key]: value }));
+    }
   }
 
   /**
@@ -164,13 +448,119 @@ export class Text {
     return true;
   }
 
-  deleteRun(id: RunId): void {
-    this.#store.delete(id);
+  /**
+   * Every substitution a feature can make, ordered by output glyph: the
+   * glyphs each rule replaces and the glyph it puts in their place, as Rust
+   * reads them from the shaper font's `GSUB`.
+   *
+   * @remarks
+   * Follows edits to what the shaper font compiles from. Empty for a
+   * positioning feature, a tag the font does not define, and in a preview;
+   * `failed`, with why, when they cannot be read.
+   */
+  featureSubstitutionsCell(tag: string): ComputedSignal<SubstitutionListing> {
+    return this.#substitutions.get(tag);
+  }
+
+  /**
+   * Whether shaping applies a feature a run turns on or off (`on`, null
+   * when it leaves it), as Rust decides; null when that cannot be read,
+   * which the feature listing reports ({@link featuresCell}).
+   */
+  #featureApplies(tag: string, on: boolean | null): boolean | null {
+    try {
+      return this.#editor.font.featureApplies(tag, on);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Highlights what a feature changes in one run's text, as
+   * {@link highlightCell} describes, or clears the highlight with null.
+   */
+  setFeatureHighlight(highlight: FeatureHighlight | null): void {
+    this.#featureHighlightCell.set(highlight);
+  }
+
+  /** The ISO 15924 scripts a run's text is laid out in, as layout itemized it, in order of first use. */
+  scriptsCell(id: RunId): Signal<readonly string[]> {
+    return this.#runs.get(id).scriptsCell;
+  }
+
+  /** The direction a run's first paragraph reads in, as layout resolved it; left to right for no text. */
+  directionCell(id: RunId): Signal<Direction> {
+    return this.#runs.get(id).directionCell;
+  }
+
+  /**
+   * Places a new text run on a page: the only way a run node is made.
+   *
+   * @remarks
+   * The run is set at the font's units per em, so its glyphs show at font
+   * size. A run placed empty, to type into, is provisional: if text editing
+   * leaves it with nothing typed, {@link leaveRun} removes it again. Placing is
+   * not an undo step; what is typed into the run is.
+   *
+   * @returns the run node.
+   */
+  placeRun({ page, at, glyphs }: RunPlacement): TextRunNode {
+    const items = glyphs.flatMap((glyphId) => this.glyphItem(glyphId) ?? []);
+    const node = this.#editor.history.withoutRecording(() => this.#createRun(page, at, items));
+    if (items.length === 0) this.#provisionalRuns.add(node.id);
+    return node;
+  }
+
+  /**
+   * Places a new run holding `items` on a page as one undo step, as typing
+   * into a placed run is one; the run is never provisional.
+   *
+   * @returns the run node.
+   * @throws When another history capture is open, or the document refuses the node.
+   */
+  addRun({ page, at, items }: RunContent): TextRunNode {
+    return this.#editor.history.capture("Add text", () => this.#createRun(page, at, items));
+  }
+
+  /** Builds a run node set at the font's units per em: {@link placeRun} and {@link addRun} only. */
+  #createRun(page: PageNode, at: Point2D, items: readonly TextItem[]): TextRunNode {
+    return this.#editor.scene.createNode<TextRunNode>(
+      {
+        kind: "textRun",
+        parentId: page.id,
+        runId: mintRunId(),
+        size: this.#editor.font.metricsCell.peek().unitsPerEm,
+        position: { x: at.x, y: at.y },
+      },
+      items,
+    );
+  }
+
+  /**
+   * Called when text editing leaves a run node: a provisional run left empty
+   * is removed, without an undo step; one with text in it is kept for good.
+   */
+  leaveRun(nodeId: NodeId): void {
+    if (!this.#provisionalRuns.delete(nodeId)) return;
+
+    const node = this.#editor.scene.nodeOfKind(nodeId, "textRun");
+    if (!node || this.items(node).length > 0) return;
+
+    this.#editor.history.withoutRecording(() => this.#editor.scene.deleteNode(node.id));
   }
 
   /** Returns a stable computed whose layout invalidates on content, location, source, or glyph acquisition. */
   layoutCell(id: RunId): ComputedSignal<TextLayout | null> {
     return this.#runs.get(id).layoutCell;
+  }
+
+  /**
+   * Why a run has no layout, or what its layout needed that did not load
+   * (glyphs into the engine, or a preview's layout module); null while it
+   * lays out and loads what it shows.
+   */
+  runLayoutFailureCell(id: RunId): Signal<TextLayoutFailure | null> {
+    return this.#runs.get(id).failureCell;
   }
 
   /**
@@ -182,23 +572,89 @@ export class Text {
     return this.layoutCell(id).peek();
   }
 
-  /** The parser for typed and pasted text; replace it to change the input syntax for every run. */
-  get parser(): TextParser {
-    return this.#parser;
-  }
-
-  set parser(parser: TextParser) {
-    this.#parser = parser;
-  }
-
-  /** Parses typed, pasted, or imported text with {@link parser}. */
+  /**
+   * Reads pasted or imported proof text into items, as shift-font's
+   * `ProofText` parses it: `/name` picks the glyph named `name` (the name
+   * ends at a space, which it consumes, or at the next `/`), `//` is a slash and `\n` a line
+   * break.
+   *
+   * @remarks
+   * Lenient, as pasting must be: a `/name` the font lacks stays as its
+   * characters, and text that is not proof text (a `/` naming nothing) is
+   * taken character by character.
+   */
   itemsFromText(text: string): TextItem[] {
-    return this.#parser.parse(text, this.#parseContext);
+    let parsed: readonly ProofTextItem[];
+    try {
+      parsed = proofTexts.parse(text);
+    } catch {
+      return typedTextItems(text);
+    }
+    return parsed.flatMap(
+      (item) => this.#textItems(item) ?? typedTextItems(proofTexts.format([item])),
+    );
   }
 
   /**
-   * Resolves once the shaper reflects the latest glyph directory and every
-   * glyph text needs has loaded.
+   * Reads proof text as {@link itemsFromText} does, strictly: each `/name`
+   * the font lacks is reported rather than kept as text.
+   *
+   * @throws {PackError} carrying a `ProofTextFailure` for text that is not
+   * proof text, such as a `/` naming nothing.
+   */
+  parseText(text: string): ParsedText {
+    const unknownGlyphNames: GlyphName[] = [];
+    const items = proofTexts.parse(text).flatMap((item) => {
+      const items = this.#textItems(item);
+      if (!items && item.kind === "glyph") unknownGlyphNames.push(item.name);
+      return items ?? [];
+    });
+    return { items, unknownGlyphNames };
+  }
+
+  /**
+   * Writes items as proof text, as shift-font's `ProofText` formats it, so
+   * {@link parseText} reads them back as the same items. A picked glyph the
+   * font no longer has is left out.
+   *
+   * @throws {PackError} carrying a `ProofTextFailure` for a glyph name that
+   * cannot be written as `/name` (one with a space in it).
+   */
+  formatItems(items: readonly TextItem[]): string {
+    const font = this.#editor.font;
+    return proofTexts.format(
+      items.flatMap((item): ProofTextItem[] => {
+        switch (item.kind) {
+          case "character":
+            return [{ kind: "character", codepoint: item.codepoint }];
+          case "linebreak":
+            return [{ kind: "lineBreak" }];
+          case "glyph": {
+            const name = font.glyphName(item.glyphId);
+            return name ? [{ kind: "glyph", name }] : [];
+          }
+        }
+      }),
+    );
+  }
+
+  /** The editor items for one parsed item; null for a glyph name the font lacks. */
+  #textItems(item: ProofTextItem): TextItem[] | null {
+    switch (item.kind) {
+      case "character":
+        return [characterTextItem(item.codepoint)];
+      case "lineBreak":
+        return [lineBreakTextItem()];
+      case "glyph": {
+        const entry = this.#editor.font.entryForName(item.name);
+        const picked = entry ? this.glyphItem(entry.id) : null;
+        return picked ? [picked] : null;
+      }
+    }
+  }
+
+  /**
+   * Resolves once every glyph text needs has loaded.
    *
    * @remarks
    * Loading a glyph can reshape text and ask for more glyphs, so this waits
@@ -206,7 +662,6 @@ export class Text {
    */
   async settled(): Promise<void> {
     for (;;) {
-      await this.#shaper?.settled();
       const loads = this.#loading.values().toArray();
       if (loads.length === 0) return;
       await Promise.all(loads);
@@ -214,10 +669,11 @@ export class Text {
   }
 
   dispose(): void {
-    this.#unsubscribeStore();
-    this.#shaper?.dispose();
+    this.layoutFailureCell.dispose();
+    this.#acquiring.dispose();
     this.#runsByItem.dispose();
     this.#runs.clear();
+    this.#substitutions.clear();
   }
 
   #acquireGlyphs(items: readonly TextItem[]): void {
@@ -229,21 +685,21 @@ export class Text {
   }
 
   /** Loads glyphs the shaper substituted in, which no item names directly. */
-  #textShaper(): TextShaper {
-    this.#shaper ??= new TextShaper(this.#editor);
-    return this.#shaper;
-  }
-
-  #acquireShapedGlyphs(shaped: ShapedText): void {
-    for (const runs of shaped.paragraphs) {
-      for (const run of runs ?? []) {
-        for (const glyph of run.glyphs) {
-          if (glyph.glyphId && !this.#editor.glyphForId(glyph.glyphId)) {
-            void this.#loadGlyph(glyph.glyphId);
-          }
-        }
+  /** Loads the glyphs a layout shows that are not loaded yet, such as ones shaping substituted in. */
+  #acquireLaidOutGlyphs(laidOut: LaidOutText): void {
+    if (laidOut.unshaped) this.#reportUnshapable(laidOut.unshaped);
+    for (const glyph of laidOut.glyphs) {
+      if (glyph.glyphId && !this.#editor.glyphForId(glyph.glyphId)) {
+        void this.#loadGlyph(glyph.glyphId);
       }
     }
+  }
+
+  /** Says why text could not be shaped, once for each reason in a row. */
+  #reportUnshapable(reason: string): void {
+    if (reason === this.#lastUnshapable) return;
+    this.#lastUnshapable = reason;
+    console.warn(`text lays out unshaped: ${reason}`);
   }
 
   #loadGlyph(id: GlyphId): Promise<void> {
@@ -264,4 +720,21 @@ export class Text {
       this.#loading.delete(id);
     }
   }
+}
+
+/** Whether two listings list the same features, or are the same failure. */
+function sameListing(a: FeatureListing, b: FeatureListing): boolean {
+  if (a.kind === "listed" && b.kind === "listed") return sameFeatures(a.features, b.features);
+  return a === b;
+}
+
+/** Whether two feature lists list the same features, every field alike, in the same order. */
+function sameFeatures(a: readonly FontFeature[], b: readonly FontFeature[]): boolean {
+  return a.length === b.length && a.every((feature, index) => sameFields(feature, b[index]!));
+}
+
+/** Whether two records of flat fields hold the same value in every field, whatever fields they have. */
+function sameFields<T extends object>(a: T, b: T): boolean {
+  const keys = Object.keys(a) as (keyof T)[];
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]));
 }

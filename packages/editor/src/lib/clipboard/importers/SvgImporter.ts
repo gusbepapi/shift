@@ -67,11 +67,11 @@ export class SvgImporter implements ClipboardImporter {
   }
 
   async #contoursOf(shape: SvgShape): Promise<ContourContent[]> {
-    const { svgPathContours } = await loadEngine();
+    const { svgPaths } = await loadEngine();
     const codeUnits = Array.from({ length: shape.pathData.length }, (_, index) =>
       shape.pathData.charCodeAt(index),
     );
-    const parsed = svgPathContours({ codeUnits });
+    const parsed = svgPaths.svgPathContours({ codeUnits });
     if (!parsed || parsed.length === 0) return [];
 
     return parsed.map(contourContent).map((contour) => ({

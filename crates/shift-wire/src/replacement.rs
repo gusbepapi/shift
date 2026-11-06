@@ -1,61 +1,53 @@
 //! The font-level records an edit changed, read from the font it left.
 //!
 //! Every session that applies an edit builds them the same way, with
-//! [`FontReplacement::changed_by`]. Glyph records are not here: they need the
-//! store's component references and glyph categories.
+//! [`FontReplacement::changed_by`]. Glyph records are not read here: they need
+//! the store's component references and glyph categories, so a session with a
+//! store adds them as [`FontReplacement::glyph_changes`].
 
-use std::collections::HashMap;
-
-use serde::{Serialize, Serializer};
-use shift_font::{ColorData, CoreResult, Font, FontChangeImpact};
+use serde::Serialize;
+use shift_font::{ColorData, CoreResult, Font, FontChangeImpact, GlyphRecordChanges};
 
 use crate::{
-    Axis, AxisMapping, AxisMappingBasis, FontMetadata, KerningSnapshot, MetricDefinition,
-    NamedInstance, Source, SourceMetricsInterpolationSnapshot,
+    AxisMapping, AxisMappingBasis, FontMetadata, KerningSnapshot, MetricDefinition, NamedInstance,
+    SourceMetricsInterpolationSnapshot,
 };
 
 /// Each font-level collection an edit changed, whole; `None` for one it left
 /// as it was.
 #[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 #[serde(rename_all = "camelCase")]
 pub struct FontReplacement {
     pub metadata: Option<FontMetadata>,
-    pub axes: Option<Vec<Axis>>,
+    pub axes: Option<Vec<shift_font::Axis>>,
     pub axis_mappings: Option<Vec<AxisMapping>>,
     pub axis_mapping_bases: Option<Vec<AxisMappingBasis>>,
     pub metric_definitions: Option<Vec<MetricDefinition>>,
     pub source_metrics_interpolation: Option<SourceMetricsInterpolationReplacement>,
     pub named_instances: Option<Vec<NamedInstance>>,
     pub languages: Option<LanguagesReplacement>,
-    pub sources: Option<Vec<Source>>,
+    pub sources: Option<Vec<shift_font::Source>>,
     pub kerning: Option<KerningSnapshot>,
-    /// The complete colour data, carried as the JSON text `color_data_json`
-    /// writes so that every transport sends the same value.
-    #[serde(serialize_with = "serialize_color")]
-    pub color: Option<ColorData>,
+    /// The complete colour data as the JSON text [`color_data_json`] writes,
+    /// because the paint graph is recursive and has no flat wire struct; every
+    /// transport sends the same text.
+    pub color: Option<String>,
+    /// The glyph records the edit changed, which a session with a store adds;
+    /// `None` from [`Self::changed_by`] and when it changed none. Only the
+    /// changed glyphs cross, since a large font has tens of thousands.
+    pub glyph_changes: Option<GlyphRecordChanges>,
 }
 
-/// The colour data as the JSON text the editor reads, because the paint graph
-/// is recursive and has no flat wire struct.
+/// The colour data as the JSON text the editor reads.
 pub fn color_data_json(color: &ColorData) -> String {
     serde_json::to_string(color).unwrap_or_else(|_| String::from(r#"{"palettes":[],"glyphs":[]}"#))
-}
-
-// serde's `serialize_with` passes the field by reference, which is `&Option<_>`.
-#[expect(clippy::ref_option)]
-fn serialize_color<S: Serializer>(
-    color: &Option<ColorData>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match color {
-        Some(color) => serializer.serialize_some(&color_data_json(color)),
-        None => serializer.serialize_none(),
-    }
 }
 
 /// The source-metrics interpolation after an edit that changed it; `None`
 /// inside when the font no longer has one.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceMetricsInterpolationReplacement {
     pub snapshot: Option<SourceMetricsInterpolationSnapshot>,
@@ -64,6 +56,7 @@ pub struct SourceMetricsInterpolationReplacement {
 /// The font's languages after an edit that changed them; `None` inside when
 /// it declares none.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
 #[serde(rename_all = "camelCase")]
 pub struct LanguagesReplacement {
     pub language_ids: Option<Vec<String>>,
@@ -77,15 +70,13 @@ impl FontReplacement {
     ///
     /// Returns the font's error when its axis-mapping bases cannot be built.
     pub fn changed_by(font: &Font, impact: FontChangeImpact) -> CoreResult<Option<Self>> {
-        if impact.is_empty() {
+        if impact.difference(FontChangeImpact::LAYERS).is_empty() {
             return Ok(None);
         }
         let changed = ChangedScopes { font, impact };
         Ok(Some(Self {
             metadata: changed.read(FontChangeImpact::METADATA, |font| font.metadata().into()),
-            axes: changed.read(FontChangeImpact::AXES, |font| {
-                font.axes().iter().map(Axis::from).collect()
-            }),
+            axes: changed.read(FontChangeImpact::AXES, |font| font.axes().to_vec()),
             axis_mappings: changed.read(FontChangeImpact::AXIS_MAPPINGS, |font| {
                 font.axis_mappings().iter().map(AxisMapping::from).collect()
             }),
@@ -113,9 +104,14 @@ impl FontReplacement {
                     .collect()
             }),
             languages: changed.read(FontChangeImpact::LANGUAGES, LanguagesReplacement::of),
-            sources: changed.read(FontChangeImpact::SOURCES, Source::masters_of),
+            sources: changed.read(FontChangeImpact::SOURCES, |font| {
+                font.masters().cloned().collect()
+            }),
             kerning: changed.read(FontChangeImpact::KERNING, KerningSnapshot::from),
-            color: changed.read(FontChangeImpact::COLOR, |font| font.color().clone()),
+            color: changed.read(FontChangeImpact::COLOR, |font| {
+                color_data_json(font.color())
+            }),
+            glyph_changes: None,
         }))
     }
 }
@@ -158,30 +154,5 @@ impl<'a> ChangedScopes<'a> {
         read: impl FnOnce(&'a Font) -> CoreResult<T>,
     ) -> CoreResult<Option<T>> {
         self.read(scope, read).transpose()
-    }
-}
-
-impl Source {
-    /// The font's sources, each with its metric values in the order of the
-    /// font's metric definitions.
-    pub fn masters_of(font: &Font) -> Vec<Self> {
-        let metric_order = font
-            .metric_definitions()
-            .iter()
-            .enumerate()
-            .map(|(index, definition)| (definition.id(), index))
-            .collect::<HashMap<_, _>>();
-        let position = |metric_id: &shift_font::MetricId| {
-            metric_order.get(metric_id).copied().unwrap_or(usize::MAX)
-        };
-        let mut sources: Vec<Self> = font.masters().map(Self::from).collect();
-        for source in &mut sources {
-            source.metric_values.sort_by(|left, right| {
-                position(&left.metric_id)
-                    .cmp(&position(&right.metric_id))
-                    .then_with(|| left.metric_id.cmp(&right.metric_id))
-            });
-        }
-        sources
     }
 }

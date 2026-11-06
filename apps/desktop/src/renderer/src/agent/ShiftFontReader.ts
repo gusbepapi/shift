@@ -22,12 +22,12 @@ import {
   type Axis,
   type GlyphId,
   type GlyphName,
-  type LayerMatch,
   type NamedInstance,
   type Source,
   type Unicode,
 } from "@shift/types";
 import type { Font } from "@shift/editor/model";
+import type { Counterparts } from "@shift/wasm/protocol";
 import { ShiftLayer } from "./ShiftLayer";
 import { ShiftSelectors } from "./ShiftSelectors";
 
@@ -55,12 +55,14 @@ export class ShiftFontReader {
       mode: this.#mode,
       info: font.metadata,
       metrics: font.metrics,
-      metricDefinitions: font.metricDefinitions,
+      // The agent API hands out its own arrays; the font's are read-only.
+      metricDefinitions: [...font.metricDefinitions],
       glyphCount: font.glyphCount,
-      axes: font.getAxes(),
-      axisMappings: font.getAxisMappings(),
-      sources: font.sources,
-      instances: font.namedInstances,
+      // Records, not the font's Axis objects: the overview is cloned across a port.
+      axes: font.getAxes().map((axis) => axis.record),
+      axisMappings: [...font.getAxisMappings()],
+      sources: [...font.sources],
+      instances: [...font.namedInstances],
     };
   }
 
@@ -191,7 +193,9 @@ export class ShiftFontReader {
   /** The axis `selector` names, by id or tag, or null when the font has none. */
   axis(selector: AxisSelector): Axis | null {
     const font = this.#font;
-    return selector.tag !== undefined ? font.axisTagged(selector.tag) : font.axis(selector.axisId);
+    const axis =
+      selector.tag !== undefined ? font.axisTagged(selector.tag) : font.axis(selector.axisId);
+    return axis?.record ?? null;
   }
 
   async resolveGlyphs(glyphIds: GlyphId[], location: AxisCoordinate[]): Promise<ResolvedGlyphs> {
@@ -219,13 +223,22 @@ export class ShiftFontReader {
   }
 
   /**
-   * How the `target` layer's contours, points, anchors and components
-   * correspond to the `reference` layer's, as the engine matches them.
+   * The `target` layer's points, anchors and components for `ids` in the
+   * `reference` layer, as the window's engine matches the two layers.
    *
-   * @throws {Error} as {@link getLayer} does, for either layer.
+   * @returns null when the layers don't match completely.
+   * @throws {Error} as {@link getLayer} does, for either layer, and as `Font.counterparts` does.
    */
-  async matchLayers(reference: LayerSelector, target: LayerSelector): Promise<LayerMatch> {
-    return this.#font.matchLayers(this.#select.layerId(reference), this.#select.layerId(target));
+  counterparts(
+    reference: LayerSelector,
+    target: LayerSelector,
+    ids: Counterparts,
+  ): Counterparts | null {
+    return this.#font.counterparts(
+      this.#select.layerId(reference),
+      this.#select.layerId(target),
+      ids,
+    );
   }
 
   /** @throws {Error} as {@link getLayer} does, or when a component cannot resolve. */
@@ -251,7 +264,7 @@ export class ShiftFontReader {
       id: entry.id,
       name: entry.name,
       unicodes: [...entry.unicodes],
-      componentBaseGlyphIds: record?.componentBaseGlyphIds ?? [],
+      componentBaseGlyphIds: [...(record?.componentBaseGlyphIds ?? [])],
       layers: record?.layers.map(({ id, sourceId }) => ({ layerId: id, sourceId })) ?? [],
     };
   }

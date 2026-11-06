@@ -23,7 +23,7 @@ import type {
   Source,
   SourceId,
   Unicode,
-  SetComponentAlignmentIntent,
+  SetComponentAlignment,
 } from "@shift/types";
 import { mintAnchorId, mintComponentId, mintContourId, mintPointId, EntityMap } from "@shift/types";
 import {
@@ -43,17 +43,13 @@ import type {
   GlyphOptions,
 } from "../../types/glyph";
 import { followingPlacements } from "../wasm/anchors";
-import {
-  propagateAnchors,
-  type PropagatedAnchors,
-  type PropagationAnchor,
-} from "../wasm/generated/layouts";
+import { anchors as anchorRules } from "@shift/wasm";
+import type { PropagatedAnchors, PropagationAnchor } from "@shift/wasm/protocol";
 import type { DesignAxisLocation, ExternalAxisLocation } from "../../types/variation";
 import type { WeightedSource } from "../../types/glyphRender";
 import { designAxisLocationFromLocation, designAxisLocationsEqual } from "../variation/location";
 import type { Designspace } from "../variation/Designspace";
 import { interpolateSourceValues } from "../interpolation/InterpolationBasis";
-import { evaluateVariationBasis, interpolationWeights } from "../wasm/variation";
 import { Transform } from "../transform/Transform";
 import { ContourPath } from "../graphics/ContourPath";
 import type { FontOptions } from "../../types/font";
@@ -249,6 +245,29 @@ class GlyphLayerWriter {
     state.showPreview(shown ?? null);
   }
 
+  /**
+   * Shows text laid out as `steps` would leave this layer, without keeping
+   * them or changing how the layer itself shows: for a drag frame the editor
+   * already draws, so the window's engine lays text out from it too.
+   * `steps` calls the layer methods the gesture's commit does. Does nothing
+   * without an engine.
+   */
+  previewInText(steps: () => void): void {
+    const editCoordinator = this.#editCoordinator;
+    if (!editCoordinator || this.#collecting) return;
+
+    const intents: FontIntent[] = [];
+    this.#collecting = intents;
+    this.#previewing = true;
+    try {
+      steps();
+    } finally {
+      this.#collecting = null;
+      this.#previewing = false;
+    }
+    if (intents.length > 0) editCoordinator.showPreview(intents);
+  }
+
   setXAdvance(width: number): void {
     this.#workspaceIntents.setXAdvance({ width });
   }
@@ -311,9 +330,7 @@ class GlyphLayerWriter {
   transformLayer(matrix: MatModel): void {
     // Six numbers on the wire whatever the layer's size; Rust does the authoritative math.
     const { a, b, c, d, e, f } = matrix;
-    this.#workspaceIntents.transformLayer({
-      matrix: [a, b, c, d, e, f],
-    });
+    this.#workspaceIntents.transformLayer({ transform: { a, b, c, d, e, f } });
   }
 
   translateLayer(dx: number, dy: number): void {
@@ -325,7 +342,7 @@ class GlyphLayerWriter {
     const { a, b, c, d, e, f } = matrix;
     this.#workspaceIntents.transformPoints({
       pointIds: [...pointIds],
-      matrix: [a, b, c, d, e, f],
+      transform: { a, b, c, d, e, f },
     });
   }
 
@@ -495,7 +512,7 @@ class GlyphLayerWriter {
 
   setComponentAlignment(
     componentIds: readonly ComponentId[],
-    alignment: SetComponentAlignmentIntent["alignment"],
+    alignment: SetComponentAlignment["alignment"],
   ): void {
     if (componentIds.length === 0) return;
     // Applied by the workspace: anchoring moves the component, which the echo carries.
@@ -1247,6 +1264,11 @@ export class GlyphLayer {
     this.#writer.preview(steps);
   }
 
+  /** Lays text out as `steps` would leave this layer; see the writer's `previewInText`. */
+  previewInText(steps: () => void): void {
+    this.#writer.previewInText(steps);
+  }
+
   /**
    * Runs `steps`, which call this layer's editing methods, and applies every
    * intent they make in one engine call once they return, showing the layer
@@ -1267,7 +1289,7 @@ export class GlyphLayer {
    */
   setComponentAlignment(
     componentIds: readonly ComponentId[],
-    alignment: SetComponentAlignmentIntent["alignment"],
+    alignment: SetComponentAlignment["alignment"],
   ): void {
     this.#writer.setComponentAlignment(componentIds, alignment);
   }
@@ -1784,7 +1806,7 @@ export class GlyphRenderModel {
       const category = this.#anchorCategory(glyphId);
       // Export classes a glyph by its authored anchors, named or not.
       const attaching = geometry.anchors.some((anchor) => !anchor.name?.startsWith("_"));
-      const propagated = propagateAnchors({
+      const propagated = anchorRules.propagateAnchors({
         anchors,
         components,
         isMark: category.mark,
@@ -2390,6 +2412,11 @@ export class Glyph {
     return this.#entryCell.peek();
   }
 
+  /** The glyph's name and Unicode values, updated when either is changed. */
+  get entryCell(): Signal<GlyphEntry> {
+    return this.#entryCell;
+  }
+
   get handle(): GlyphHandle {
     const entry = this.#entryCell.peek();
     const unicode = entry.unicodes[0];
@@ -2463,11 +2490,12 @@ export class Glyph {
     const basis = this.#projectionCell.peek()?.decomposition;
     if (!basis) return null;
 
-    const weights = interpolationWeights(
+    const weights = this.#designspace.interpolationWeights(
       basis,
       this.#designspace.toDesign(externalLocation),
-      this.#designspace.axes,
     );
+    if (!weights) return null;
+
     return basis.sourceIds.map((sourceId, index) => ({
       sourceId,
       weight: weights[index] ?? 0,
@@ -2520,10 +2548,11 @@ export class Glyph {
     );
     if (exactShape) return projectionGeometry(exactShape.shape);
 
-    const axes = this.#designspace.axes;
     const interpolation = projection.interpolation;
     if (interpolation) {
-      const weights = interpolationWeights(interpolation.basis, designLocation, axes);
+      const weights = this.#designspace.interpolationWeights(interpolation.basis, designLocation);
+      if (!weights) return projectionGeometry(projection.fallback);
+
       const values = interpolateSourceValues(interpolation.basis, weights, (sourceId) => {
         const sourceLayer = this.#layersBySourceIdCell.peek().get(sourceId);
         if (sourceLayer) {
@@ -2545,7 +2574,7 @@ export class Glyph {
     const variation = projection.variation;
     if (!variation) return projectionGeometry(projection.fallback);
 
-    const adjustments = evaluateVariationBasis(variation.basis, designLocation, axes);
+    const adjustments = this.#designspace.variationAdjustments(variation.basis, designLocation);
     const values = new Float64Array(projection.fallback.values);
     for (let index = 0; index < values.length; index++) {
       values[index] += adjustments[index] ?? 0;

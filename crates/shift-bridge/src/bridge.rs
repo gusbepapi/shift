@@ -1,63 +1,53 @@
-use crate::errors::{self, BridgeError, BridgeResult};
-use crate::input::{parse, parse_id_list};
+use crate::errors::{self, BridgeError, BridgeResult, generic_failure};
+use crate::input::parse_id_list;
+use crate::reply::{PackedReply, answer};
 use napi::bindgen_prelude::*;
 use napi::{Error, Status};
 use napi_derive::napi;
-use shift_backends::shaper_font::{LiveShaper, ShaperFontRequest, ShaperFontState};
 use shift_backends::{
   AxisIndex as SourceAxisIndex, ColorTable, ColorTables, DirectoryGlyph, DirectoryInstance,
   DirectorySource, ExportFormat, FontDirectory, FontExportRequest, FontExportResult, FontExporter,
   FontSource, FontView, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
   GlyphProjection as SourceGlyphProjection, GlyphShape as SourceGlyphShape, OpenedFont,
-  SourceAtlasDescriptor, SourceGlyphIds, VariationAxisKind, build_binary_atlas_page,
-  font_loader::FontLoader, variable_glyph_inputs,
+  SourceAtlasDescriptor, SourceIds, VariationAxisKind, font_loader::FontLoader,
 };
 use shift_font::composite::resolved_contours_to_svg_path;
 use shift_font::{
   AnchorId, Axis as FontAxis, AxisId, AxisMapping as FontAxisMapping, AxisMappingId,
-  AxisMappingPoint as FontAxisMappingPoint, ComponentId, ContourId, Font, FontChangeImpact,
-  FontChangeSet, FontIntentSet, Glyph, GlyphId, GlyphLayer, LayerId, Location as FontLocation,
-  MetricId, MetricKind, NamedInstanceId, PointId, SourceId,
+  AxisMappingPoint as FontAxisMappingPoint, ComponentId, ContourId, Font, Glyph, GlyphId,
+  GlyphLayer, LayerId, Location as FontLocation, MetricId, MetricKind, NamedInstanceId, PointId,
+  SourceId,
 };
-use shift_slug::length::OrOverflow;
-use shift_slug::{
-  AuthoredAtlas, AuthoredAtlasProfile, Section as SlugSection, VariableAtlas, VariableLayout,
-  build_authored_atlas_page_profiled, build_authored_atlas_profiled,
-  retained::compile_page as compile_retained_page,
-};
+use shift_slug::{AuthoredAtlasProfile, VariableAtlas};
 use shift_wire::bridges::napi::IntoEach;
-use shift_wire::intents;
-use shift_wire::replacement::{FontReplacement, color_data_json};
+use shift_wire::values;
 use shift_wire::{
-  AnchorData, Axis, AxisMapping, AxisMappingBasis, ComponentData, ComponentGlyph,
-  ComponentTransformKind, ContourData, FontMetadata, FontMetrics, FontSnapshot,
-  GlyphChangedEntities, GlyphComponents, GlyphEntry, GlyphLayerRecord, GlyphLayerShape,
-  GlyphLayerSnapshot, GlyphProjection, GlyphRecord, GlyphSnapshot, GlyphSnapshotRequest,
-  GlyphSourceComponents, GlyphSourceShape, GlyphState, GlyphStructure, GlyphVariation,
-  InterpolationBasis as WireInterpolationBasis, InterpolationSupport, KerningSnapshot,
-  LayerMatch as WireLayerMatch, Location as WireLocation, MetricDefinition, NamedInstance,
-  PointData, PointType, Source, SourceMetricValue, SourceMetricsInterpolationSnapshot,
-  VariationBasis, VariationDelta,
+  AnchorData, ComponentData, ComponentGlyph, ComponentTransformKind, ContourData, FontMetadata,
+  FontMetrics, FontSnapshot, GlyphComponents, GlyphEntry, GlyphLayerShape, GlyphLayerSnapshot,
+  GlyphProjection, GlyphSnapshot, GlyphSnapshotRequest, GlyphSourceComponents, GlyphSourceShape,
+  GlyphState, GlyphStructure, GlyphVariation, InterpolationSupport, Location as WireLocation,
+  MetricDefinition, NamedInstance, PointData, PointType, VariationBasis, VariationDelta,
   bridges::napi::{
-    NapiAppliedChange, NapiAxisMappingBasis, NapiCatalogAtlasGlyph, NapiCatalogAtlasPage,
-    NapiCatalogAtlasWeights, NapiFontMetrics, NapiFontReplacement, NapiFontSnapshot,
-    NapiGlyphLayerSnapshot, NapiGlyphPreview, NapiGlyphProjection, NapiGlyphRecord,
-    NapiGlyphRecordChanges, NapiGlyphSnapshot, NapiGlyphSnapshotRequest, NapiInterpolationBasis,
-    NapiKerningSnapshot, NapiLayerMatch, NapiLayerRead, NapiLayerReplaced, NapiSlugAtlas,
-    NapiSlugExactSource, NapiSlugGlyph, NapiSlugLayout, NapiSlugPreviewExtents, NapiSlugSection,
-    NapiSlugWeightSet, NapiSource, NapiSourceMetricsInterpolationSnapshot,
+    NapiGlyphPreview, NapiGlyphProjection, NapiGlyphSnapshot, NapiGlyphSnapshotRequest,
+    NapiLayerRead,
   },
 };
-use shift_workspace::{
-  AcquireScope, DocumentIdentity, FontWorkspace, NewWorkspace, WorkspaceError, WorkspaceSource,
-};
+use shift_workspace::{AcquireScope, FontWorkspace, WorkspaceError};
 use std::{
   collections::{BTreeMap, HashMap, HashSet, VecDeque},
   iter,
   path::Path,
   sync::Arc,
-  time::{Duration, Instant},
+  time::Duration,
 };
+
+mod atlas;
+mod source;
+mod workspace;
+
+use atlas::native_atlas_request;
+use source::native_source_request;
+use workspace::native_workspace_request;
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -75,50 +65,11 @@ pub struct NapiFontExportResult {
   pub format: String,
 }
 
-#[napi(object)]
-pub struct NapiNewWorkspace {
-  pub family_name: Option<String>,
-  pub units_per_em: Option<i64>,
-}
-
-#[napi(object)]
-#[derive(Debug)]
-pub struct NapiDocumentState {
-  pub source_kind: String,
-  pub document_id: Option<String>,
-  pub save_target: Option<String>,
-  pub dirty: bool,
-  pub needs_save_as: bool,
-}
-
-#[napi(object)]
-pub struct NapiDocumentIdentity {
-  pub document_id: String,
-  pub canonical_path: String,
-}
-
 struct SlugAtlasGeneration {
   generation: u32,
   alignment: usize,
   atlas: VariableAtlas,
 }
-
-fn new_workspace_from_options(options: Option<NapiNewWorkspace>) -> NewWorkspace {
-  let Some(options) = options else {
-    return NewWorkspace::default();
-  };
-
-  let mut new_workspace = NewWorkspace::default();
-  if let Some(family_name) = options.family_name {
-    new_workspace.family_name = family_name;
-  }
-  if let Some(units_per_em) = options.units_per_em {
-    new_workspace.units_per_em = units_per_em;
-  }
-
-  new_workspace
-}
-
 impl TryFrom<NapiFontExportRequest> for FontExportRequest {
   type Error = Error;
 
@@ -151,42 +102,6 @@ impl From<FontExportResult> for NapiFontExportResult {
     }
   }
 }
-
-impl TryFrom<DocumentIdentity> for NapiDocumentIdentity {
-  type Error = BridgeError;
-
-  fn try_from(identity: DocumentIdentity) -> BridgeResult<Self> {
-    Ok(Self {
-      document_id: identity.document_id.to_string(),
-      canonical_path: path_to_string(&identity.canonical_path)?,
-    })
-  }
-}
-
-fn napi_slug_section(section: SlugSection) -> BridgeResult<NapiSlugSection> {
-  Ok(NapiSlugSection {
-    offset: u32::try_from(section.offset).or_overflow()?,
-    length: u32::try_from(section.length).or_overflow()?,
-  })
-}
-
-fn napi_slug_layout(layout: VariableLayout) -> BridgeResult<NapiSlugLayout> {
-  Ok(NapiSlugLayout {
-    base_curves: napi_slug_section(layout.base_curves)?,
-    curve_deltas: napi_slug_section(layout.curve_deltas)?,
-    sparse_deltas: napi_slug_section(layout.sparse_deltas)?,
-    glyphs: napi_slug_section(layout.glyphs)?,
-    sources: napi_slug_section(layout.sources)?,
-    source_advances: napi_slug_section(layout.source_advances)?,
-    component_glyphs: napi_slug_section(layout.component_glyphs)?,
-    component_parts: napi_slug_section(layout.component_parts)?,
-    components: napi_slug_section(layout.components)?,
-    component_sources: napi_slug_section(layout.component_sources)?,
-    line_bits: napi_slug_section(layout.line_bits)?,
-    total_length: u32::try_from(layout.total_length).or_overflow()?,
-  })
-}
-
 fn slug_atlas_profile_enabled() -> bool {
   std::env::var("SHIFT_PROFILE_SLUG_ATLAS").is_ok_and(|value| value != "0")
 }
@@ -229,7 +144,7 @@ struct RetainedSource {
 impl RetainedSource {
   fn open(path: &Path) -> BridgeResult<Self> {
     let font = FontLoader::new().open_source(path)?;
-    let identity = SourceIdentity::new(font.directory(), &SourceGlyphIds::for_path(path))?;
+    let identity = SourceIdentity::new(font.directory(), &SourceIds::for_path(path))?;
     Ok(Self { font, identity })
   }
 
@@ -250,7 +165,7 @@ impl RetainedSource {
       glyphs: ids.wire(&ids.glyph_ids, directory.glyphs()),
       sources: ids.wire(&ids.source_ids, directory.sources()),
       named_instances: ids.wire(&ids.instance_ids, directory.instances()),
-      axes: ids.font_axes.iter().into_each(),
+      axes: ids.font_axes.to_vec(),
       axis_mappings: ids.axis_mappings_of(directory)?.iter().into_each(),
       axis_mapping_bases: ids.mapping_bases.iter().into_each(),
       // A preview reads only its source's directory: no lib, kerning or
@@ -590,116 +505,6 @@ impl ShapeIds {
     format!("{}-{}-{kind}{index}", self.glyph_id, self.selector)
   }
 }
-
-fn napi_source_atlas_page(
-  generation: u32,
-  page_index: u32,
-  atlas: &VariableAtlas,
-  descriptor: &SourceAtlasDescriptor,
-  location: &[f64],
-  layout: VariableLayout,
-  identity: &SourceIdentity,
-) -> BridgeResult<NapiCatalogAtlasPage> {
-  let statistics = atlas.statistics();
-  let weights = descriptor
-    .design_weights(location)?
-    .into_iter()
-    .map(f64::from)
-    .collect::<Vec<_>>();
-  let preview_extents = descriptor.preview_extents(atlas)?;
-
-  Ok(NapiCatalogAtlasPage {
-    generation,
-    page_index,
-    band_count: atlas.band_count(),
-    weight_count: u32::try_from(weights.len()).or_overflow()?,
-    layout: napi_slug_layout(layout)?,
-    preview_extents: NapiSlugPreviewExtents {
-      horizontal: f64::from(preview_extents.horizontal),
-      minimum_y: f64::from(preview_extents.minimum_y),
-      maximum_y: f64::from(preview_extents.maximum_y),
-    },
-    glyphs: descriptor
-      .glyphs()
-      .iter()
-      .map(|(glyph, default_glyph)| {
-        Ok(NapiCatalogAtlasGlyph {
-          glyph_id: identity.glyph_id(GlyphIndex::new(*glyph))?.to_string(),
-          default_glyph: default_glyph.get(),
-          exact_sources: descriptor
-            .exact_glyphs()
-            .iter()
-            .filter(|(root, _, _)| root == glyph)
-            .map(|(_, source, glyph_index)| {
-              let source_id = identity.source_id(shift_backends::SourceIndex::new(*source))?;
-              Ok(NapiSlugExactSource {
-                source_id: source_id.to_string(),
-                glyph_index: glyph_index.get(),
-              })
-            })
-            .collect::<BridgeResult<Vec<_>>>()?,
-        })
-      })
-      .collect::<BridgeResult<Vec<_>>>()?,
-    weights,
-    atlas_glyph_count: u32::try_from(statistics.glyph_count).or_overflow()?,
-    curve_count: u32::try_from(statistics.curve_count).or_overflow()?,
-    component_count: u32::try_from(statistics.component_count).or_overflow()?,
-  })
-}
-
-fn napi_slug_atlas(
-  generation: u32,
-  authored: &AuthoredAtlas,
-  layout: VariableLayout,
-) -> BridgeResult<NapiSlugAtlas> {
-  let statistics = authored.atlas().statistics();
-  let glyphs = authored
-    .glyphs()
-    .iter()
-    .map(|glyph| NapiSlugGlyph {
-      glyph_id: glyph.glyph_id.to_string(),
-      default_glyph: glyph.authored.default_glyph.get(),
-      exact_sources: glyph
-        .authored
-        .exact_sources
-        .iter()
-        .map(|source| NapiSlugExactSource {
-          source_id: source.source_id.to_string(),
-          glyph_index: source.glyph_index.get(),
-        })
-        .collect(),
-    })
-    .collect();
-  let weight_sets = authored
-    .weight_sets()
-    .iter()
-    .map(|set| NapiSlugWeightSet {
-      basis: NapiInterpolationBasis::from(WireInterpolationBasis::from(set.basis())),
-      source_weight_indices: set.source_weight_indices().to_vec(),
-    })
-    .collect();
-
-  let preview_extents = authored.preview_extents()?;
-
-  Ok(NapiSlugAtlas {
-    generation,
-    band_count: authored.atlas().band_count(),
-    weight_count: authored.weight_count(),
-    layout: napi_slug_layout(layout)?,
-    preview_extents: NapiSlugPreviewExtents {
-      horizontal: f64::from(preview_extents.horizontal),
-      minimum_y: f64::from(preview_extents.minimum_y),
-      maximum_y: f64::from(preview_extents.maximum_y),
-    },
-    glyphs,
-    weight_sets,
-    atlas_glyph_count: u32::try_from(statistics.glyph_count).or_overflow()?,
-    curve_count: u32::try_from(statistics.curve_count).or_overflow()?,
-    component_count: u32::try_from(statistics.component_count).or_overflow()?,
-  })
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DocumentVersion(u64);
 
@@ -824,7 +629,7 @@ impl Task for ExportFontTask {
   fn compute(&mut self) -> Result<Self::Output> {
     FontExporter::new()
       .export(&self.snapshot, self.request.clone())
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+      .map_err(generic_failure)
   }
 
   fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -872,32 +677,32 @@ impl ToWire for DirectoryGlyph {
 
 impl ToWire for DirectorySource {
   type Id = SourceId;
-  type Wire = Source;
+  type Wire = shift_font::Source;
 
-  fn to_wire(&self, id: &SourceId, identity: &SourceIdentity) -> Source {
+  fn to_wire(&self, id: &SourceId, identity: &SourceIdentity) -> shift_font::Source {
     let metrics = &self.metrics;
-    Source {
-      id: *id,
-      name: self.name.clone(),
-      location: identity.location(&self.location),
-      filename: self.filename.clone(),
-      metric_values: identity
+    let location =
+      shift_font::DesignLocation::from_map(identity.axis_values(self.location.iter().copied()));
+    let mut source =
+      shift_font::Source::with_id(*id, self.name.clone(), location, self.filename.clone());
+    source.set_metric_values(
+      identity
         .metric_ids
         .iter()
         .zip(MetricKind::STANDARD)
         .filter_map(|(metric_id, kind)| {
-          Some(SourceMetricValue {
-            metric_id: *metric_id,
-            position: metrics.position(kind)?,
-            overshoot: 0.0,
-          })
+          Some((
+            *metric_id,
+            shift_font::MetricValue::new(metrics.position(kind)?, 0.0),
+          ))
         })
         .collect(),
-      italic_angle: metrics.italic_angle,
-      line_gap: Some(metrics.line_gap),
-      underline_position: metrics.underline_position,
-      underline_thickness: metrics.underline_thickness,
-    }
+    );
+    source.set_italic_angle(metrics.italic_angle);
+    source.set_line_gap(Some(metrics.line_gap));
+    source.set_underline_position(metrics.underline_position);
+    source.set_underline_thickness(metrics.underline_thickness);
+    source
   }
 }
 
@@ -928,7 +733,7 @@ struct SourceIdentity {
 }
 
 impl SourceIdentity {
-  fn new(directory: &FontDirectory, glyph_ids: &SourceGlyphIds) -> BridgeResult<Self> {
+  fn new(directory: &FontDirectory, glyph_ids: &SourceIds) -> BridgeResult<Self> {
     let glyph_ids = directory
       .glyphs()
       .iter()
@@ -1143,29 +948,6 @@ pub struct Bridge {
   slug_generation: u32,
   slug_atlas: Option<SlugAtlasGeneration>,
   source_atlas_descriptors: BTreeMap<u32, SourceAtlasDescriptor>,
-  shaper_fonts: ShaperFontState,
-  /// Shaper for the current font; `None` until the next shape after a change.
-  shaper: Option<LiveShaper>,
-}
-
-/// Where a persisted change leaves the font, as the session that made it
-/// claims.
-#[napi(string_enum = "camelCase")]
-pub enum NapiSaveState {
-  /// The font now differs from the saved document.
-  Unsaved,
-  /// The font is back to the saved document, as an undo or redo onto the
-  /// saved position leaves it; the store verifies this before trusting it.
-  MatchesSaved,
-}
-
-impl From<NapiSaveState> for shift_store::SaveState {
-  fn from(state: NapiSaveState) -> Self {
-    match state {
-      NapiSaveState::Unsaved => Self::Unsaved,
-      NapiSaveState::MatchesSaved => Self::MatchesSaved,
-    }
-  }
 }
 
 #[napi]
@@ -1180,24 +962,75 @@ impl Bridge {
       slug_generation: 0,
       slug_atlas: None,
       source_atlas_descriptors: BTreeMap::new(),
-      shaper_fonts: ShaperFontState::default(),
-      shaper: None,
     }
   }
 
-  #[napi]
-  pub fn create_untitled_workspace(
+  /// Answers one [`workspace::NativeWorkspace`] request, as its generated
+  /// client encoded it: the method's index, its numbers, and its blobs, the
+  /// last of them the names it uses. A failure is in the reply, as the
+  /// method's error.
+  ///
+  /// # Errors
+  ///
+  /// Fails only when JavaScript cannot allocate the reply.
+  #[napi(
+    ts_args_type = "method: number, numbers: Float64Array, blobs: readonly Uint8Array[]",
+    ts_return_type = "{ numbers: Float64Array; blobs: Uint8Array[] }"
+  )]
+  pub fn workspace_request<'env>(
     &mut self,
-    store_path: String,
-    options: Option<NapiNewWorkspace>,
-  ) -> errors::Result<()> {
-    self.workspace = Some(FontWorkspace::create_untitled(
-      store_path,
-      new_workspace_from_options(options),
-    )?);
-    self.retained_source = None;
-    self.reset_versions();
-    Ok(())
+    env: &'env Env,
+    method: u32,
+    numbers: Float64ArraySlice<'_>,
+    blobs: Vec<Uint8ArraySlice<'_>>,
+  ) -> Result<PackedReply<'env>> {
+    answer(env, &numbers, &blobs, |input, blobs, names| {
+      native_workspace_request(self, method, input, blobs, names)
+    })
+  }
+
+  /// Answers one [`atlas::NativeAtlas`] request, as
+  /// [`Self::workspace_request`] answers a workspace one.
+  ///
+  /// # Errors
+  ///
+  /// Fails only when JavaScript cannot allocate the reply.
+  #[napi(
+    ts_args_type = "method: number, numbers: Float64Array, blobs: readonly Uint8Array[]",
+    ts_return_type = "{ numbers: Float64Array; blobs: Uint8Array[] }"
+  )]
+  pub fn atlas_request<'env>(
+    &mut self,
+    env: &'env Env,
+    method: u32,
+    numbers: Float64ArraySlice<'_>,
+    blobs: Vec<Uint8ArraySlice<'_>>,
+  ) -> Result<PackedReply<'env>> {
+    answer(env, &numbers, &blobs, |input, blobs, names| {
+      native_atlas_request(self, method, input, blobs, names)
+    })
+  }
+
+  /// Answers one [`source::NativeSource`] request, as
+  /// [`Self::workspace_request`] answers a workspace one.
+  ///
+  /// # Errors
+  ///
+  /// Fails only when JavaScript cannot allocate the reply.
+  #[napi(
+    ts_args_type = "method: number, numbers: Float64Array, blobs: readonly Uint8Array[]",
+    ts_return_type = "{ numbers: Float64Array; blobs: Uint8Array[] }"
+  )]
+  pub fn source_request<'env>(
+    &mut self,
+    env: &'env Env,
+    method: u32,
+    numbers: Float64ArraySlice<'_>,
+    blobs: Vec<Uint8ArraySlice<'_>>,
+  ) -> Result<PackedReply<'env>> {
+    answer(env, &numbers, &blobs, |input, blobs, names| {
+      native_source_request(self, method, input, blobs, names)
+    })
   }
 
   #[napi(ts_return_type = "Promise<NapiFontExportResult>")]
@@ -1206,9 +1039,7 @@ impl Bridge {
     request: NapiFontExportRequest,
   ) -> Result<AsyncTask<ExportFontTask>> {
     Ok(AsyncTask::new(ExportFontTask {
-      snapshot: self
-        .save_snapshot()
-        .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?,
+      snapshot: self.save_snapshot().map_err(generic_failure)?,
       request: request.try_into()?,
     }))
   }
@@ -1234,345 +1065,9 @@ impl Bridge {
   pub fn document_specimen(&mut self) -> Result<AsyncTask<crate::specimen::SpecimenTask>> {
     Ok(AsyncTask::new(crate::specimen::SpecimenTask {
       input: crate::specimen::SpecimenInput::Snapshot(
-        self
-          .specimen_snapshot()
-          .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?,
+        self.specimen_snapshot().map_err(generic_failure)?,
       ),
     }))
-  }
-
-  #[napi]
-  pub fn document_state(&self) -> errors::Result<NapiDocumentState> {
-    self.document_state_snapshot()
-  }
-
-  #[allow(clippy::unused_self, reason = "a JavaScript instance method")]
-  #[napi]
-  pub fn inspect_document(&self, path: String) -> errors::Result<NapiDocumentIdentity> {
-    FontWorkspace::inspect_document(path)?.try_into()
-  }
-
-  #[napi]
-  pub fn close_workspace(&mut self) {
-    self.workspace = None;
-    self.reset_versions();
-  }
-
-  #[napi]
-  pub fn open_document(&mut self, path: String, recovery_path: String) -> errors::Result<()> {
-    self.workspace = Some(FontWorkspace::open_document(path, recovery_path)?);
-    self.retained_source = None;
-    self.reset_versions();
-    Ok(())
-  }
-
-  #[napi]
-  pub fn open_workspace(&mut self, path: String, store_path: String) -> errors::Result<()> {
-    self.workspace = Some(FontWorkspace::open(path, store_path)?);
-    self.retained_source = None;
-    self.reset_versions();
-    Ok(())
-  }
-
-  #[napi]
-  pub fn resume_workspace(&mut self, store_path: String) -> errors::Result<()> {
-    self.workspace = Some(FontWorkspace::resume(store_path)?);
-    self.retained_source = None;
-    self.reset_versions();
-    Ok(())
-  }
-
-  #[napi]
-  pub fn open_font_source(&mut self, path: String) -> errors::Result<NapiFontSnapshot> {
-    let source = RetainedSource::open(Path::new(&path))?;
-    let snapshot = source.snapshot()?;
-    self.workspace = None;
-    self.retained_source = Some(source);
-    self.slug_atlas = None;
-    self.source_atlas_descriptors.clear();
-    Ok(snapshot.into())
-  }
-
-  #[napi]
-  pub fn close_font_source(&mut self) {
-    self.retained_source = None;
-    self.slug_atlas = None;
-    self.source_atlas_descriptors.clear();
-  }
-
-  #[napi]
-  pub fn set_workspace_id(&mut self, workspace_id: String) -> errors::Result<NapiDocumentState> {
-    self.workspace_mut()?.set_workspace_id(&workspace_id)?;
-    self.document_state_snapshot()
-  }
-
-  #[napi]
-  pub fn save_workspace(&mut self) -> errors::Result<NapiDocumentState> {
-    self.workspace_mut()?.save()?;
-    self.mark_saved();
-    self.document_state_snapshot()
-  }
-
-  #[napi]
-  pub fn save_workspace_as_document(
-    &mut self,
-    path: String,
-    recovery_path: String,
-  ) -> errors::Result<NapiDocumentState> {
-    self
-      .workspace_mut()?
-      .save_as_document(path, recovery_path)?;
-    self.mark_saved();
-    self.document_state_snapshot()
-  }
-
-  #[napi]
-  pub fn discard_workspace_changes(&mut self) -> errors::Result<NapiDocumentState> {
-    self.workspace_mut()?.discard_recovery()?;
-    self.reset_versions();
-    self.document_state_snapshot()
-  }
-
-  /// Returns the font-wide colour data as JSON, with palettes and the paint graph of every
-  /// colour glyph.
-  ///
-  /// The payload is the serialised [`shift_font::ColorData`], whose paint graph is recursive and
-  /// so has no flat wire struct. It is empty for a font without colour glyphs.
-  #[napi]
-  pub fn get_color_data(&self) -> errors::Result<String> {
-    Ok(color_data_json(self.font()?.color()))
-  }
-
-  /// The open font's metadata and its glyph and layer directory, every
-  /// layer a placeholder, as named MessagePack: what a window's engine session
-  /// opens with.
-  ///
-  /// # Errors
-  ///
-  /// Fails when no workspace is open or the directory cannot be encoded.
-  #[napi]
-  pub fn encoded_directory(&self) -> errors::Result<Uint8Array> {
-    let directory = self.workspace()?.directory()?;
-    Ok(Uint8Array::new(
-      rmp_serde::to_vec_named(&directory).map_err(BridgeError::from)?,
-    ))
-  }
-
-  #[napi]
-  pub fn get_metadata(&self) -> errors::Result<intents::FontMetadata> {
-    Ok(FontMetadata::from(self.font()?.metadata()).into())
-  }
-
-  #[napi]
-  pub fn get_metrics(&self) -> errors::Result<NapiFontMetrics> {
-    Ok(FontMetrics::from(self.font()?.metrics()).into())
-  }
-
-  /// Lists glyph records whose layers are only those on [`Font::masters`], so every listed
-  /// layer's source is one [`Self::get_sources`] returns.
-  #[napi]
-  pub fn get_glyphs(&self) -> errors::Result<Vec<NapiGlyphRecord>> {
-    let workspace = self.workspace()?;
-    let mut component_references = workspace.glyph_component_references()?;
-    let glyphs: Vec<&Glyph> = workspace.font().glyphs().collect();
-    self.glyph_records(&glyphs, |glyph_id| {
-      Ok(component_references.remove(&glyph_id).unwrap_or_default())
-    })
-  }
-
-  /// The records of the glyphs `changes` changed, as they are now, and the
-  /// glyphs it removed: what a reply to the edit carries instead of every
-  /// record, which on a 65K-glyph font took 128 ms to build.
-  fn glyph_record_changes(
-    &self,
-    changes: &FontChangeSet,
-  ) -> errors::Result<NapiGlyphRecordChanges> {
-    let workspace = self.workspace()?;
-    let font = workspace.font();
-    let mut glyphs = Vec::new();
-    let mut removed = Vec::new();
-    for glyph_id in changes.record_glyph_ids() {
-      match font.glyph(glyph_id) {
-        Some(glyph) => glyphs.push(glyph),
-        None => removed.push(glyph_id.to_string()),
-      }
-    }
-
-    let updated = self.glyph_records(&glyphs, |glyph_id| {
-      Ok(workspace.referenced_glyph_ids_for_glyph(glyph_id)?)
-    })?;
-    Ok(NapiGlyphRecordChanges { updated, removed })
-  }
-
-  /// The records of `glyphs` sorted by name, each listing only layers on
-  /// [`Font::masters`] and the component bases `component_bases` reads for it.
-  fn glyph_records(
-    &self,
-    glyphs: &[&Glyph],
-    mut component_bases: impl FnMut(GlyphId) -> errors::Result<Vec<GlyphId>>,
-  ) -> errors::Result<Vec<NapiGlyphRecord>> {
-    let font = self.font()?;
-    let categories = shift_backends::record_categories(glyphs.iter().copied(), font.lib());
-    let mut records = glyphs
-      .iter()
-      .map(|glyph| {
-        let mut record = GlyphRecord::from(*glyph);
-        if let Some(category) = categories.get(&glyph.id()) {
-          record.mark = category.mark;
-          record.nonspacing_mark = category.nonspacing_mark;
-          record.ligature = category.ligature.map(|ligature| {
-            match ligature {
-              shift_backends::PropagationLigature::Explicit => "explicit",
-              shift_backends::PropagationLigature::Subcategory => "subcategory",
-            }
-            .to_string()
-          });
-        }
-        record.component_base_glyph_ids = component_bases(glyph.id())?;
-        record.layers = font
-          .master_layers(glyph)
-          .map(|layer| GlyphLayerRecord::from(layer.as_ref()))
-          .collect();
-        Ok(NapiGlyphRecord::from(record))
-      })
-      .collect::<errors::Result<Vec<_>>>()?;
-    records.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(records)
-  }
-
-  /// Applies one intent set as a single atomic workspace apply: every kind
-  /// — editing and create alike — decodes into one
-  /// `FontWorkspace::apply` call. One call = one SQLite transaction = one
-  /// undo step, however many intents the set batches.
-  #[napi]
-  pub fn apply(
-    &mut self,
-    intents: Vec<intents::FontIntent>,
-    label: Option<String>,
-  ) -> errors::Result<NapiAppliedChange> {
-    if intents.is_empty() {
-      return Ok(NapiAppliedChange {
-        layers: Vec::new(),
-        next: None,
-        dependents: Vec::new(),
-      });
-    }
-
-    let mut set = FontIntentSet::default();
-    for intent in intents {
-      set.intents.push(shift_font::FontIntent::try_from(intent)?);
-    }
-
-    let outcome = self.workspace_mut()?.apply(&set, label)?;
-    self.mark_font_changed();
-
-    self.applied_echo(outcome)
-  }
-
-  /// Assembles the pure-state echo for an applied outcome: replace-grade
-  /// layers plus dependent composites. Shared by apply/undo/redo. Font-level
-  /// lists (axes, sources, …) ride along whole whenever the change set
-  /// touched them; glyph records only for the glyphs it changed.
-  fn applied_echo(&self, outcome: shift_font::AppliedIntents) -> errors::Result<NapiAppliedChange> {
-    let impact = outcome.changes.impact();
-    let glyphs_changed = impact.contains(FontChangeImpact::GLYPHS);
-
-    let touched_layer_ids: Vec<LayerId> = outcome
-      .layers
-      .iter()
-      .map(|touched| touched.layer.id())
-      .collect();
-    let dependents = self
-      .workspace()?
-      .dependent_glyph_ids_for_layers(&touched_layer_ids)?
-      .into_iter()
-      .map(|name| name.to_string())
-      .collect();
-
-    let layers = outcome
-      .layers
-      .into_iter()
-      .map(|touched| NapiLayerReplaced {
-        layer_id: touched.layer.id().to_string(),
-        structure: touched
-          .structural
-          .then(|| GlyphStructure::from(touched.layer.as_ref()).into()),
-        values: shift_wire::values_from_layer(touched.layer.as_ref()).into(),
-        changed: GlyphChangedEntities::default().into(),
-      })
-      .collect();
-
-    let next = FontReplacement::changed_by(self.font()?, impact)?
-      .map(|replacement| -> errors::Result<NapiFontReplacement> {
-        let glyph_changes = glyphs_changed
-          .then(|| self.glyph_record_changes(&outcome.changes))
-          .transpose()?;
-        Ok(NapiFontReplacement::new(replacement, glyph_changes))
-      })
-      .transpose()?;
-
-    Ok(NapiAppliedChange {
-      layers,
-      next,
-      dependents,
-    })
-  }
-
-  /// Applies the most recent ledger entry's inverse changeset; `null` when
-  /// the undo stack is empty.
-  #[napi]
-  pub fn undo(&mut self) -> errors::Result<Option<NapiAppliedChange>> {
-    let Some(outcome) = self.workspace_mut()?.undo()? else {
-      return Ok(None);
-    };
-
-    self.mark_font_changed();
-    Ok(Some(self.applied_echo(outcome)?))
-  }
-
-  /// Reapplies the most recently undone changeset; `null` when the redo
-  /// stack is empty.
-  #[napi]
-  pub fn redo(&mut self) -> errors::Result<Option<NapiAppliedChange>> {
-    let Some(outcome) = self.workspace_mut()?.redo()? else {
-      return Ok(None);
-    };
-
-    self.mark_font_changed();
-    Ok(Some(self.applied_echo(outcome)?))
-  }
-
-  /// Persists a change set, as named MessagePack, that a session over this
-  /// font already applied, and returns its echo: the layers it touched, the
-  /// font-level and glyph records it changed, and the composites that depend
-  /// on them. Nothing is added to this workspace's undo ledger. `save_state`
-  /// claims where the change leaves the font; the store verifies a claim to
-  /// match the saved document before discarding unsaved edits.
-  ///
-  /// # Errors
-  ///
-  /// Fails when the bytes do not decode to a change set, when a `before` in it
-  /// does not match this font, or when the write fails; the font is then
-  /// unchanged.
-  #[napi]
-  pub fn persist(
-    &mut self,
-    change_set: Uint8Array,
-    save_state: NapiSaveState,
-  ) -> errors::Result<NapiAppliedChange> {
-    let change_set: shift_font::CompactChangeSet = rmp_serde::from_slice(&change_set)?;
-    let outcome = self
-      .workspace_mut()?
-      .persist_compact_change_set(change_set, save_state.into())?;
-    self.mark_font_changed();
-    self.applied_echo(outcome)
-  }
-
-  /// Permanently removes every redo entry without changing font or dirty state.
-  #[napi]
-  pub fn discard_redo(&mut self) -> errors::Result<()> {
-    self.workspace_mut()?.discard_redo();
-    Ok(())
   }
 
   /// Glyph-addressed snapshots for renderer-local synchronous font state.
@@ -1618,32 +1113,6 @@ impl Bridge {
     Ok(snapshots.into_each())
   }
 
-  /// Reads exact authored layers by stable layer identity.
-  ///
-  /// Results preserve request order and contain accepted workspace state
-  /// only. Components are not resolved, so a layer with a broken component
-  /// reference remains readable.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error when any identity is malformed or absent from the font.
-  #[napi(ts_args_type = "layerIds: Array<LayerId>")]
-  pub fn read_layers(
-    &mut self,
-    layer_ids: Vec<String>,
-  ) -> errors::Result<Vec<NapiGlyphLayerSnapshot>> {
-    let (layer_ids, glyph_ids) = self.layer_owners(&layer_ids)?;
-    let font = self.acquire_and_font(&glyph_ids, AcquireScope::Glyphs)?;
-
-    layer_ids
-      .iter()
-      .zip(glyph_ids)
-      .map(|(layer_id, glyph_id)| {
-        Ok(layer_snapshot(glyph_id, font.require_layer(*layer_id)?).into())
-      })
-      .collect()
-  }
-
   /// Reads exact authored layers with their composited geometry.
   ///
   /// Each root keeps its requested authored geometry; components resolve at
@@ -1657,7 +1126,8 @@ impl Bridge {
   /// cannot resolve, or referenced interpolation is incompatible.
   #[napi(ts_args_type = "layerIds: Array<LayerId>")]
   pub fn resolve_layers(&mut self, layer_ids: Vec<String>) -> errors::Result<Vec<NapiLayerRead>> {
-    let (layer_ids, glyph_ids) = self.layer_owners(&layer_ids)?;
+    let layer_ids = parse_id_list::<LayerId>(&layer_ids)?;
+    let glyph_ids = self.layer_owners(&layer_ids)?;
     let font = self.acquire_and_font(&glyph_ids, AcquireScope::ComponentClosure)?;
 
     layer_ids
@@ -1670,53 +1140,6 @@ impl Bridge {
         })
       })
       .collect()
-  }
-
-  /// Parses layer identities and finds each owning glyph, in request order.
-  fn layer_owners(&self, layer_ids: &[String]) -> errors::Result<(Vec<LayerId>, Vec<GlyphId>)> {
-    let font = self.font()?;
-    let layer_ids = parse_id_list::<LayerId>(layer_ids)?;
-    let glyph_ids = layer_ids
-      .iter()
-      .map(|layer_id| Ok(font.require_layer_owner(*layer_id)?))
-      .collect::<errors::Result<Vec<_>>>()?;
-    Ok((layer_ids, glyph_ids))
-  }
-
-  /// Derives entity mappings and structural diagnostics between two layers.
-  ///
-  /// Both layers must belong to the same glyph. The read acquires that glyph's
-  /// authored layers before matching, so sparse workspace residency cannot
-  /// produce an incomplete result. Missing layers and cross-glyph requests are
-  /// rejected rather than represented as compatibility differences.
-  #[napi(ts_args_type = "referenceLayerId: LayerId, targetLayerId: LayerId")]
-  pub fn get_layer_match(
-    &mut self,
-    reference_layer_id: String,
-    target_layer_id: String,
-  ) -> errors::Result<NapiLayerMatch> {
-    let reference_layer_id = parse::<LayerId>(&reference_layer_id)?;
-    let target_layer_id = parse::<LayerId>(&target_layer_id)?;
-    let (reference_glyph_id, target_glyph_id) = {
-      let font = self.font()?;
-      let reference_glyph_id = font.require_layer_owner(reference_layer_id)?;
-      let target_glyph_id = font.require_layer_owner(target_layer_id)?;
-      (reference_glyph_id, target_glyph_id)
-    };
-    if reference_glyph_id != target_glyph_id {
-      return Err(BridgeError::InvalidInput {
-        kind: "layer match",
-        value: format!(
-          "layers {reference_layer_id} and {target_layer_id} belong to different glyphs"
-        ),
-      });
-    }
-
-    let font = self.acquire_and_font(&[reference_glyph_id], AcquireScope::Glyphs)?;
-    let reference = font.require_layer(reference_layer_id)?;
-    let target = font.require_layer(target_layer_id)?;
-
-    Ok(WireLayerMatch::from_layers(reference, target).into())
   }
 
   /// Returns compact glyph projections without resolving a location.
@@ -1765,7 +1188,7 @@ impl Bridge {
   pub fn get_glyph_previews(
     &mut self,
     glyph_ids: Vec<String>,
-    location: intents::Location,
+    location: values::Location,
   ) -> errors::Result<Vec<NapiGlyphPreview>> {
     let glyph_ids = parse_id_list::<GlyphId>(&glyph_ids)?;
     let location =
@@ -1783,83 +1206,6 @@ impl Bridge {
       .collect();
 
     Ok(previews)
-  }
-
-  /// Builds one complete authored Slug generation without resolving a location.
-  ///
-  /// The returned metadata is small enough for the ordinary sync lane. Packed
-  /// geometry remains native until `stream_slug_atlas` emits bounded chunks.
-  #[napi]
-  pub fn prepare_slug_atlas(&mut self, alignment: u32) -> errors::Result<NapiSlugAtlas> {
-    let total_started = Instant::now();
-    let started = Instant::now();
-    self.workspace_mut()?.acquire_all_layers()?;
-    let acquisition = started.elapsed();
-    let (authored, profile) =
-      build_authored_atlas_profiled(self.font()?, shift_slug::DEFAULT_BAND_COUNT)?;
-    let started = Instant::now();
-    let layout = authored.atlas().layout(alignment as usize)?;
-    let layout_elapsed = started.elapsed();
-    self.slug_generation = self.slug_generation.checked_add(1).or_overflow()?;
-    let generation = self.slug_generation;
-    let result = napi_slug_atlas(generation, &authored, layout)?;
-    log_slug_atlas_profile(
-      "complete",
-      acquisition,
-      profile,
-      layout_elapsed,
-      total_started.elapsed(),
-    );
-    self.slug_atlas = Some(SlugAtlasGeneration {
-      generation,
-      alignment: alignment as usize,
-      atlas: authored.into_atlas(),
-    });
-    Ok(result)
-  }
-
-  /// Returns the durable authored revision used to address disposable cached atlas pages.
-  #[napi]
-  pub fn slug_atlas_cache_revision(&self) -> errors::Result<String> {
-    Ok(self.workspace()?.slug_atlas_cache_revision()?)
-  }
-
-  /// Builds one ordered root-glyph page plus its transitive component geometry.
-  ///
-  /// The page uses the same packed layout as a complete atlas, but excludes
-  /// unrelated roots so the renderer can make its viewport resident first.
-  #[napi(ts_args_type = "glyphIds: Array<GlyphId>, alignment: number")]
-  pub fn prepare_slug_atlas_page(
-    &mut self,
-    glyph_ids: Vec<String>,
-    alignment: u32,
-  ) -> errors::Result<NapiSlugAtlas> {
-    let total_started = Instant::now();
-    let glyph_ids = parse_id_list::<GlyphId>(&glyph_ids)?;
-    let started = Instant::now();
-    let font = self.acquire_and_font(&glyph_ids, AcquireScope::ComponentClosure)?;
-    let acquisition = started.elapsed();
-    let (authored, profile) =
-      build_authored_atlas_page_profiled(font, &glyph_ids, shift_slug::DEFAULT_BAND_COUNT)?;
-    let started = Instant::now();
-    let layout = authored.atlas().layout(alignment as usize)?;
-    let layout_elapsed = started.elapsed();
-    self.slug_generation = self.slug_generation.checked_add(1).or_overflow()?;
-    let generation = self.slug_generation;
-    let result = napi_slug_atlas(generation, &authored, layout)?;
-    log_slug_atlas_profile(
-      "page",
-      acquisition,
-      profile,
-      layout_elapsed,
-      total_started.elapsed(),
-    );
-    self.slug_atlas = Some(SlugAtlasGeneration {
-      generation,
-      alignment: alignment as usize,
-      atlas: authored.into_atlas(),
-    });
-    Ok(result)
   }
 
   /// Streams the prepared generation with native Web Stream backpressure.
@@ -1912,7 +1258,7 @@ impl Bridge {
             receiver_closed = sender.blocking_send(Ok(chunk.bytes.to_vec())).is_err();
           });
       if !receiver_closed && let Err(error) = result {
-        let _ = sender.blocking_send(Err(Error::new(Status::GenericFailure, error.to_string())));
+        let _ = sender.blocking_send(Err(generic_failure(error)));
       }
     });
 
@@ -1937,82 +1283,6 @@ impl Bridge {
     self.stream_slug_atlas(env, generation, maximum_length)
   }
 
-  /// Releases a prepared generation after adapter rejection or initialization failure.
-  #[napi]
-  pub fn discard_slug_atlas(&mut self, generation: u32) {
-    if self
-      .slug_atlas
-      .as_ref()
-      .is_some_and(|prepared| prepared.generation == generation)
-    {
-      self.slug_atlas = None;
-    }
-  }
-
-  /// Releases one rejected prepared page.
-  #[napi]
-  pub fn discard_slug_atlas_page(&mut self, generation: u32) {
-    self.discard_slug_atlas(generation);
-  }
-
-  /// Reads one location-independent source glyph and its complete component closure.
-  #[napi(ts_args_type = "glyphId: GlyphId")]
-  pub fn read_font_source_glyph(&self, glyph_id: String) -> errors::Result<Vec<NapiGlyphSnapshot>> {
-    let glyph_id = parse::<GlyphId>(&glyph_id)?;
-    Ok(self.retained_source()?.glyph(glyph_id)?.into_each())
-  }
-
-  /// Builds one source-neutral catalog page through the active format adapter.
-  #[napi(
-    ts_args_type = "pageIndex: number, glyphIds: Array<GlyphId>, coordinates: Array<number>, alignment: number"
-  )]
-  pub fn prepare_source_atlas_page(
-    &mut self,
-    page_index: u32,
-    glyph_ids: Vec<String>,
-    coordinates: Vec<f64>,
-    alignment: u32,
-  ) -> errors::Result<NapiCatalogAtlasPage> {
-    self.slug_generation = self.slug_generation.checked_add(1).or_overflow()?;
-    let generation = self.slug_generation;
-    let (atlas, descriptor, location, layout) = {
-      let source = self.retained_source()?;
-      let location = source.location(coordinates)?;
-      let roots = parse_id_list::<GlyphId>(&glyph_ids)?
-        .iter()
-        .map(|glyph_id| source.identity.glyph_index(*glyph_id))
-        .collect::<BridgeResult<Vec<_>>>()?;
-      let page = match &source.font {
-        OpenedFont::OpenType(font) => {
-          build_binary_atlas_page(font, &roots, shift_slug::DEFAULT_BAND_COUNT)?
-        }
-        source => {
-          let input = variable_glyph_inputs(source, &roots)?;
-          compile_retained_page(&input, shift_slug::DEFAULT_BAND_COUNT)?
-        }
-      };
-      let (atlas, descriptor) = page.into_parts();
-      let layout = atlas.layout(alignment as usize)?;
-      (atlas, descriptor, location, layout)
-    };
-    let result = napi_source_atlas_page(
-      generation,
-      page_index,
-      &atlas,
-      &descriptor,
-      &location,
-      layout,
-      &self.retained_source()?.identity,
-    )?;
-    self.source_atlas_descriptors.insert(page_index, descriptor);
-    self.slug_atlas = Some(SlugAtlasGeneration {
-      generation,
-      alignment: alignment as usize,
-      atlas,
-    });
-    Ok(result)
-  }
-
   /// Streams one prepared source page through the same bounded atlas lane.
   #[napi]
   #[allow(
@@ -2028,165 +1298,12 @@ impl Bridge {
     self.stream_slug_atlas(env, generation, maximum_length)
   }
 
-  /// Releases a rejected source page and its retained weight descriptor.
   #[napi]
-  pub fn discard_source_atlas_page(&mut self, page_index: u32, generation: u32) {
-    self.discard_slug_atlas(generation);
-    self.source_atlas_descriptors.remove(&page_index);
-  }
-
-  /// Evaluates every resident page's small weight buffer at one source location.
-  #[napi]
-  pub fn source_atlas_weights(
-    &self,
-    coordinates: Vec<f64>,
-  ) -> errors::Result<Vec<NapiCatalogAtlasWeights>> {
-    let location = self.retained_source()?.location(coordinates)?;
-
-    self
-      .source_atlas_descriptors
-      .iter()
-      .map(|(page_index, descriptor)| {
-        Ok(NapiCatalogAtlasWeights {
-          page_index: *page_index,
-          weights: descriptor
-            .design_weights(&location)?
-            .into_iter()
-            .map(f64::from)
-            .collect(),
-        })
-      })
-      .collect()
-  }
-
-  #[napi]
-  pub fn is_variable(&self) -> errors::Result<bool> {
-    Ok(self.font()?.is_variable())
-  }
-
-  #[napi]
-  pub fn get_axes(&self) -> errors::Result<Vec<intents::Axis>> {
-    Ok(
-      self
-        .font()?
-        .axes()
-        .iter()
-        .map(Axis::from)
-        .map(Into::into)
-        .collect(),
-    )
-  }
-
-  #[napi]
-  pub fn get_axis_mappings(&self) -> errors::Result<Vec<intents::AxisMapping>> {
-    Ok(
-      self
-        .font()?
-        .axis_mappings()
-        .iter()
-        .map(AxisMapping::from)
-        .map(Into::into)
-        .collect(),
-    )
-  }
-
-  #[napi]
-  pub fn get_axis_mapping_bases(&self) -> errors::Result<Vec<NapiAxisMappingBasis>> {
-    Ok(
-      self
-        .font()?
-        .axis_mapping_bases()?
-        .iter()
-        .map(AxisMappingBasis::from)
-        .map(Into::into)
-        .collect(),
-    )
-  }
-
-  #[napi]
-  pub fn get_metric_definitions(&self) -> errors::Result<Vec<intents::MetricDefinition>> {
-    Ok(
-      self
-        .font()?
-        .metric_definitions()
-        .iter()
-        .map(MetricDefinition::from)
-        .map(Into::into)
-        .collect(),
-    )
-  }
-
-  /// Returns the font's tracked Hyperglot language ids in authored order.
-  ///
-  /// `null` when the font lib has no tracked-language key, so the renderer
-  /// applies its own default; an empty array is an explicit empty list.
-  #[napi]
-  pub fn get_language_ids(&self) -> errors::Result<Option<Vec<String>>> {
-    Ok(self.font()?.language_ids())
-  }
-
-  /// Returns the font's kerning groups, per-source pairs, and the basis
-  /// kerning interpolates over.
-  #[napi]
-  pub fn get_kerning(&self) -> errors::Result<NapiKerningSnapshot> {
-    Ok(KerningSnapshot::from(self.font()?).into())
-  }
-
-  #[napi]
-  pub fn get_named_instances(&self) -> errors::Result<Vec<intents::NamedInstance>> {
-    Ok(
-      self
-        .font()?
-        .named_instances()
-        .iter()
-        .map(NamedInstance::from)
-        .map(Into::into)
-        .collect(),
-    )
-  }
-
-  /// Returns the precomputed source-metric interpolation model for this font.
-  #[napi]
-  pub fn get_source_metrics_interpolation(
-    &self,
-  ) -> errors::Result<Option<NapiSourceMetricsInterpolationSnapshot>> {
-    let font = self.font()?;
-    let Some(interpolation) = font.source_metric_interpolation() else {
-      return Ok(None);
-    };
-    let snapshot = SourceMetricsInterpolationSnapshot::from(&interpolation);
-
-    Ok(Some(snapshot.into()))
-  }
-
-  /// Returns the compiled shaping tables, for the editor to shape with
-  /// itself, or `null` when they are still at `known_revision`. Compiles
-  /// them first if the font changed in a way they depend on: glyph order,
-  /// glyph categories, feature code, or axes.
-  #[napi]
-  pub fn shaper_font(
-    &mut self,
-    known_revision: Option<u32>,
-  ) -> errors::Result<Option<crate::shaping::NapiShaperFont>> {
-    let font = Arc::clone(self.live_shaper()?.font());
-    let revision = self.shaper_fonts.revision();
-    if known_revision.is_some_and(|known| u64::from(known) == revision) {
-      return Ok(None);
-    }
-    Ok(Some(crate::shaping::NapiShaperFont::new(revision, &font)))
-  }
-
-  #[napi]
-  pub fn map_location(&self, location: intents::Location) -> errors::Result<intents::Location> {
+  pub fn map_location(&self, location: values::Location) -> errors::Result<values::Location> {
     let external =
       shift_font::ExternalLocation::from_untyped(shift_font::Location::try_from(location)?);
     let mapped = self.font()?.mapped_location(&external)?;
     Ok(shift_wire::Location::from(mapped.as_untyped()).into())
-  }
-
-  #[napi]
-  pub fn get_sources(&self) -> errors::Result<Vec<NapiSource>> {
-    Ok(Source::masters_of(self.font()?).into_each())
   }
 
   /// Snapshots the font with only the glyphs its thumbnail specimen compiles loaded.
@@ -2201,33 +1318,18 @@ impl Bridge {
   }
 
   fn workspace(&self) -> BridgeResult<&FontWorkspace> {
-    self
-      .workspace
-      .as_ref()
-      .ok_or_else(|| BridgeError::InvalidInput {
-        kind: "workspace",
-        value: "no workspace is open".to_string(),
-      })
+    self.workspace.as_ref().ok_or(BridgeError::NoWorkspace)
   }
 
   fn workspace_mut(&mut self) -> BridgeResult<&mut FontWorkspace> {
-    self
-      .workspace
-      .as_mut()
-      .ok_or_else(|| BridgeError::InvalidInput {
-        kind: "workspace",
-        value: "no workspace is open".to_string(),
-      })
+    self.workspace.as_mut().ok_or(BridgeError::NoWorkspace)
   }
 
   fn retained_source(&self) -> BridgeResult<&RetainedSource> {
     self
       .retained_source
       .as_ref()
-      .ok_or_else(|| BridgeError::InvalidInput {
-        kind: "font source",
-        value: "no retained font source is open".to_string(),
-      })
+      .ok_or(BridgeError::NoFontSource)
   }
 
   fn acquire_and_font(
@@ -2242,61 +1344,8 @@ impl Bridge {
   fn font(&self) -> BridgeResult<&Font> {
     Ok(self.workspace()?.font())
   }
-
-  fn document_state_snapshot(&self) -> BridgeResult<NapiDocumentState> {
-    let workspace = self.workspace()?;
-    let source_kind = match workspace.source() {
-      WorkspaceSource::Untitled => "untitled",
-      WorkspaceSource::Document { .. } => "document",
-      WorkspaceSource::Imported { .. } => "imported",
-    };
-    let document_id = workspace
-      .document_metadata()?
-      .map(|metadata| metadata.document_id.to_string());
-    let save_target = workspace.save_target().map(path_to_string).transpose()?;
-    let needs_save_as = !matches!(workspace.source(), WorkspaceSource::Document { .. });
-
-    Ok(NapiDocumentState {
-      source_kind: source_kind.to_string(),
-      document_id,
-      save_target,
-      dirty: workspace.is_dirty()?,
-      needs_save_as,
-    })
-  }
-
-  /// Returns the shaper for the current font, making a new one after a font
-  /// change.
-  fn live_shaper(&mut self) -> BridgeResult<&LiveShaper> {
-    let shaper = match self.shaper.take() {
-      Some(shaper) => shaper,
-      None => self.new_live_shaper()?,
-    };
-    Ok(self.shaper.insert(shaper))
-  }
-
-  /// Updates the shaping tables from the current font and makes a shaper
-  /// with its character mapping. Every layer is acquired first, because a
-  /// glyph's `GDEF` class depends on its anchors.
-  fn new_live_shaper(&mut self) -> BridgeResult<LiveShaper> {
-    self.workspace_mut()?.acquire_all_layers()?;
-    let request = ShaperFontRequest::from_font(self.font()?)?;
-    self.shaper_fonts.update(request)?;
-    let shaper_font =
-      self
-        .shaper_fonts
-        .font()
-        .cloned()
-        .ok_or_else(|| BridgeError::InvalidInput {
-          kind: "font",
-          value: "it has no shaping tables".to_string(),
-        })?;
-    Ok(LiveShaper::new(shaper_font, self.font()?)?)
-  }
-
   fn mark_font_changed(&mut self) {
     self.slug_atlas = None;
-    self.shaper = None;
     self.bump_live_version();
   }
 
@@ -2310,8 +1359,6 @@ impl Bridge {
 
   fn reset_versions(&mut self) {
     self.slug_atlas = None;
-    self.shaper_fonts = ShaperFontState::default();
-    self.shaper = None;
     self.source_atlas_descriptors.clear();
     self.live_version = DocumentVersion::default();
     self.saved_version = DocumentVersion::default();
@@ -2335,48 +1382,38 @@ fn layer_snapshot(glyph_id: GlyphId, layer: &GlyphLayer) -> GlyphLayerSnapshot {
 
 #[cfg(test)]
 mod tests {
+  use super::workspace::{
+    NativeWorkspace, NativeWorkspaceClient, NativeWorkspaceError, SaveState, SourceKind,
+  };
   use super::*;
+  use pack::{Bytes, CarryingNames, Packed};
+  use shift_font::{AnchorSeed, FontIntent, FontIntentSet, PointSeed};
   use shift_wire::bridges::napi::{NapiGlyphSnapshotRequest, NapiGlyphState};
+  use std::cell::RefCell;
   use std::sync::atomic::{AtomicUsize, Ordering};
 
   static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
-  fn create_glyph_napi(name: &str, unicodes: Vec<u32>) -> intents::FontIntent {
-    intents::FontIntent::CreateGlyph {
-      create_glyph: intents::CreateGlyphIntent {
-        glyph_id: GlyphId::new().to_string(),
-        name: name.to_string(),
-        unicodes,
-      },
-    }
+  fn create_glyph_napi(name: &str, unicodes: Vec<u32>) -> FontIntent {
+    create_glyph_napi_with_id(&GlyphId::new().to_string(), name, unicodes)
   }
 
-  fn create_glyph_napi_with_id(
-    glyph_id: &str,
-    name: &str,
-    unicodes: Vec<u32>,
-  ) -> intents::FontIntent {
-    intents::FontIntent::CreateGlyph {
-      create_glyph: intents::CreateGlyphIntent {
-        glyph_id: glyph_id.to_string(),
-        name: name.to_string(),
-        unicodes,
-      },
+  fn create_glyph_napi_with_id(glyph_id: &str, name: &str, unicodes: Vec<u32>) -> FontIntent {
+    shift_font::CreateGlyph {
+      glyph_id: Some(GlyphId::from_raw(glyph_id)),
+      name: name.to_string(),
+      unicodes,
     }
+    .into()
   }
 
-  fn create_glyph_layer_intent(
-    layer_id: &str,
-    glyph_id: &str,
-    source_id: &str,
-  ) -> intents::FontIntent {
-    intents::FontIntent::CreateGlyphLayer {
-      create_glyph_layer: intents::CreateGlyphLayerIntent {
-        layer_id: layer_id.to_string(),
-        glyph_id: glyph_id.to_string(),
-        source_id: source_id.to_string(),
-      },
+  fn create_glyph_layer_intent(layer_id: &str, glyph_id: &str, source_id: &str) -> FontIntent {
+    shift_font::CreateGlyphLayer {
+      layer_id: LayerId::from_raw(layer_id),
+      glyph_id: GlyphId::from_raw(glyph_id),
+      source_id: SourceId::from_raw(source_id),
     }
+    .into()
   }
 
   fn clone_glyph_layer_intent(
@@ -2384,15 +1421,14 @@ mod tests {
     glyph_id: &str,
     source_id: &str,
     from_layer_id: &str,
-  ) -> intents::FontIntent {
-    intents::FontIntent::CloneGlyphLayer {
-      clone_glyph_layer: intents::CloneGlyphLayerIntent {
-        layer_id: layer_id.to_string(),
-        glyph_id: glyph_id.to_string(),
-        source_id: source_id.to_string(),
-        from_layer_id: from_layer_id.to_string(),
-      },
+  ) -> FontIntent {
+    shift_font::CloneGlyphLayer {
+      layer_id: LayerId::from_raw(layer_id),
+      glyph_id: GlyphId::from_raw(glyph_id),
+      source_id: SourceId::from_raw(source_id),
+      from_layer_id: LayerId::from_raw(from_layer_id),
     }
+    .into()
   }
 
   #[test]
@@ -2409,13 +1445,14 @@ mod tests {
 
     let renamed = bridge
       .apply(
-        vec![intents::FontIntent::UpdateGlyph {
-          update_glyph: intents::UpdateGlyphIntent {
-            glyph_id: "glyph_a".to_string(),
-            new_name: "A.alt".to_string(),
+        vec![
+          shift_font::UpdateGlyph {
+            glyph_id: GlyphId::from_raw("glyph_a"),
+            new_name: "A.alt".into(),
             new_unicodes: vec![],
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap()
@@ -2423,11 +1460,14 @@ mod tests {
       .and_then(|next| next.glyph_changes)
       .expect("a rename must echo its glyph's record");
     assert!(renamed.removed.is_empty());
-    let [record] = renamed.updated.as_slice() else {
+    let [record] = &*renamed.updated else {
       panic!("only the renamed glyph's record must cross");
     };
     let listed = bridge.get_glyphs().unwrap();
-    let listed = listed.iter().find(|glyph| glyph.id == "glyph_a").unwrap();
+    let listed = listed
+      .iter()
+      .find(|glyph| glyph.id.as_str() == "glyph_a")
+      .unwrap();
     assert_eq!(
       (
         &record.name,
@@ -2440,17 +1480,7 @@ mod tests {
         &listed.component_base_glyph_ids
       )
     );
-    assert_eq!(record.name, "A.alt");
-
-    bridge.undo().unwrap();
-    let uncreated = bridge
-      .undo()
-      .unwrap()
-      .and_then(|undone| undone.next)
-      .and_then(|next| next.glyph_changes)
-      .expect("undoing a creation must echo the removal");
-    assert!(uncreated.updated.is_empty());
-    assert_eq!(uncreated.removed, ["glyph_b"]);
+    assert_eq!(record.name.as_str(), "A.alt");
   }
 
   #[test]
@@ -2471,7 +1501,7 @@ mod tests {
       .expect("createGlyph must echo records")
       .updated;
     assert_eq!(glyphs.len(), 1);
-    assert_eq!(glyphs[0].name, "A");
+    assert_eq!(glyphs[0].name.as_str(), "A");
     assert!(glyphs[0].layers.is_empty());
     assert!(applied.layers.is_empty());
   }
@@ -2500,10 +1530,10 @@ mod tests {
       .expect("createGlyphLayer must echo records")
       .updated;
     assert_eq!(glyphs[0].layers.len(), 1);
-    assert_eq!(glyphs[0].layers[0].id, layer_id);
-    assert_eq!(glyphs[0].layers[0].source_id, source_id);
+    assert_eq!(glyphs[0].layers[0].id.as_str(), layer_id);
+    assert_eq!(glyphs[0].layers[0].source_id.as_str(), source_id);
     assert_eq!(applied.layers.len(), 1);
-    assert_eq!(applied.layers[0].layer_id, layer_id);
+    assert_eq!(applied.layers[0].layer_id.as_str(), layer_id);
     assert!(applied.layers[0].structure.is_some());
   }
 
@@ -2514,18 +1544,19 @@ mod tests {
 
     let applied = bridge
       .apply(
-        vec![intents::FontIntent::SetXAdvance {
-          set_x_advance: intents::SetXAdvanceIntent {
-            layer_id: layer_id.clone(),
+        vec![
+          shift_font::SetXAdvance {
+            layer_id: LayerId::from_raw(&layer_id),
             width: 642.0,
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
 
     assert!(applied.next.is_none());
-    assert_eq!(applied.layers[0].layer_id, layer_id);
+    assert_eq!(applied.layers[0].layer_id.as_str(), layer_id);
     assert!(applied.layers[0].structure.is_none());
     // canonical values layout: x advance is slot 0
     assert_eq!(applied.layers[0].values[0], 642.0);
@@ -2544,18 +1575,19 @@ mod tests {
         None,
       )
       .unwrap();
-    assert_eq!(created.layers[0].layer_id, layer_id);
+    assert_eq!(created.layers[0].layer_id.as_str(), layer_id);
 
     let contour_id = ContourId::new().to_string();
     bridge
       .apply(
-        vec![intents::FontIntent::AddContour {
-          add_contour: intents::AddContourIntent {
-            layer_id: layer_id.clone(),
-            contour_id: contour_id.clone(),
+        vec![
+          shift_font::AddContour {
+            layer_id: LayerId::from_raw(&layer_id),
+            contour_id: ContourId::from_raw(&contour_id),
             closed: false,
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -2563,12 +1595,12 @@ mod tests {
     (layer_id, contour_id)
   }
 
-  fn seed(id: &str, x: f64, y: f64) -> intents::PointSeed {
-    intents::PointSeed {
-      id: id.to_string(),
+  fn seed(id: &str, x: f64, y: f64) -> PointSeed {
+    PointSeed {
+      id: PointId::from_raw(id),
       x,
       y,
-      point_type: intents::PointType::OnCurve,
+      point_type: shift_font::PointType::OnCurve,
       smooth: false,
     }
   }
@@ -2577,16 +1609,15 @@ mod tests {
     layer_id: &str,
     contour_id: &str,
     before: Option<String>,
-    points: Vec<intents::PointSeed>,
-  ) -> intents::FontIntent {
-    intents::FontIntent::AddPoints {
-      add_points: intents::AddPointsIntent {
-        layer_id: layer_id.to_string(),
-        contour_id: Some(contour_id.to_string()),
-        before,
-        points,
-      },
+    points: Vec<PointSeed>,
+  ) -> FontIntent {
+    shift_font::AddPoints {
+      layer_id: LayerId::from_raw(layer_id),
+      contour_id: Some(ContourId::from_raw(contour_id)),
+      before: before.map(PointId::from_raw),
+      points,
     }
+    .into()
   }
 
   #[test]
@@ -2683,27 +1714,24 @@ mod tests {
     let applied = bridge
       .apply(
         vec![
-          intents::FontIntent::MovePoints {
-            move_points: intents::MovePointsIntent {
-              layer_id: layer_id.clone(),
-              point_ids: vec![p1.clone()],
-              coords: vec![77.0, 88.0],
-            },
-          },
-          intents::FontIntent::SetPointSmooth {
-            set_point_smooth: intents::SetPointSmoothIntent {
-              layer_id: layer_id.clone(),
-              point_id: p1,
-              smooth: true,
-            },
-          },
-          intents::FontIntent::SetContourClosed {
-            set_contour_closed: intents::SetContourClosedIntent {
-              layer_id,
-              contour_id,
-              closed: true,
-            },
-          },
+          shift_font::MovePoints {
+            layer_id: LayerId::from_raw(&layer_id),
+            point_ids: vec![PointId::from_raw(&p1)],
+            coords: vec![77.0, 88.0],
+          }
+          .into(),
+          shift_font::SetPointSmooth {
+            layer_id: LayerId::from_raw(&layer_id),
+            point_id: PointId::from_raw(&p1),
+            smooth: true,
+          }
+          .into(),
+          shift_font::SetContourClosed {
+            layer_id: LayerId::from_raw(&layer_id),
+            contour_id: ContourId::from_raw(&contour_id),
+            closed: true,
+          }
+          .into(),
         ],
         Some("Close Contour".to_string()),
       )
@@ -2754,22 +1782,21 @@ mod tests {
     assert_eq!(state.structure.contours[0].points.len(), 1);
   }
 
-  fn anchor_seed(id: &str, name: Option<&str>, x: f64, y: f64) -> intents::AnchorSeed {
-    intents::AnchorSeed {
-      id: id.to_string(),
+  fn anchor_seed(id: &str, name: Option<&str>, x: f64, y: f64) -> AnchorSeed {
+    AnchorSeed {
+      id: AnchorId::from_raw(id),
       name: name.map(str::to_owned),
       x,
       y,
     }
   }
 
-  fn add_anchors_intent(layer_id: &str, anchors: Vec<intents::AnchorSeed>) -> intents::FontIntent {
-    intents::FontIntent::AddAnchors {
-      add_anchors: intents::AddAnchorsIntent {
-        layer_id: layer_id.to_string(),
-        anchors,
-      },
+  fn add_anchors_intent(layer_id: &str, anchors: Vec<AnchorSeed>) -> FontIntent {
+    shift_font::AddAnchors {
+      layer_id: LayerId::from_raw(layer_id),
+      anchors,
     }
+    .into()
   }
 
   #[test]
@@ -2824,13 +1851,14 @@ mod tests {
 
     let applied = bridge
       .apply(
-        vec![intents::FontIntent::MoveAnchors {
-          move_anchors: intents::MoveAnchorsIntent {
-            layer_id,
-            anchor_ids: vec![a1],
+        vec![
+          shift_font::MoveAnchors {
+            layer_id: LayerId::from_raw(&layer_id),
+            anchor_ids: vec![AnchorId::from_raw(&a1)],
             coords: vec![300.0, 650.0],
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -2864,18 +1892,16 @@ mod tests {
     let missing = AnchorId::new().to_string();
     let result = bridge.apply(
       vec![
-        intents::FontIntent::RemovePoints {
-          remove_points: intents::RemovePointsIntent {
-            layer_id: layer_id.clone(),
-            point_ids: vec![p1.clone()],
-          },
-        },
-        intents::FontIntent::RemoveAnchors {
-          remove_anchors: intents::RemoveAnchorsIntent {
-            layer_id: layer_id.clone(),
-            anchor_ids: vec![missing],
-          },
-        },
+        shift_font::RemovePoints {
+          layer_id: LayerId::from_raw(&layer_id),
+          point_ids: vec![PointId::from_raw(&p1)],
+        }
+        .into(),
+        shift_font::RemoveAnchors {
+          layer_id: LayerId::from_raw(&layer_id),
+          anchor_ids: vec![AnchorId::from_raw(&missing)],
+        }
+        .into(),
       ],
       None,
     );
@@ -2888,18 +1914,16 @@ mod tests {
     let removed = bridge
       .apply(
         vec![
-          intents::FontIntent::RemovePoints {
-            remove_points: intents::RemovePointsIntent {
-              layer_id: layer_id.clone(),
-              point_ids: vec![p1],
-            },
-          },
-          intents::FontIntent::RemoveAnchors {
-            remove_anchors: intents::RemoveAnchorsIntent {
-              layer_id,
-              anchor_ids: vec![a1],
-            },
-          },
+          shift_font::RemovePoints {
+            layer_id: LayerId::from_raw(&layer_id),
+            point_ids: vec![PointId::from_raw(&p1)],
+          }
+          .into(),
+          shift_font::RemoveAnchors {
+            layer_id: LayerId::from_raw(&layer_id),
+            anchor_ids: vec![AnchorId::from_raw(&a1)],
+          }
+          .into(),
         ],
         None,
       )
@@ -2908,36 +1932,6 @@ mod tests {
     let state = glyph_state(&mut bridge, "A");
     assert!(state.structure.contours.is_empty());
     assert!(state.structure.anchors.is_empty());
-  }
-
-  #[test]
-  fn undo_after_add_anchors_removes_them_and_redo_restores() {
-    let mut bridge = bridge_with_workspace();
-    let (layer_id, _) = pen_setup(&mut bridge);
-    let a1 = AnchorId::new().to_string();
-
-    bridge
-      .apply(
-        vec![add_anchors_intent(
-          &layer_id,
-          vec![anchor_seed(&a1, Some("top"), 250.0, 700.0)],
-        )],
-        Some("Add Anchor".to_string()),
-      )
-      .unwrap();
-    assert_eq!(glyph_state(&mut bridge, "A").structure.anchors.len(), 1);
-
-    let undone = bridge.undo().unwrap().expect("one entry to undo");
-    assert_eq!(undone.layers.len(), 1);
-    assert!(glyph_state(&mut bridge, "A").structure.anchors.is_empty());
-
-    let redone = bridge.redo().unwrap().expect("one entry to redo");
-    assert_eq!(redone.layers.len(), 1);
-    let state = glyph_state(&mut bridge, "A");
-    assert_eq!(state.structure.anchors.len(), 1);
-    assert_eq!(state.structure.anchors[0].id, a1);
-    assert_eq!(state.structure.anchors[0].name.as_deref(), Some("top"));
-    assert_eq!(&state.values[1..], &[250.0, 700.0]);
   }
 
   #[test]
@@ -2978,11 +1972,12 @@ mod tests {
       .get_glyphs()
       .unwrap()
       .into_iter()
-      .find(|record| record.name == name)
+      .find(|record| record.name.as_str() == name)
       .expect("glyph record should exist");
     let source_id = default_source_id(bridge);
 
-    glyph_source_state(bridge, &record.id, &source_id).expect("glyph state should be readable")
+    glyph_source_state(bridge, record.id.as_str(), &source_id)
+      .expect("glyph state should be readable")
   }
 
   fn glyph_source_state(
@@ -3016,74 +2011,75 @@ mod tests {
       .map_or(0, |contour| contour.points.len())
   }
 
-  #[test]
-  fn undo_restores_pre_state_and_redo_restores_post_state() {
-    let mut bridge = bridge_with_workspace();
-    let (layer_id, contour_id) = pen_setup(&mut bridge);
-    let p1 = PointId::new().to_string();
-
-    bridge
-      .apply(
-        vec![add_points_intent(
-          &layer_id,
-          &contour_id,
-          None,
-          vec![seed(&p1, 10.0, 20.0)],
-        )],
-        Some("Add Point".to_string()),
-      )
-      .unwrap();
-    assert_eq!(contour_point_count(&mut bridge), 1);
-
-    let undone = bridge.undo().unwrap().expect("one entry to undo");
-    assert_eq!(undone.layers.len(), 1);
-    assert!(undone.layers[0].structure.is_some());
-    assert_eq!(contour_point_count(&mut bridge), 0);
-
-    let redone = bridge.redo().unwrap().expect("one entry to redo");
-    assert_eq!(redone.layers.len(), 1);
-    assert!(redone.layers[0].structure.is_some());
-    assert_eq!(contour_point_count(&mut bridge), 1);
+  /// A client of `bridge`'s workspace requests, encoding and decoding each
+  /// one as the utility process's generated class does, without napi.
+  fn workspace_client(
+    bridge: &RefCell<Bridge>,
+  ) -> NativeWorkspaceClient<
+    CarryingNames<impl Fn(u32, Packed) -> std::result::Result<Packed, ()> + '_>,
+  > {
+    NativeWorkspaceClient(CarryingNames(move |method, request: Packed| {
+      Ok(request.answer_carrying_names(|input, blobs, names| {
+        native_workspace_request(&mut *bridge.borrow_mut(), method, input, blobs, names)
+      }))
+    }))
   }
 
   #[test]
-  fn position_only_undo_redo_echoes_values_without_structure() {
-    let mut bridge = bridge_with_workspace();
-    let (layer_id, contour_id) = pen_setup(&mut bridge);
-    let point_id = PointId::new().to_string();
-    bridge
-      .apply(
-        vec![add_points_intent(
-          &layer_id,
-          &contour_id,
-          None,
-          vec![seed(&point_id, 10.0, 20.0)],
-        )],
-        None,
-      )
-      .unwrap();
-    bridge
-      .apply(
-        vec![intents::FontIntent::MovePoints {
-          move_points: intents::MovePointsIntent {
-            layer_id,
-            point_ids: vec![point_id],
-            coords: vec![30.0, 40.0],
-          },
-        }],
-        None,
-      )
+  fn a_workspace_request_replies_with_the_kind_of_error_it_failed_with() {
+    let bridge = RefCell::new(Bridge::new());
+    let client = workspace_client(&bridge);
+
+    assert!(matches!(
+      client.document_state(),
+      Ok(Err(NativeWorkspaceError::NoWorkspace { detail })) if detail.contains("no workspace is open")
+    ));
+    let (_, store_path) = test_paths("request-errors");
+    assert_eq!(
+      client.create_untitled_workspace(store_path, None),
+      Ok(Ok(()))
+    );
+    assert!(matches!(
+      client.save_workspace(),
+      Ok(Err(NativeWorkspaceError::NeedsSaveAs { detail })) if detail == "workspace needs a save path"
+    ));
+    let Ok(Err(NativeWorkspaceError::InvalidInput { detail })) =
+      client.persist(Bytes(vec![0xc1]), SaveState::Unsaved)
+    else {
+      panic!("a change set that does not decode must be refused as invalid input");
+    };
+    assert!(detail.starts_with("cannot decode from the window"));
+  }
+
+  #[test]
+  fn intents_cross_in_and_the_directory_crosses_out_as_bytes() {
+    let bridge = RefCell::new(Bridge::new());
+    let client = workspace_client(&bridge);
+    let (_, store_path) = test_paths("request-bytes");
+    client
+      .create_untitled_workspace(store_path, None)
+      .unwrap()
       .unwrap();
 
-    let undone = bridge.undo().unwrap().expect("position edit should undo");
-    assert!(undone.layers[0].structure.is_none());
-    assert_eq!(&undone.layers[0].values[1..3], &[10.0, 20.0]);
-    assert_eq!(&glyph_state(&mut bridge, "A").values[1..3], &[10.0, 20.0]);
+    let applied = client
+      .apply(
+        vec![create_glyph_napi_with_id("glyph_a", "A", vec![65])],
+        Some("Add Glyph".to_string()),
+      )
+      .unwrap()
+      .unwrap();
+    let directory = client.encoded_directory().unwrap().unwrap();
 
-    let redone = bridge.redo().unwrap().expect("position edit should redo");
-    assert!(redone.layers[0].structure.is_none());
-    assert_eq!(&redone.layers[0].values[1..3], &[30.0, 40.0]);
-    assert_eq!(&glyph_state(&mut bridge, "A").values[1..3], &[30.0, 40.0]);
+    let created = applied
+      .next
+      .and_then(|next| next.glyph_changes)
+      .expect("createGlyph must echo records");
+    assert_eq!(created.updated[0].id, GlyphId::from_raw("glyph_a"));
+    let font: Font = rmp_serde::from_slice(&directory.0).unwrap();
+    assert_eq!(
+      font.glyph(GlyphId::from_raw("glyph_a")).map(Glyph::name),
+      Some("A")
+    );
   }
 
   #[test]
@@ -3105,7 +2101,7 @@ mod tests {
 
     let mut elsewhere = bridge.workspace().unwrap().font().clone();
     let moved = elsewhere
-      .apply_intents(&FontIntentSet::from(shift_font::FontIntent::from(
+      .apply_intents(&FontIntentSet::from(FontIntent::from(
         shift_font::MovePoints {
           layer_id: LayerId::from_raw(&layer_id),
           point_ids: vec![PointId::from_raw(&point_id)],
@@ -3113,70 +2109,20 @@ mod tests {
         },
       )))
       .unwrap();
-    // Sent compacted, as the window's engine sends it.
-    let bytes = rmp_serde::to_vec_named(&moved.changes.compact()).unwrap();
+    // Sent compacted with the scene's changes (none), as the window's engine sends it.
+    let sent = || {
+      let change_set = shift_engine::DocumentChangeSet {
+        font: moved.changes.clone(),
+        scene: shift_engine::scene::SceneChangeSet::default(),
+      };
+      Bytes(rmp_serde::to_vec_named(&change_set.compact()).unwrap())
+    };
 
-    let echo = bridge
-      .persist(bytes.into(), NapiSaveState::Unsaved)
-      .unwrap();
+    let echo = bridge.persist(sent(), SaveState::Unsaved).unwrap();
     assert_eq!(&echo.layers[0].values[1..3], &[30.0, 40.0]);
     assert_eq!(&glyph_state(&mut bridge, "A").values[1..3], &[30.0, 40.0]);
     // A second persist of the same change set no longer matches the font.
-    assert!(
-      bridge
-        .persist(
-          rmp_serde::to_vec_named(&moved.changes.compact())
-            .unwrap()
-            .into(),
-          NapiSaveState::Unsaved,
-        )
-        .is_err()
-    );
-  }
-
-  #[test]
-  fn undo_returns_none_when_the_ledger_is_empty() {
-    let mut bridge = bridge_with_workspace();
-
-    assert!(bridge.undo().unwrap().is_none());
-    assert!(bridge.redo().unwrap().is_none());
-  }
-
-  #[test]
-  fn a_fresh_apply_truncates_the_redo_stack() {
-    let mut bridge = bridge_with_workspace();
-    let (layer_id, contour_id) = pen_setup(&mut bridge);
-    let p1 = PointId::new().to_string();
-    let p2 = PointId::new().to_string();
-
-    bridge
-      .apply(
-        vec![add_points_intent(
-          &layer_id,
-          &contour_id,
-          None,
-          vec![seed(&p1, 0.0, 0.0)],
-        )],
-        None,
-      )
-      .unwrap();
-    bridge.undo().unwrap().expect("undo the first point");
-
-    // a new apply while redo is available must truncate it
-    bridge
-      .apply(
-        vec![add_points_intent(
-          &layer_id,
-          &contour_id,
-          None,
-          vec![seed(&p2, 5.0, 5.0)],
-        )],
-        None,
-      )
-      .unwrap();
-
-    assert!(bridge.redo().unwrap().is_none());
-    assert_eq!(contour_point_count(&mut bridge), 1);
+    assert!(bridge.persist(sent(), SaveState::Unsaved).is_err());
   }
 
   #[test]
@@ -3206,14 +2152,15 @@ mod tests {
     // translate two of three points by an affine delta (O(ids) wire)
     let translated = bridge
       .apply(
-        vec![intents::FontIntent::TranslatePoints {
-          translate_points: intents::TranslatePointsIntent {
-            layer_id: layer_id.clone(),
-            point_ids: vec![p1.clone(), p2.clone()],
+        vec![
+          shift_font::TranslatePoints {
+            layer_id: LayerId::from_raw(&layer_id),
+            point_ids: vec![PointId::from_raw(&p1), PointId::from_raw(&p2)],
             dx: 10.0,
             dy: 5.0,
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3224,12 +2171,13 @@ mod tests {
     // transform the whole layer: a value-only echo with every point moved
     let transformed = bridge
       .apply(
-        vec![intents::FontIntent::TransformLayer {
-          transform_layer: intents::TransformLayerIntent {
-            layer_id: layer_id.clone(),
-            matrix: vec![1.0, 0.0, 0.0, 1.0, 100.0, 0.0],
-          },
-        }],
+        vec![
+          shift_font::TransformLayer {
+            layer_id: LayerId::from_raw(&layer_id),
+            transform: shift_font::Transform::translate(100.0, 0.0),
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3239,12 +2187,13 @@ mod tests {
     // reverse the contour: same point ids, reversed order, structural echo
     let reversed = bridge
       .apply(
-        vec![intents::FontIntent::ReverseContour {
-          reverse_contour: intents::ReverseContourIntent {
-            layer_id: layer_id.clone(),
-            contour_id,
-          },
-        }],
+        vec![
+          shift_font::ReverseContour {
+            layer_id: LayerId::from_raw(&layer_id),
+            contour_id: ContourId::from_raw(&contour_id),
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3255,25 +2204,20 @@ mod tests {
       .collect();
     assert_eq!(ids, vec![p3.as_str(), p2.as_str(), p1.as_str()]);
 
-    // remove one point; undo restores it (ledger covers the new kinds)
+    // remove one point
     bridge
       .apply(
-        vec![intents::FontIntent::RemovePoints {
-          remove_points: intents::RemovePointsIntent {
-            layer_id,
-            point_ids: vec![p2],
-          },
-        }],
+        vec![
+          shift_font::RemovePoints {
+            layer_id: LayerId::from_raw(&layer_id),
+            point_ids: vec![PointId::from_raw(&p2)],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
     assert_eq!(contour_point_count(&mut bridge), 2);
-
-    bridge
-      .undo()
-      .unwrap()
-      .expect("removePoints must be undoable");
-    assert_eq!(contour_point_count(&mut bridge), 3);
   }
 
   fn test_paths(label: &str) -> (String, String) {
@@ -3299,7 +2243,7 @@ mod tests {
     let mut bridge = bridge_with_workspace();
 
     let state = bridge.document_state().unwrap();
-    assert_eq!(state.source_kind, "untitled");
+    assert_eq!(state.source_kind, SourceKind::Untitled);
     assert_eq!(state.save_target, None);
     assert!(!state.dirty);
     assert!(state.needs_save_as);
@@ -3314,7 +2258,7 @@ mod tests {
     let state = bridge
       .save_workspace_as_document(save_path.clone(), recovery_path)
       .unwrap();
-    assert_eq!(state.source_kind, "document");
+    assert_eq!(state.source_kind, SourceKind::Document);
     assert_eq!(state.save_target.as_deref(), Some(save_path.as_str()));
     assert!(!state.dirty);
     assert!(!state.needs_save_as);
@@ -3366,8 +2310,13 @@ mod tests {
     assert_eq!(bridge.workspace().unwrap().loaded_layer_count(), 0);
   }
 
+  /// The open font's master sources.
+  fn masters(bridge: &Bridge) -> Vec<shift_font::Source> {
+    bridge.font().unwrap().masters().cloned().collect()
+  }
+
   fn default_source_id(bridge: &Bridge) -> String {
-    bridge.get_sources().unwrap()[0].id.clone()
+    masters(bridge)[0].id().to_string()
   }
 
   fn create_default_glyph_layer(bridge: &mut Bridge, name: &str, unicode: Option<u32>) -> String {
@@ -3383,7 +2332,7 @@ mod tests {
         None,
       )
       .unwrap();
-    assert_eq!(applied.layers[0].layer_id, layer_id);
+    assert_eq!(applied.layers[0].layer_id.as_str(), layer_id);
     layer_id
   }
 
@@ -3394,74 +2343,57 @@ mod tests {
     min: f64,
     default: f64,
     max: f64,
-  ) -> intents::FontIntent {
-    intents::FontIntent::CreateAxis {
-      create_axis: intents::CreateAxisIntent {
-        axis: intents::Axis {
-          id: axis_id.to_string(),
-          tag: tag.to_string(),
-          name: name.to_string(),
-          role: intents::AxisRole::External,
-          axis_type: intents::AxisType::Continuous,
-          minimum: Some(min),
-          default,
-          maximum: Some(max),
-          values: None,
-          labels: Vec::new(),
-          hidden: false,
-        },
-      },
+  ) -> FontIntent {
+    shift_font::CreateAxis {
+      axis: FontAxis::continuous_with_id(
+        AxisId::from_raw(axis_id),
+        tag.to_string(),
+        name.to_string(),
+        min,
+        default,
+        max,
+      ),
     }
+    .into()
   }
 
-  fn delete_axis_intent(axis_id: &str) -> intents::FontIntent {
-    intents::FontIntent::DeleteAxis {
-      delete_axis: intents::DeleteAxisIntent {
-        axis_id: axis_id.to_string(),
-      },
+  fn delete_axis_intent(axis_id: &str) -> FontIntent {
+    shift_font::DeleteAxis {
+      axis_id: AxisId::from_raw(axis_id),
     }
+    .into()
   }
 
-  fn delete_source_intent(source_id: &str) -> intents::FontIntent {
-    intents::FontIntent::DeleteSource {
-      delete_source: intents::DeleteSourceIntent {
-        source_id: source_id.to_string(),
-      },
+  fn delete_source_intent(source_id: &str) -> FontIntent {
+    shift_font::DeleteSource {
+      source_id: SourceId::from_raw(source_id),
     }
+    .into()
   }
 
-  fn create_source_intent(
-    source_id: &str,
-    name: &str,
-    location: &[(&str, f64)],
-  ) -> intents::FontIntent {
-    intents::FontIntent::CreateSource {
-      create_source: intents::CreateSourceIntent {
-        source_id: source_id.to_string(),
-        name: name.to_string(),
-        location: intents::Location {
-          values: location
-            .iter()
-            .map(|(tag, value)| (tag.to_string(), *value))
-            .collect(),
-        },
-      },
+  fn create_source_intent(source_id: &str, name: &str, location: &[(&str, f64)]) -> FontIntent {
+    shift_font::CreateSource {
+      source_id: SourceId::from_raw(source_id),
+      name: name.to_string(),
+      location: location
+        .iter()
+        .map(|(axis_id, value)| (AxisId::from_raw(axis_id), *value))
+        .collect(),
     }
+    .into()
   }
 
-  fn weight_axis_intent() -> intents::FontIntent {
+  fn weight_axis_intent() -> FontIntent {
     create_axis_intent("axis_weight", "wght", "Weight", 100.0, 400.0, 900.0)
   }
 
-  fn named_instance(id: &str, name: &str, value: f64) -> intents::NamedInstance {
-    intents::NamedInstance {
-      id: id.to_string(),
-      name: name.to_string(),
-      location: intents::Location {
-        values: [("axis_weight".to_string(), value)].into_iter().collect(),
-      },
-      postscript_name: Some(format!("TestFont-{name}")),
-    }
+  fn named_instance(id: &str, name: &str, value: f64) -> shift_font::NamedInstance {
+    shift_font::NamedInstance::with_id(
+      NamedInstanceId::from_raw(id),
+      name.to_string(),
+      shift_font::ExternalLocation::from([(AxisId::from_raw("axis_weight"), value)]),
+      Some(format!("TestFont-{name}")),
+    )
   }
 
   #[test]
@@ -3475,11 +2407,11 @@ mod tests {
       .expect("createAxis must echo font replacements");
     let axes = next.axes.expect("createAxis must echo axes");
     assert_eq!(axes.len(), 1);
-    assert_eq!(axes[0].tag, "wght");
-    assert_eq!(axes[0].name, "Weight");
-    assert_eq!(axes[0].minimum, Some(100.0));
-    assert_eq!(axes[0].default, 400.0);
-    assert_eq!(axes[0].maximum, Some(900.0));
+    assert_eq!(axes[0].tag(), "wght");
+    assert_eq!(axes[0].name(), "Weight");
+    assert_eq!(axes[0].minimum(), 100.0);
+    assert_eq!(axes[0].default(), 400.0);
+    assert_eq!(axes[0].maximum(), 900.0);
     // locations may change shape, so sources ride along
     assert!(next.sources.is_some());
     assert!(next.glyph_changes.is_none());
@@ -3505,7 +2437,7 @@ mod tests {
     );
 
     assert!(result.is_err());
-    assert_eq!(bridge.get_axes().unwrap().len(), 1);
+    assert_eq!(bridge.font().unwrap().axes().to_vec().len(), 1);
   }
 
   #[test]
@@ -3515,11 +2447,12 @@ mod tests {
 
     let created = bridge
       .apply(
-        vec![intents::FontIntent::CreateNamedInstance {
-          create_named_instance: intents::CreateNamedInstanceIntent {
+        vec![
+          shift_font::CreateNamedInstance {
             instance: named_instance("namedInstance_bold", "Bold", 700.0),
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3531,17 +2464,21 @@ mod tests {
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].name, "Bold");
     assert_eq!(
-      instances[0].location.values.get("axis_weight"),
+      instances[0]
+        .location
+        .values
+        .get(&AxisId::from_raw("axis_weight")),
       Some(&700.0)
     );
 
     let updated = bridge
       .apply(
-        vec![intents::FontIntent::UpdateNamedInstance {
-          update_named_instance: intents::UpdateNamedInstanceIntent {
+        vec![
+          shift_font::UpdateNamedInstance {
             instance: named_instance("namedInstance_bold", "DisplayBold", 750.0),
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3558,11 +2495,12 @@ mod tests {
 
     let deleted = bridge
       .apply(
-        vec![intents::FontIntent::DeleteNamedInstance {
-          delete_named_instance: intents::DeleteNamedInstanceIntent {
-            instance_id: "namedInstance_bold".to_string(),
-          },
-        }],
+        vec![
+          shift_font::DeleteNamedInstance {
+            instance_id: NamedInstanceId::from_raw("namedInstance_bold"),
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3594,7 +2532,7 @@ mod tests {
     assert!(
       sources
         .iter()
-        .all(|source| source.location.values.is_empty())
+        .all(|source| source.location().as_untyped().is_empty())
     );
     assert!(!bridge.is_variable().unwrap());
   }
@@ -3623,117 +2561,31 @@ mod tests {
     assert_eq!(sources.len(), 2);
     let bold = sources
       .iter()
-      .find(|source| source.name == "Bold")
+      .find(|source| source.name() == "Bold")
       .expect("new source must be in the echo");
-    assert_eq!(bold.id, "source_bold");
-    assert_eq!(bold.location.values.get("axis_weight"), Some(&700.0));
+    assert_eq!(bold.id().as_str(), "source_bold");
+    assert_eq!(
+      bold.location().get(&AxisId::from_raw("axis_weight")),
+      Some(700.0)
+    );
     assert!(applied.layers.is_empty());
     assert!(next.glyph_changes.is_none());
     assert_eq!(bridge.get_glyphs().unwrap()[0].layers.len(), 1);
   }
 
   #[test]
-  fn colour_data_is_empty_for_a_new_workspace() {
-    let bridge = bridge_with_workspace();
-
-    let json: serde_json::Value = serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
-
-    assert_eq!(json, serde_json::json!({ "palettes": [], "glyphs": [] }));
-  }
-
-  #[test]
-  fn colour_data_json_names_palettes_and_paint_graphs() {
-    let glyph = GlyphId::new();
-    let color = shift_font::ColorData {
-      palettes: vec![shift_font::ColorPalette {
-        name: Some("Light".into()),
-        colors: vec![shift_font::Rgba::new(255, 0, 0, 255)],
-      }],
-      glyphs: vec![shift_font::ColorGlyph {
-        glyph,
-        paint: shift_font::Paint::Solid {
-          color: shift_font::PaintColor::Palette { index: 0 },
-          alpha: 1.0,
-        },
-      }],
-    };
-
-    let json: serde_json::Value = serde_json::from_str(&color_data_json(&color)).unwrap();
-
-    assert_eq!(json["palettes"][0]["name"], "Light");
-    assert_eq!(json["palettes"][0]["colors"][0]["r"], 255);
-    assert_eq!(json["glyphs"][0]["paint"]["type"], "solid");
-    assert_eq!(json["glyphs"][0]["paint"]["color"]["kind"], "palette");
-  }
-
-  #[test]
-  fn set_color_echoes_the_colour_data_and_undo_restores_the_empty_document() {
-    let mut bridge = bridge_with_workspace();
-    let color_data = serde_json::json!({
-      "palettes": [{ "name": "Light", "colors": [{ "r": 255, "g": 0, "b": 0, "a": 255 }] }],
-      "glyphs": []
-    });
-
-    let applied = bridge
-      .apply(
-        vec![intents::FontIntent::SetColor {
-          set_color: intents::SetColorIntent {
-            color_data: color_data.to_string(),
-          },
-        }],
-        None,
-      )
-      .unwrap();
-
-    let next = applied.next.expect("setColor must echo font replacements");
-    let echoed: serde_json::Value =
-      serde_json::from_str(&next.color.expect("setColor must echo colour data")).unwrap();
-    assert_eq!(echoed["palettes"][0]["name"], "Light");
-    assert_eq!(echoed["palettes"][0]["colors"][0]["r"], 255);
-    assert!(next.metadata.is_none());
-    assert!(next.sources.is_none());
-
-    let undone = bridge.undo().unwrap().expect("setColor should undo");
-    let echoed: serde_json::Value = serde_json::from_str(
-      &undone
-        .next
-        .and_then(|next| next.color)
-        .expect("undo must echo colour data"),
-    )
-    .unwrap();
-    assert_eq!(echoed, serde_json::json!({ "palettes": [], "glyphs": [] }));
-  }
-
-  #[test]
-  fn set_color_refuses_malformed_colour_data() {
-    let mut bridge = bridge_with_workspace();
-
-    let refused = bridge.apply(
-      vec![intents::FontIntent::SetColor {
-        set_color: intents::SetColorIntent {
-          color_data: "not json".to_string(),
-        },
-      }],
-      None,
-    );
-
-    assert!(refused.is_err());
-    let json: serde_json::Value = serde_json::from_str(&bridge.get_color_data().unwrap()).unwrap();
-    assert_eq!(json, serde_json::json!({ "palettes": [], "glyphs": [] }));
-  }
-
-  #[test]
-  fn set_languages_echoes_the_list_and_undo_echoes_its_absence() {
+  fn set_languages_echoes_the_list() {
     let mut bridge = bridge_with_workspace();
     assert_eq!(bridge.get_language_ids().unwrap(), None);
 
     let applied = bridge
       .apply(
-        vec![intents::FontIntent::SetLanguages {
-          set_languages: intents::SetLanguagesIntent {
+        vec![
+          shift_font::SetLanguages {
             language_ids: vec!["eng-latin".to_string(), "cmn-chinese".to_string()],
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3748,39 +2600,28 @@ mod tests {
     );
     assert!(next.metadata.is_none());
     assert!(next.sources.is_none());
-
-    let undone = bridge.undo().unwrap().expect("setLanguages should undo");
-    let languages = undone
-      .next
-      .and_then(|next| next.languages)
-      .expect("undo must echo languages");
-    assert_eq!(languages.language_ids, None);
-    assert_eq!(bridge.get_language_ids().unwrap(), None);
   }
 
   #[test]
-  fn set_kerning_values_echoes_kerning_and_undo_restores_it() {
+  fn set_kerning_values_echoes_kerning() {
     let mut bridge = bridge_with_workspace();
     create_default_glyph_layer(&mut bridge, "A", Some(65));
-    let glyph_id = bridge.get_glyphs().unwrap()[0].id.clone();
+    let glyph_id = bridge.get_glyphs().unwrap()[0].id;
     let source_id = default_source_id(&bridge);
-    let side = || intents::KerningSide {
-      kind: intents::KerningSideKind::Glyph,
-      id: glyph_id.clone(),
-    };
+    let side = || shift_font::KerningSide::Glyph(glyph_id);
 
     let applied = bridge
       .apply(
-        vec![intents::FontIntent::SetKerningValues {
-          set_kerning_values: intents::SetKerningValuesIntent {
-            edits: vec![intents::KerningValueEdit {
-              source_id: source_id.clone(),
-              first: side(),
-              second: side(),
-              amount: Some(-30.0),
+        vec![
+          shift_font::SetKerningValues {
+            edits: vec![shift_font::KerningValueEdit {
+              source_id: SourceId::from_raw(&source_id),
+              pair: shift_font::KerningPair::new(side(), side()),
+              value: Some(-30.0),
             }],
-          },
-        }],
+          }
+          .into(),
+        ],
         None,
       )
       .unwrap();
@@ -3790,18 +2631,8 @@ mod tests {
       .and_then(|next| next.kerning)
       .expect("setKerningValues must echo kerning");
     assert_eq!(kerning.sources.len(), 1);
-    assert_eq!(kerning.sources[0].source_id, source_id);
+    assert_eq!(kerning.sources[0].source_id.as_str(), source_id);
     assert_eq!(kerning.sources[0].pairs[0].amount, -30.0);
-
-    let undone = bridge
-      .undo()
-      .unwrap()
-      .expect("setKerningValues should undo");
-    let kerning = undone
-      .next
-      .and_then(|next| next.kerning)
-      .expect("undo must echo kerning");
-    assert!(kerning.sources.is_empty());
   }
 
   #[test]
@@ -3821,7 +2652,7 @@ mod tests {
       )
       .unwrap();
 
-    let glyph_id = bridge.get_glyphs().unwrap()[0].id.clone();
+    let glyph_id = bridge.get_glyphs().unwrap()[0].id.to_string();
     let layer_id = LayerId::new().to_string();
 
     let applied = bridge
@@ -3838,7 +2669,7 @@ mod tests {
     let state = glyph_source_state(&mut bridge, &glyph_id, "source_bold")
       .expect("the explicit layer must resolve by glyph and source");
     assert_eq!(state.layer_id, layer_id);
-    assert_eq!(applied.layers[0].layer_id, layer_id);
+    assert_eq!(applied.layers[0].layer_id.as_str(), layer_id);
     let glyphs = applied
       .next
       .expect("layer membership must echo font replacements")
@@ -3852,7 +2683,7 @@ mod tests {
   fn apply_clone_glyph_layer_copies_shape_with_fresh_internal_ids() {
     let mut bridge = bridge_with_workspace();
     let (from_layer_id, contour_id) = pen_setup(&mut bridge);
-    let glyph_id = bridge.get_glyphs().unwrap()[0].id.clone();
+    let glyph_id = bridge.get_glyphs().unwrap()[0].id.to_string();
     let point_a = PointId::new().to_string();
     let point_b = PointId::new().to_string();
     let anchor_top = AnchorId::new().to_string();
@@ -3905,7 +2736,7 @@ mod tests {
     let cloned = glyph_source_state(&mut bridge, &glyph_id, "source_bold")
       .expect("cloned layer should be readable");
 
-    assert_eq!(applied.layers[0].layer_id, layer_id);
+    assert_eq!(applied.layers[0].layer_id.as_str(), layer_id);
     assert_eq!(cloned.layer_id, layer_id);
     assert_eq!(cloned.values.len(), source.values.len());
     for index in 0..cloned.values.len() {
@@ -3944,7 +2775,7 @@ mod tests {
     );
 
     assert!(result.is_err());
-    assert_eq!(bridge.get_sources().unwrap().len(), 1);
+    assert_eq!(masters(&bridge).len(), 1);
   }
 
   #[test]
@@ -3963,7 +2794,7 @@ mod tests {
     );
 
     assert!(result.is_err());
-    assert_eq!(bridge.get_sources().unwrap().len(), 1);
+    assert_eq!(masters(&bridge).len(), 1);
   }
 
   #[test]
@@ -3991,7 +2822,7 @@ mod tests {
     );
 
     assert!(result.is_err());
-    assert_eq!(bridge.get_sources().unwrap().len(), 2);
+    assert_eq!(masters(&bridge).len(), 2);
   }
 
   #[test]
@@ -4009,7 +2840,7 @@ mod tests {
         None,
       )
       .unwrap();
-    let glyph_id = bridge.get_glyphs().unwrap()[0].id.clone();
+    let glyph_id = bridge.get_glyphs().unwrap()[0].id.to_string();
     let bold_layer_id = LayerId::new().to_string();
     bridge
       .apply(
@@ -4032,7 +2863,7 @@ mod tests {
       .expect("deleteSource must echo font replacements");
     let sources = next.sources.expect("deleteSource must echo sources");
     assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].name, "Regular");
+    assert_eq!(sources[0].name(), "Regular");
     let glyphs = next
       .glyph_changes
       .expect("deleteSource layer removal must echo glyph records")
@@ -4054,7 +2885,7 @@ mod tests {
     let result = bridge.apply(vec![delete_source_intent(&source_id)], None);
 
     assert!(result.is_err());
-    assert_eq!(bridge.get_sources().unwrap().len(), 1);
+    assert_eq!(masters(&bridge).len(), 1);
   }
 
   #[test]
@@ -4087,7 +2918,7 @@ mod tests {
   }
 
   #[test]
-  fn apply_mixes_editing_and_create_intents_as_one_undo_step() {
+  fn apply_mixes_editing_and_create_intents_in_one_set() {
     let mut bridge = bridge_with_workspace();
     let (layer_id, _) = pen_setup(&mut bridge);
 
@@ -4095,12 +2926,11 @@ mod tests {
       .apply(
         vec![
           weight_axis_intent(),
-          intents::FontIntent::SetXAdvance {
-            set_x_advance: intents::SetXAdvanceIntent {
-              layer_id: layer_id.clone(),
-              width: 600.0,
-            },
-          },
+          shift_font::SetXAdvance {
+            layer_id: LayerId::from_raw(&layer_id),
+            width: 600.0,
+          }
+          .into(),
         ],
         Some("Add Weight".to_string()),
       )
@@ -4119,19 +2949,7 @@ mod tests {
       applied
         .layers
         .iter()
-        .any(|layer| layer.layer_id == layer_id)
-    );
-
-    let undone = bridge.undo().unwrap().expect("mixed set should undo");
-    assert!(bridge.get_axes().unwrap().is_empty());
-    assert_eq!(
-      undone
-        .next
-        .expect("undo must echo font replacements")
-        .axes
-        .expect("undo must echo axes")
-        .len(),
-      0
+        .any(|layer| layer.layer_id.as_str() == layer_id)
     );
   }
 
@@ -4154,13 +2972,13 @@ mod tests {
     let metrics = bridge.get_metrics().unwrap();
 
     assert!(bridge.get_glyphs().unwrap().is_empty());
-    assert_eq!(bridge.get_sources().unwrap().len(), 1);
-    assert_eq!(bridge.get_sources().unwrap()[0].name, "Regular");
+    assert_eq!(masters(&bridge).len(), 1);
+    assert_eq!(masters(&bridge)[0].name(), "Regular");
     assert_eq!(metadata.family_name.as_deref(), Some("Untitled Font"));
     assert_eq!(metadata.style_name.as_deref(), Some("Regular"));
     assert_eq!(metrics.units_per_em, 1000.0);
     assert_eq!(bridge.get_metric_definitions().unwrap().len(), 5);
-    assert_eq!(bridge.get_sources().unwrap()[0].metric_values.len(), 5);
+    assert_eq!(masters(&bridge)[0].metric_values().len(), 5);
   }
 
   #[test]
@@ -4172,9 +2990,9 @@ mod tests {
     bridge.create_untitled_workspace(store_path, None).unwrap();
 
     assert!(bridge.get_glyphs().unwrap().is_empty());
-    assert!(bridge.get_axes().unwrap().is_empty());
-    assert_eq!(bridge.get_sources().unwrap().len(), 1);
-    assert_eq!(bridge.get_sources().unwrap()[0].name, "Regular");
+    assert!(bridge.font().unwrap().axes().to_vec().is_empty());
+    assert_eq!(masters(&bridge).len(), 1);
+    assert_eq!(masters(&bridge)[0].name(), "Regular");
   }
 
   #[test]
@@ -4262,27 +3080,31 @@ mod tests {
       .find(|glyph| glyph.component_base_glyph_ids.is_empty() && glyph.layers.len() > 1)
       .unwrap();
     let layer_ids = vec![
-      composite.layers[1].id.clone(),
-      plain.layers[0].id.clone(),
-      composite.layers[0].id.clone(),
+      composite.layers[1].id,
+      plain.layers[0].id,
+      composite.layers[0].id,
     ];
 
     let authored = bridge.read_layers(layer_ids.clone()).unwrap();
-    let resolved = bridge.resolve_layers(layer_ids.clone()).unwrap();
+    let layer_texts = layer_ids
+      .iter()
+      .map(ToString::to_string)
+      .collect::<Vec<_>>();
+    let resolved = bridge.resolve_layers(layer_texts.clone()).unwrap();
 
     let authored_ids = authored
       .iter()
-      .map(|layer| layer.state.layer_id.clone())
+      .map(|layer| layer.state.layer_id)
       .collect::<Vec<_>>();
     let resolved_ids = resolved
       .iter()
       .map(|layer| layer.authored.state.layer_id.clone())
       .collect::<Vec<_>>();
     assert_eq!(authored_ids, layer_ids);
-    assert_eq!(resolved_ids, layer_ids);
+    assert_eq!(resolved_ids, layer_texts);
     assert_eq!(
       resolved[0].authored.source_id,
-      composite.layers[1].source_id
+      composite.layers[1].source_id.as_str()
     );
     assert_eq!(
       resolved[0].resolved.components.len(),
@@ -4308,7 +3130,10 @@ mod tests {
 
     assert!(
       bridge
-        .read_layers(vec![layer_id.clone(), missing.clone()])
+        .read_layers(vec![
+          LayerId::from_raw(&layer_id),
+          LayerId::from_raw(&missing)
+        ])
         .is_err()
     );
     assert!(bridge.resolve_layers(vec![layer_id, missing]).is_err());
@@ -4329,79 +3154,10 @@ mod tests {
   }
 
   #[test]
-  fn get_layer_match_returns_cross_layer_entity_ids() {
-    let mut bridge = bridge_with_workspace();
-    let (reference_layer_id, contour_id) = pen_setup(&mut bridge);
-    let reference_point_ids = [PointId::new().to_string(), PointId::new().to_string()];
-    bridge
-      .apply(
-        vec![add_points_intent(
-          &reference_layer_id,
-          &contour_id,
-          None,
-          vec![
-            seed(&reference_point_ids[0], 0.0, 0.0),
-            seed(&reference_point_ids[1], 100.0, 0.0),
-          ],
-        )],
-        None,
-      )
-      .unwrap();
-    bridge.apply(vec![weight_axis_intent()], None).unwrap();
-    bridge
-      .apply(
-        vec![create_source_intent(
-          "source_bold",
-          "Bold",
-          &[("axis_weight", 700.0)],
-        )],
-        None,
-      )
-      .unwrap();
-    let glyph_id = bridge.get_glyphs().unwrap()[0].id.clone();
-    let target_layer_id = LayerId::new().to_string();
-    bridge
-      .apply(
-        vec![clone_glyph_layer_intent(
-          &target_layer_id,
-          &glyph_id,
-          "source_bold",
-          &reference_layer_id,
-        )],
-        None,
-      )
-      .unwrap();
-
-    let layer_match = bridge
-      .get_layer_match(reference_layer_id.clone(), target_layer_id.clone())
-      .unwrap();
-
-    assert!(layer_match.complete);
-    assert_eq!(layer_match.reference_layer_id, reference_layer_id);
-    assert_eq!(layer_match.target_layer_id, target_layer_id);
-    assert_eq!(layer_match.contours.len(), 1);
-    assert_eq!(layer_match.points.len(), 2);
-    assert_ne!(
-      layer_match.points[0].reference_id,
-      layer_match.points[0].target_id
-    );
-    assert!(layer_match.differences.is_empty());
-  }
-
-  #[test]
-  fn get_layer_match_rejects_layers_from_different_glyphs() {
-    let mut bridge = bridge_with_workspace();
-    let first = create_default_glyph_layer(&mut bridge, "A", Some(65));
-    let second = create_default_glyph_layer(&mut bridge, "B", Some(66));
-
-    assert!(bridge.get_layer_match(first, second).is_err());
-  }
-
-  #[test]
   fn get_glyph_projections_returns_location_independent_shape_backing() {
     let mut bridge = bridge_with_workspace();
     let (layer_id, contour_id) = pen_setup(&mut bridge);
-    let glyph = bridge.get_glyphs().unwrap().remove(0);
+    let glyph = bridge.get_glyphs().unwrap()[0].clone();
     bridge
       .apply(
         vec![add_points_intent(
@@ -4415,11 +3171,11 @@ mod tests {
       .unwrap();
 
     let projections = bridge
-      .get_glyph_projections(vec![glyph.id.clone()])
+      .get_glyph_projections(vec![glyph.id.to_string()])
       .unwrap();
 
     assert_eq!(projections.len(), 1);
-    assert_eq!(projections[0].glyph_id, glyph.id);
+    assert_eq!(projections[0].glyph_id, glyph.id.as_str());
     assert_eq!(
       projections[0].fallback.values.as_ref(),
       &[500.0, 10.0, 20.0]
@@ -4430,7 +3186,7 @@ mod tests {
   fn get_glyph_previews_resolve_drawable_paths_at_a_location() {
     let mut bridge = bridge_with_workspace();
     let (layer_id, contour_id) = pen_setup(&mut bridge);
-    let glyph = bridge.get_glyphs().unwrap().remove(0);
+    let glyph = bridge.get_glyphs().unwrap()[0].clone();
     bridge
       .apply(
         vec![add_points_intent(
@@ -4449,40 +3205,16 @@ mod tests {
 
     let previews = bridge
       .get_glyph_previews(
-        vec![glyph.id.clone(), missing_glyph_id],
-        intents::Location {
+        vec![glyph.id.to_string(), missing_glyph_id],
+        values::Location {
           values: HashMap::new(),
         },
       )
       .unwrap();
 
     assert_eq!(previews.len(), 1);
-    assert_eq!(previews[0].glyph_id, glyph.id);
+    assert_eq!(previews[0].glyph_id, glyph.id.as_str());
     assert_eq!(previews[0].x_advance, 500.0);
     assert!(previews[0].svg_path.starts_with('M'));
-  }
-
-  #[test]
-  fn apply_requires_valid_layer_id() {
-    let mut bridge = bridge_with_workspace();
-
-    let result = bridge.apply(
-      vec![intents::FontIntent::AddContour {
-        add_contour: intents::AddContourIntent {
-          layer_id: "not-a-layer-id".to_string(),
-          contour_id: ContourId::new().to_string(),
-          closed: false,
-        },
-      }],
-      None,
-    );
-
-    assert!(matches!(
-      result.err().unwrap(),
-      BridgeError::Wire(intents::WireError::InvalidId {
-        kind: intents::IdKind::Layer,
-        ..
-      })
-    ));
   }
 }

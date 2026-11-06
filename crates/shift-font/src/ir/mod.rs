@@ -31,18 +31,22 @@ pub use axis::{
 pub use binary_data::BinaryData;
 pub use boolean::{BooleanOp, boolean};
 pub use color::{
-    ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Paint, PaintColor, Rgba,
+    ColorData, ColorGlyph, ColorJson, ColorPalette, ColorPoint, ColorStop, Paint, PaintColor, Rgba,
 };
 pub use component::{Component, ComponentAlignment, DecomposedTransform, Transform};
 pub use contour::{Contour, Contours};
 pub use entity::{
     AnchorId, AxisId, AxisLabelId, AxisMappingId, ComponentId, ContourId, EntityId, GlyphEntityId,
-    GlyphId, GuidelineId, KerningGroupId, LayerId, MetricId, NamedInstanceId, PointId, SourceId,
+    GlyphId, GuidelineId, KerningGroupId, LayerId, MetricId, NamedInstanceId, NodeId, PointId,
+    RunId, SourceId, TextItemId,
 };
 pub use features::FeatureData;
-pub use font::{Font, FontMetadata, LANGUAGES_LIB_KEY};
+pub use font::{Font, FontCopyId, FontMetadata, LANGUAGES_LIB_KEY};
 pub use glyph::{Glyph, GlyphLayer};
-pub use glyph_category::{GlyphCategory, GlyphSubcategory, UnknownGlyphCategory};
+pub use glyph_category::{
+    GlyphCategory, GlyphClasses, GlyphDataCategory, GlyphSubcategory, Ligature, NamedGlyph,
+    OpenTypeCategories, OpenTypeCategory, RecordCategory, UnknownGlyphCategory,
+};
 pub use glyph_name::{GlyphName, GlyphNameError};
 pub use guideline::{Guideline, GuidelineOrientation};
 pub use kerning::{
@@ -54,6 +58,7 @@ pub use metrics::{
     FontMetrics, MetricDefinition, MetricDefinitionList, MetricKind, MetricValue, StandardMetrics,
 };
 pub use named_instance::NamedInstance;
+pub use persistent::PersistentMap;
 pub use point::{Point, PointType};
 pub use segment::{CurveSegment, CurveSegmentIter, PointKinds, SegmentIndexIter, SegmentIndices};
 pub use source::{Source, SourceList, SourceRole};

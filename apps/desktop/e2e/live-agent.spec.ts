@@ -1,10 +1,11 @@
+import { openFontInfo } from "./fixtures/appLocators";
 import type { Page } from "@playwright/test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { workspaceTest as test, expect, FONTS } from "./fixtures/electronApp";
 
 /** Turns on agent connections in Settings → Agents and returns the MCP URL it shows. */
 async function enableAgentConnections(page: Page): Promise<string> {
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openFontInfo(page);
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await dialog.getByRole("button", { name: "Agents", exact: true }).click();
   const agents = dialog.getByRole("region", { name: "Agents" });
@@ -372,4 +373,81 @@ test("inspects the explicitly targeted live editor", async ({ editor }) => {
     missingWindowError: "Shift window 2147483647 is not open",
     staleRevisionError: expect.stringContaining("Font revision mismatch"),
   });
+});
+
+test("controls what the live window shows and refuses font and file commands", async ({
+  editor,
+}) => {
+  const mcpUrl = await enableAgentConnections(editor.page);
+  await editor.openGlyphByName("A");
+  const saveState = await editor.documentState();
+
+  const result = await runShiftCode(
+    mcpUrl,
+    `async () => {
+      const target = (await shift.sessions.list()).find((session) => session.editorConnected);
+      if (!target) throw new Error("Expected connected editor");
+      const windowId = target.windowId;
+      const errorName = async (call) => {
+        try {
+          await call();
+          return null;
+        } catch (error) {
+          return error.name;
+        }
+      };
+
+      const before = await shift.editor.inspect({ windowId });
+      const ifFontRevision = before.fontRevision;
+      const commands = (await shift.commands.list({ windowId })).map(({ id }) => id);
+      await shift.commands.run({ windowId, command: "view.zoomIn", ifFontRevision });
+      const zoomed = await shift.editor.inspect({ windowId });
+      const refused = {
+        save: await errorName(() => shift.commands.run({ windowId, command: "file.save" })),
+        undo: await errorName(() => shift.commands.run({ windowId, command: "edit.undo" })),
+        tool: await errorName(() => shift.editor.setTool({ windowId, tool: "lasso" })),
+      };
+      const page = before.value.pages[0];
+      const shown = await shift.editor.showPage({ windowId, pageId: page.id, ifFontRevision });
+      const opened = await shift.editor.openGlyph({ windowId, glyph: { name: "A" }, ifFontRevision });
+      const tool = await shift.editor.setTool({ windowId, tool: "hand", ifFontRevision });
+      const view = await shift.editor.setView({
+        windowId,
+        zoom: 2,
+        center: { x: 300, y: 400 },
+        ifFontRevision,
+      });
+
+      return {
+        commands,
+        listsFontOrFileCommands: commands.some((id) => id.startsWith("file.") || id === "edit.undo"),
+        zoomRatio: zoomed.value.viewport.zoom / before.value.viewport.zoom,
+        refused,
+        shown: { listedPage: shown.value.shownPageId === page.id, route: shown.value.route },
+        opened: { glyph: opened.value.glyph?.name, route: opened.value.route },
+        tool: tool.value.tool.id,
+        viewport: view.value.viewport,
+        unchangedRevision: [zoomed, shown, opened, tool, view].every(
+          ({ fontRevision }) => fontRevision === ifFontRevision,
+        ),
+      };
+    }`,
+  );
+
+  expect(result).toMatchObject({
+    commands: expect.arrayContaining(["view.zoomIn", "edit.selectAll"]),
+    listsFontOrFileCommands: false,
+    zoomRatio: expect.closeTo(1.25, 5),
+    refused: {
+      save: "CommandNotRunnableError",
+      undo: "CommandNotRunnableError",
+      tool: "ToolNotFoundError",
+    },
+    shown: { listedPage: true, route: "/canvas" },
+    opened: { glyph: "A", route: expect.stringMatching(/^\/editor\//) },
+    tool: "hand",
+    viewport: { zoom: 2, center: { x: expect.closeTo(300, 5), y: expect.closeTo(400, 5) } },
+    unchangedRevision: true,
+  });
+  expect(await editor.documentState()).toEqual(saveState);
 });

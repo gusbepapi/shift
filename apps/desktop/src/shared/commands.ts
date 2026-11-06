@@ -41,6 +41,7 @@ export type CommandId =
   | "glyph.reverseSelectedContour"
   | "glyph.makeFirstPoint"
   | "window.showHome"
+  | "tab.close"
   | "window.close"
   | "window.minimise"
   | "window.maximise"
@@ -49,6 +50,25 @@ export type CommandId =
   | "ui.increaseSize"
   | "ui.decreaseSize"
   | "ui.resetSize";
+
+/** A command in the Help menu. */
+export type HelpCommandId = Extract<CommandId, `help.${string}`>;
+
+/** What the Help menu and the launcher's help button call each help command. */
+export const helpCommandLabels = {
+  "help.openWebsite": "Website",
+  "help.openDiscord": "Discord",
+  "help.openX": "X / Twitter",
+  "help.reportIssue": "Report a Problem…",
+  "help.showLogs": "Show Logs",
+  "help.emailFeedback": "Feedback…",
+} satisfies Record<HelpCommandId, string>;
+
+/** Help commands in menu order: the links, then ways to report a problem. */
+export const helpCommandGroups: readonly (readonly HelpCommandId[])[] = [
+  ["help.openWebsite", "help.openDiscord", "help.openX"],
+  ["help.reportIssue", "help.showLogs", "help.emailFeedback"],
+];
 
 /** Platform-neutral keyboard chord assigned to an application command. */
 export interface CommandShortcut {
@@ -61,7 +81,8 @@ export interface CommandShortcut {
 /** Canonical keyboard shortcuts shared by native menus and renderer routing. */
 export const commandShortcuts = {
   "app.showSettings": shortcut(","),
-  "window.close": shortcut("w"),
+  "tab.close": shortcut("w"),
+  "window.close": shortcut("w", true),
   "window.minimise": shortcut("m"),
   "view.zoomIn": shortcut("+"),
   "view.zoomOut": shortcut("-"),
@@ -81,6 +102,13 @@ export const commandShortcuts = {
   "edit.selectAll": shortcut("a"),
   "glyph.addComponent": shortcut("c", true),
 } satisfies Partial<Record<CommandId, CommandShortcut>>;
+
+const shortcutsById: Partial<Record<CommandId, CommandShortcut>> = commandShortcuts;
+
+/** Returns the shortcut assigned to `id`, or null when the command has none. */
+export function commandShortcut(id: CommandId): CommandShortcut | null {
+  return shortcutsById[id] ?? null;
+}
 
 /** Converts a shared command shortcut to Electron's native accelerator syntax. */
 export function toElectronAccelerator(shortcut: CommandShortcut): string {
@@ -105,7 +133,11 @@ function shortcut(key: string, shiftKey = false, altKey = false): CommandShortcu
  * Renderer command IDs are sent from main to the focused font window. Main
  * owns native menu routing; renderer UI owns the resulting surface or edit.
  */
-export type RendererCommandId = EditorCommandId | "app.showSettings" | "glyph.addComponent";
+export type RendererCommandId =
+  | EditorCommandId
+  | "app.showSettings"
+  | "glyph.addComponent"
+  | "tab.close";
 
 /** Identifies a renderer command that acts on the current editor or text focus. */
 export type EditorCommandId =

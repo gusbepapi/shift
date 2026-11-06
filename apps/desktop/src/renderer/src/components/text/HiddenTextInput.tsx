@@ -1,9 +1,8 @@
 import { useCallback, useRef } from "react";
 import { useEditor } from "@/workspace/WorkspaceContext";
 import { useToolIf } from "@/hooks/useToolIf";
-import type { Editor } from "@shift/editor";
 import { useSignalState } from "@shift/editor/signals";
-import { lineBreakTextItem, type TextItem } from "@shift/editor/text";
+import { lineBreakTextItem } from "@shift/editor/text";
 
 /** Receives native text, clipboard, and IME events while a text node is active. */
 export function TextInput() {
@@ -13,10 +12,33 @@ export function TextInput() {
   const tool = useToolIf("text");
   const editing = useSignalState(editor.textEditing.stateCell);
 
-  const textareaRef = useCallback((node: HTMLTextAreaElement | null) => {
-    ref.current = node;
-    node?.focus();
-  }, []);
+  const textareaRef = useCallback(
+    (node: HTMLTextAreaElement) => {
+      ref.current = node;
+      node.focus();
+
+      // Typing goes to the text until another control, such as a sidebar field or
+      // popover, takes focus; it comes back when focus falls to the page again.
+      let pending: ReturnType<typeof setTimeout> | undefined;
+      const reclaimFocus = () => {
+        clearTimeout(pending);
+        pending = setTimeout(() => {
+          const focused = document.activeElement;
+          const focusIsFree = focused === null || focused === document.body;
+          if (focusIsFree && editor.toolIf("text")?.state.type === "editing") node.focus();
+        }, 0);
+      };
+      document.addEventListener("focusout", reclaimFocus);
+      document.addEventListener("pointerdown", reclaimFocus);
+      return () => {
+        clearTimeout(pending);
+        document.removeEventListener("focusout", reclaimFocus);
+        document.removeEventListener("pointerdown", reclaimFocus);
+        ref.current = null;
+      };
+    },
+    [editor],
+  );
 
   if (tool?.state.type !== "editing" || !editing) return null;
 
@@ -79,10 +101,8 @@ export function TextInput() {
         break;
       case "c":
         if (e.metaKey || e.ctrlKey) {
-          const text = textEditing.selectedItems
-            .map((item) => clipboardText(item, editor))
-            .join("");
           try {
+            const text = editor.text.formatItems(textEditing.selectedItems);
             if (text) await navigator.clipboard?.writeText(text);
           } catch (error) {
             console.error("writing text clipboard failed", error);
@@ -117,11 +137,6 @@ export function TextInput() {
         flushInput();
       }}
       onKeyDown={handleKeyDown}
-      onBlur={() => {
-        setTimeout(() => {
-          if (editor.toolIf("text")?.state.type === "editing") ref.current?.focus();
-        }, 0);
-      }}
       aria-label="Text input"
       autoComplete="off"
       style={{
@@ -141,12 +156,4 @@ function horizontalGranularity(e: React.KeyboardEvent): "character" | "word" | "
   if (e.altKey) return "word";
   if (e.metaKey) return "line";
   return "character";
-}
-
-/** Copies a picked glyph as `/name`, which pasting reads back as the same glyph. */
-function clipboardText(item: TextItem, editor: Editor): string {
-  if (item.kind === "linebreak") return "\n";
-  if (item.kind === "character") return String.fromCodePoint(item.codepoint);
-  const name = editor.font.glyphName(item.glyphId);
-  return name ? `/${name}` : "";
 }

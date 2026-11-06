@@ -3,6 +3,8 @@ export { Editor } from "./lib/editor/Editor";
 export { EditorHistory } from "./lib/editor/history/EditorHistory";
 export { HistoryCapture } from "./lib/editor/history/HistoryCapture";
 export { applyListSelection } from "./lib/editor/listSelection";
+export { Axis } from "./lib/model/Axis";
+export { AxisMapping } from "./lib/model/AxisMapping";
 export { Font } from "./lib/model/Font";
 export {
   addColorLayer,
@@ -78,3 +80,4 @@ export type {
   GlyphReader,
 } from "./types/glyph";
 export type { DesignAxisLocation, ExternalAxisLocation } from "./types/variation";
+export { SceneNodes } from "./lib/editor/sceneNodes";

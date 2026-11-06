@@ -1,16 +1,19 @@
 import { GlyphSidebar } from "@shift/editor/ui";
 import { useSignalState } from "@shift/editor/signals";
 import { isSegmentId } from "@shift/glyph-state";
-import { isAnchorId, isComponentId, isContourId, isPointId, type GlyphId } from "@shift/types";
+import { isAnchorId, isComponentId, isContourId, isPointId } from "@shift/types";
 import { useRef } from "react";
 import { Button } from "@shift/ui";
 import { BooleanOps } from "./BooleanOps";
 import { AnchorSection } from "./sidebar-right/AnchorSection";
+import { FeaturesSection } from "./sidebar-right/FeaturesSection";
 import { GlyphColourSection } from "./sidebar-right/GlyphColourSection";
 import { GlyphKerningSection } from "./sidebar-right/GlyphKerningSection";
 import { HandleSection } from "./sidebar-right/HandleSection";
 import { KerningPairSection } from "./sidebar-right/KerningPairSection";
 import { ScaleSection } from "./sidebar-right/ScaleSection";
+import { SidebarGroup } from "./sidebar-right/SidebarGroup";
+import { TextSection } from "./sidebar-right/TextSection";
 import { TransformSection } from "./sidebar-right/TransformSection";
 import { ZoomMenu } from "./sidebar-right/ZoomMenu";
 import { LockIcon } from "@/components/icons/LockIcon";
@@ -23,11 +26,6 @@ export const RightSidebar = () => {
   const showPreviewNotice = usePreviewNotice();
   const readOnlyFont = session.mode === "preview";
   const editor = useEditor();
-  // Read the catalog's glyph list directly: the catalog context changes on every scrub step.
-  const availableGlyphs = useSignalState(session.catalog.glyphsCell);
-  const glyphLabel = (glyphId: GlyphId) =>
-    availableGlyphs.find((candidate) => candidate.id === glyphId)?.displayName;
-  const familyName = useSignalState(session.catalog.familyNameCell) ?? "Untitled";
   const selection = useSignalState(editor.selection.stateCell, { schedule: "frame" });
   const kerningActive = useSignalState(editor.toolIdCell) === "kerning";
 
@@ -42,31 +40,27 @@ export const RightSidebar = () => {
     <GlyphSidebar
       session={session}
       host={{
-        glyphLabel,
-        header: (
-          <>
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-ui font-medium text-primary">{familyName}</span>
-              {readOnlyFont ? (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Read-only preview"
-                  className="h-5 w-5 p-0 text-sidebar-icon"
-                  onClick={showPreviewNotice}
-                >
-                  <LockIcon aria-hidden className="h-3.5 w-3.5" />
-                </Button>
-              ) : null}
-            </div>
+        headerActions: (
+          <div className="flex shrink-0 items-center gap-1">
+            {readOnlyFont ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Read-only preview"
+                className="h-5 w-5 p-0 text-sidebar-icon"
+                onClick={showPreviewNotice}
+              >
+                <LockIcon aria-hidden className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
             <ZoomMenu />
-          </>
+          </div>
         ),
         selection: kerningActive ? (
           <KerningPairSection />
         ) : (
           <TransformOriginProvider>
-            {/* Kerning | Handle | Transform, each a group with a divider between. */}
+            {/* Kerning | Handle | Transform | Anchor | Text | Features, each a group with a divider between. */}
             <div ref={selectionBlockRef} className="flex flex-col">
               <SidebarGroup>
                 <GlyphKerningSection anchorRef={selectionBlockRef} />
@@ -95,6 +89,12 @@ export const RightSidebar = () => {
                   <AnchorSection />
                 </SidebarGroup>
               ) : null}
+              <SidebarGroup>
+                <TextSection />
+              </SidebarGroup>
+              <SidebarGroup>
+                <FeaturesSection />
+              </SidebarGroup>
             </div>
           </TransformOriginProvider>
         ),
@@ -102,16 +102,3 @@ export const RightSidebar = () => {
     />
   );
 };
-
-/**
- * One group of the selection's sections. An empty group, whose section has
- * nothing to show, is hidden, and a group is divided from a shown one before it.
- */
-const SidebarGroup = ({ children }: { readonly children: React.ReactNode }) => (
-  <div
-    data-sidebar-group=""
-    className="flex flex-col gap-4 px-3 py-3 empty:hidden [[data-sidebar-group]:not(:empty)~&]:border-t [[data-sidebar-group]:not(:empty)~&]:border-line-subtle"
-  >
-    {children}
-  </div>
-);

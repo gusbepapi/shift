@@ -15,8 +15,17 @@ const capabilities: ShiftCapabilities = {
   sessions: {
     list: () => host.call("shift.sessions.list", undefined),
   },
+  commands: {
+    list: (input) => host.call("shift.commands.list", input),
+    run: (input) => host.call("shift.commands.run", input),
+  },
   editor: {
     inspect: (input) => host.call("shift.editor.inspect", input),
+    setTool: (input) => host.call("shift.editor.setTool", input),
+    showPage: (input) => host.call("shift.editor.showPage", input),
+    openGlyph: (input) => host.call("shift.editor.openGlyph", input),
+    setView: (input) => host.call("shift.editor.setView", input),
+    select: (input) => host.call("shift.editor.select", input),
   },
   font: {
     get: (input) => host.call("shift.font.get", input),
@@ -45,6 +54,24 @@ const capabilities: ShiftCapabilities = {
     pairs: (input) => host.call("shift.kerning.pairs", input),
     resolve: (input) => host.call("shift.kerning.resolve", input),
     at: (input) => host.call("shift.kerning.at", input),
+  },
+  text: {
+    runs: (input) => host.call("shift.text.runs", input),
+    get: (input) => host.call("shift.text.get", input),
+    create: (input) => host.call("shift.text.create", input),
+    setText: (input) => host.call("shift.text.setText", input),
+    setCaret: (input) => host.call("shift.text.setCaret", input),
+    setOptions: (input) => host.call("shift.text.setOptions", input),
+    delete: (input) => host.call("shift.text.delete", input),
+  },
+  pages: {
+    create: (input) => host.call("shift.pages.create", input),
+    rename: (input) => host.call("shift.pages.rename", input),
+    delete: (input) => host.call("shift.pages.delete", input),
+  },
+  history: {
+    undo: (input) => host.call("shift.history.undo", input),
+    redo: (input) => host.call("shift.history.redo", input),
   },
 };
 const runtime = serveChannel<SandboxCallMap, SandboxEventMap>(transport, {
