@@ -67,6 +67,10 @@ jobs:
       - name: Build native bridge
         run: pnpm build:native
 
+      # Generating the bridge types from the built native bridge: protocol.ts is gitignored and exists only after this step
+      - name: Generate bridge types
+        run: pnpm --filter @shift/types generate:bridge-types
+
       - name: Build command-line tool
         run: pnpm build:cli
 

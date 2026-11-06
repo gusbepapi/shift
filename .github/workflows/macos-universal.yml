@@ -91,6 +91,10 @@ jobs:
           lipo -create target/aarch64-apple-darwin/release/shift-cli target/x86_64-apple-darwin/release/shift-cli -output target/release/shift-cli
           lipo -archs target/release/shift-cli
 
+      # Generating the bridge types from the built native bridge: protocol.ts is gitignored and exists only after this step
+      - name: Generate bridge types
+        run: pnpm --filter @shift/types generate:bridge-types
+
       - name: Build desktop application
         run: pnpm --filter @shift/desktop build
 
