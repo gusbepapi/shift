@@ -19,6 +19,7 @@ import PlusIcon from "@/assets/general/plus.svg";
 import { useSidebarPanelAnchor } from "@/hooks/useSidebarPanelAnchor";
 import { SidebarActionButton } from "@/components/sidebar";
 import { useCheckboxRange } from "@/hooks/useCheckboxRange";
+import { listedIds, listedLanguages } from "./languageText";
 import { ScriptIcon } from "./ScriptIcon";
 import { NameQuery } from "@/lib/utils/NameQuery";
 import { useMemberSet } from "@/hooks/useMemberSet";
@@ -32,7 +33,7 @@ export interface LanguagePickerProps {
 
 /**
  * Chooses which scripts the sidebar tracks; ticking a script tracks all of its
- * languages. Shift-click applies the clicked row's new state to the range from
+ * languages, and a script with only some tracked shows a dash. Shift-click applies the clicked row's new state to the range from
  * the last clicked row.
  */
 export const LanguagePicker = ({
@@ -58,7 +59,7 @@ export const LanguagePicker = ({
     if (nextOpen) {
       setQuery("");
       checked.clear();
-      checked.setMany(trackedLanguageIds, true);
+      checked.setMany(listedIds(scripts, trackedLanguageIds), true);
       resetRange();
     }
     setOpen(nextOpen);
@@ -66,15 +67,16 @@ export const LanguagePicker = ({
 
   const setScriptChecked = (target: LanguageScript, isChecked: boolean) => {
     const languageIds = itemsToChange(target).flatMap((script) =>
-      script.languages.map(({ language }) => language.id),
+      listedLanguages(script).map(({ language }) => language.id),
     );
     checked.setMany(languageIds, isChecked);
   };
 
   const apply = () => {
-    const previous = new Set(trackedLanguageIds);
+    const tracked = listedIds(scripts, trackedLanguageIds);
+    const previous = new Set(tracked);
     onApply([
-      ...trackedLanguageIds.filter((languageId) => checkedIds.has(languageId)),
+      ...tracked.filter((languageId) => checkedIds.has(languageId)),
       ...[...checkedIds].filter((languageId) => !previous.has(languageId)),
     ]);
     setOpen(false);
@@ -138,26 +140,37 @@ export const LanguagePicker = ({
                 <div className="px-1 py-4 text-center text-ui text-muted">No scripts found</div>
               ) : (
                 visibleScripts.map((script) => {
-                  const trackedCount = script.languages.filter(({ language }) =>
+                  const languages = listedLanguages(script);
+                  const trackedCount = languages.filter(({ language }) =>
                     checkedIds.has(language.id),
                   ).length;
-                  const supportedCount = script.languages.filter(
-                    ({ presentCount, requiredCount }) => presentCount === requiredCount,
+                  const languageCount = languages.length;
+                  const allTracked = trackedCount === languageCount;
+                  const someTracked = trackedCount > 0 && !allTracked;
+                  const supportedCount = languages.filter(
+                    ({ fullPresentCount, fullRequiredCount }) =>
+                      fullPresentCount === fullRequiredCount,
                   ).length;
 
                   return (
                     <label
                       key={script.script}
                       className="flex cursor-pointer select-none items-center gap-2 rounded px-1 py-1.5 text-ui text-primary hover:bg-hover"
-                      title={`${supportedCount} of ${script.languages.length} languages fully supported`}
+                      title={`${supportedCount} of ${languageCount} languages fully supported`}
                       onMouseDown={onMouseDown}
                     >
                       <Checkbox
-                        checked={trackedCount > 0}
+                        checked={allTracked}
+                        indeterminate={someTracked}
                         onCheckedChange={(checked) => setScriptChecked(script, checked)}
                       />
                       <ScriptIcon script={script.script} />
                       <span className="min-w-0 flex-1 truncate">{script.script}</span>
+                      {trackedCount > 0 && (
+                        <span className="shrink-0 text-xs text-muted">
+                          {trackedCount}/{languageCount}
+                        </span>
+                      )}
                     </label>
                   );
                 })
