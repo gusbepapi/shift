@@ -19,6 +19,7 @@ import PlusIcon from "@/assets/general/plus.svg";
 import { useSidebarPanelAnchor } from "@/hooks/useSidebarPanelAnchor";
 import { SidebarActionButton } from "@/components/sidebar";
 import { useCheckboxRange } from "@/hooks/useCheckboxRange";
+import { listedIds, listedLanguages, scriptEntryIds } from "./languageText";
 import { ScriptIcon } from "./ScriptIcon";
 import { NameQuery } from "@/lib/utils/NameQuery";
 import { useMemberSet } from "@/hooks/useMemberSet";
@@ -30,17 +31,22 @@ export interface LanguagePickerProps {
   onApply: (languageIds: readonly string[]) => void;
 }
 
-/** Identifiers of every group and language listed under a script. */
-function scriptEntryIds(script: LanguageScript): string[] {
-  return [
-    ...script.groups.map(({ group }) => group.id),
-    ...script.languages.map(({ language }) => language.id),
-  ];
+/** How many of a script's character sets and listed languages the font has completely. */
+function fullySupportedCount(script: LanguageScript): number {
+  const characterSets = script.characterSets.filter(
+    ({ presentCount, requiredCount }) => presentCount === requiredCount,
+  );
+  const languages = listedLanguages(script).filter(
+    ({ fullPresentCount, fullRequiredCount }) => fullPresentCount === fullRequiredCount,
+  );
+
+  return characterSets.length + languages.length;
 }
 
 /**
  * Chooses which scripts the sidebar tracks; ticking a script tracks all of its
- * groups and languages. Shift-click applies the clicked row's new state to the range from
+ * character sets and listed languages, and a script with only some tracked shows a dash.
+ * Shift-click applies the clicked row's new state to the range from
  * the last clicked row.
  */
 export const LanguagePicker = ({
@@ -66,7 +72,7 @@ export const LanguagePicker = ({
     if (nextOpen) {
       setQuery("");
       checked.clear();
-      checked.setMany(trackedLanguageIds, true);
+      checked.setMany(listedIds(scripts, trackedLanguageIds), true);
       resetRange();
     }
     setOpen(nextOpen);
@@ -78,9 +84,10 @@ export const LanguagePicker = ({
   };
 
   const apply = () => {
-    const previous = new Set(trackedLanguageIds);
+    const tracked = listedIds(scripts, trackedLanguageIds);
+    const previous = new Set(tracked);
     onApply([
-      ...trackedLanguageIds.filter((languageId) => checkedIds.has(languageId)),
+      ...tracked.filter((languageId) => checkedIds.has(languageId)),
       ...[...checkedIds].filter((languageId) => !previous.has(languageId)),
     ]);
     setOpen(false);
@@ -144,27 +151,32 @@ export const LanguagePicker = ({
                 <div className="px-1 py-4 text-center text-ui text-muted">No scripts found</div>
               ) : (
                 visibleScripts.map((script) => {
-                  const trackedCount = scriptEntryIds(script).filter((languageId) =>
-                    checkedIds.has(languageId),
-                  ).length;
-                  const entries = [...script.groups, ...script.languages];
-                  const supportedCount = entries.filter(
-                    ({ presentCount, requiredCount }) => presentCount === requiredCount,
-                  ).length;
+                  const entryIds = scriptEntryIds(script);
+                  const entryCount = entryIds.length;
+                  const trackedCount = entryIds.filter((entryId) => checkedIds.has(entryId)).length;
+                  const allTracked = entryCount > 0 && trackedCount === entryCount;
+                  const someTracked = trackedCount > 0 && !allTracked;
+                  const supportedCount = fullySupportedCount(script);
 
                   return (
                     <label
                       key={script.script}
                       className="flex cursor-pointer select-none items-center gap-2 rounded px-1 py-1.5 text-ui text-primary hover:bg-hover"
-                      title={`${supportedCount} of ${entries.length} groups and languages fully supported`}
+                      title={`${supportedCount} of ${entryCount} character sets and languages fully supported`}
                       onMouseDown={onMouseDown}
                     >
                       <Checkbox
-                        checked={trackedCount > 0}
+                        checked={allTracked}
+                        indeterminate={someTracked}
                         onCheckedChange={(checked) => setScriptChecked(script, checked)}
                       />
                       <ScriptIcon script={script.script} />
                       <span className="min-w-0 flex-1 truncate">{script.script}</span>
+                      {trackedCount > 0 && (
+                        <span className="shrink-0 text-xs text-muted">
+                          {trackedCount}/{entryCount}
+                        </span>
+                      )}
                     </label>
                   );
                 })

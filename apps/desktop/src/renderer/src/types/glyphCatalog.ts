@@ -1,4 +1,10 @@
-import type { GlyphCategorySummary, LanguageScript } from "@shift/glyph-info";
+import type {
+  GlyphCategorySummary,
+  LanguageCoverage,
+  LanguageGroupCoverage,
+  LanguageScript,
+  RequiredGlyph,
+} from "@shift/glyph-info";
 import type { Rect2D } from "@shift/geo";
 import type { Axis } from "@shift/editor/model";
 import type { CatalogMetrics, GlyphId, GlyphName, GlyphPreview, SourceId } from "@shift/types";
@@ -15,10 +21,24 @@ export interface GlyphCatalogItem {
   readonly unicode: number | null;
 }
 
+/** A glyph a language or script group requires, as the Missing Glyphs list shows it. */
 export interface LanguageGlyph {
-  readonly codepoint: number;
-  readonly name: string;
+  readonly glyph: RequiredGlyph;
+  /** Text that renders the glyph, joined when it is a positional form. */
+  readonly preview: string;
   readonly present: boolean;
+}
+
+/** Character sets the sidebar lists together: under a heading, or alone when `section` is null. */
+export interface CharacterSetBlock {
+  readonly section: string | null;
+  readonly rows: LanguageGroupCoverage[];
+}
+
+/** Languages of one kind within a script, under a heading such as «European languages». */
+export interface LanguageSection {
+  readonly label: string;
+  readonly languages: LanguageCoverage[];
 }
 
 export type PendingGlyphNames = ReadonlyMap<GlyphId, GlyphName>;
@@ -35,18 +55,27 @@ export interface GlyphCatalogSource {
   availableGlyphs: GlyphCatalogItem[];
   filteredGlyphs: GlyphCatalogItem[];
   categories: GlyphCategorySummary[];
-  /** Tracked languages grouped by script, as shown in the sidebar. */
+  /** Tracked languages grouped by script, each with its script groups, as shown in the sidebar. */
   languageScripts: LanguageScript[];
   /** Every known language grouped by script, for choosing what to track. */
   allLanguageScripts: LanguageScript[];
   trackedLanguageIds: readonly string[];
   /** Replaces the font's tracked languages as one undoable edit. */
   setTrackedLanguageIds: (languageIds: readonly string[]) => void;
-  /** Lists every character a language requires and whether the font has it. */
-  languageGlyphs: (languageId: string) => LanguageGlyph[];
-  /** Creates one empty glyph per codepoint as one undoable edit. */
-  generateGlyphs: (codepoints: readonly number[]) => void;
+  /**
+   * Lists every glyph a language or script group requires and whether the font has it.
+   *
+   * @param setId - a language id (`arb-arabic`), script group id (`arabic/ligatures`) or
+   * character set id (`group-latin-basic`).
+   */
+  languageGlyphs: (setId: string) => LanguageGlyph[];
+  /**
+   * Creates one empty glyph per required glyph as one undoable edit: encoded
+   * glyphs at their Unicode value, unencoded forms such as `beh-ar.init` by name.
+   */
+  generateGlyphs: (glyphs: readonly RequiredGlyph[]) => void;
   categoryFilters: readonly GlyphCategoryFilter[];
+  /** The language, script group or character set filtering the grid; null when none is. */
   selectedLanguageId: string | null;
   visibleCategoryFilters: readonly GlyphCategoryFilter[];
   /** Unicode categories and the names of custom categories that the sidebar shows expanded. */

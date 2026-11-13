@@ -2,7 +2,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { groupsFromGlyphsDump, type GlyphsSidebarDump } from "../../src/glyphsSidebar.js";
-import type { Glyph, GlyphCategory, Language, LanguageGroup } from "../../src/types.js";
+import type {
+  EncodedGlyph,
+  Glyph,
+  GlyphCategory,
+  Language,
+  LanguageGroup,
+} from "../../src/types.js";
 
 /**
  * Builds the Glyphs-style groups shown under each script in the sidebar.
@@ -566,6 +572,10 @@ const ROMANIZATIONS: readonly { name: string; characters: string }[] = [
 
 const SAMI_CODES = ["sma", "sme", "smj", "smn", "sms", "sju", "sje"] as const;
 
+function isEncoded(glyph: Glyph): glyph is EncodedGlyph {
+  return glyph.codepoint !== null;
+}
+
 export function generateGroups(
   languagesPath: string,
   glyphDataPath: string,
@@ -573,7 +583,8 @@ export function generateGroups(
 ): number {
   const languages = (JSON.parse(readFileSync(languagesPath, "utf-8")) as { languages: Language[] })
     .languages;
-  const glyphs = JSON.parse(readFileSync(glyphDataPath, "utf-8")) as Glyph[];
+  // Character sets list characters, so unencoded forms such as `beh-ar.init` stay out of them
+  const glyphs = (JSON.parse(readFileSync(glyphDataPath, "utf-8")) as Glyph[]).filter(isEncoded);
 
   if (existsSync(GLYPHS_SIDEBAR_PATH)) {
     return writeSidebarGroups(glyphs, outputPath);
@@ -612,7 +623,7 @@ export function generateGroups(
       )
       .flatMap((language) => language.baseCodepoints);
   };
-  const glyphCodepoints = (predicate: (glyph: Glyph) => boolean): number[] =>
+  const glyphCodepoints = (predicate: (glyph: EncodedGlyph) => boolean): number[] =>
     glyphs.filter(predicate).map((glyph) => glyph.codepoint);
   const allOfScript = (script: string): number[] =>
     languages
@@ -824,7 +835,7 @@ export function generateGroups(
 }
 
 /** Writes the groups read from a dump of Glyphs' own sidebar. */
-function writeSidebarGroups(glyphs: readonly Glyph[], outputPath: string): number {
+function writeSidebarGroups(glyphs: readonly EncodedGlyph[], outputPath: string): number {
   const dump = JSON.parse(readFileSync(GLYPHS_SIDEBAR_PATH, "utf-8")) as GlyphsSidebarDump;
 
   const codepointByName = new Map<string, number>();
@@ -856,7 +867,7 @@ function writeSidebarGroups(glyphs: readonly Glyph[], outputPath: string): numbe
 }
 
 function categoryDrafts(
-  glyphs: readonly Glyph[],
+  glyphs: readonly EncodedGlyph[],
   glyphDataScripts: readonly string[],
 ): GroupDraft[] {
   const scripts = new Set(glyphDataScripts);

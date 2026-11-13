@@ -23,6 +23,8 @@ export interface HyperglotOrthography {
 export interface HyperglotLanguage {
   name: string;
   preferred_name?: string;
+  /** A count, or a word such as `unknown`. */
+  speakers?: number | string;
   orthographies?: HyperglotOrthography[];
   status?: "living" | "historical" | "constructed";
   validity?: "todo" | "draft" | "preliminary" | "verified";

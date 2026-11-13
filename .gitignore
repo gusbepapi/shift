@@ -133,6 +133,8 @@ packages/wasm/src/generated/
 packages/wasm/src/generated-engine/
 # Written by builds before shaping moved into the engine module; a restored cache can bring it back.
 packages/wasm/src/generated-shaping/
+# Written by earlier builds and no longer produced; a restored cache can bring it back.
+packages/wasm/src/generated-reference/
 packages/wasm/src/generated-protocol/
 packages/pack/src/.generated-*/
 # Generated before typecheck, tests and builds (generate:bridge-types); not committed.

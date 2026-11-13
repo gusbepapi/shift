@@ -18,6 +18,9 @@
 
 export { GlyphInfo } from "./GlyphInfo.js";
 
+/** Text that renders a required glyph, joined when it is a positional form. */
+export { glyphPreviewText } from "./glyphSets.js";
+
 /** Load the default pre-built resource bundle. */
 export { defaultResources } from "./resources.js";
 
@@ -36,6 +39,10 @@ export type {
   CharsetSummary,
   /** Bidirectional codepoint decomposition maps. */
   Decomposition,
+  /** A font glyph as language coverage reads it: its name and Unicode values. */
+  FontGlyph,
+  /** The position of a joining letter's form within a word. */
+  GlyphPosition,
   /** Known Unicode general category for glyph classification. */
   CustomCategory,
   GlyphCategory,
@@ -69,6 +76,8 @@ export type {
   LanguageStatus,
   /** How far Hyperglot has reviewed a language orthography. */
   LanguageValidity,
+  /** A variety folded under another language, with the glyphs it needs beyond it. */
+  LanguageVariety,
   /** Reports coverage of one language orthography within a font. */
   LanguageCoverage,
   /** A Glyphs-style named character set listed under a script. */
@@ -77,6 +86,18 @@ export type {
   LanguageGroupCoverage,
   /** Groups language coverage entries sharing a script. */
   LanguageScript,
+  /** Where an Indic vowel sign sits around its consonant. */
+  IndicPosition,
+  /** Unicode character properties glyph sets read. */
+  UnicodeProperties,
+  /** A joining-script letter and the dotless skeleton it is drawn on. */
+  LetterSkeleton,
+  /** A glyph a language or script group requires, by name. */
+  RequiredGlyph,
+  /** A glyph set a script needs beside its languages, such as Basic Shapes. */
+  ScriptGroup,
+  /** Reports coverage of one script group within a font. */
+  ScriptGroupCoverage,
   /** A single hit from `GlyphInfo.search()`, ranked by relevance. */
   SearchResult,
 } from "./types.js";

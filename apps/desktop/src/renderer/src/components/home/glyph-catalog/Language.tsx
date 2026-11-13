@@ -1,36 +1,41 @@
 import { useRef, useState } from "react";
-import type {
-  Language as LanguageEntry,
-  LanguageCoverage,
-  LanguageGroup,
-  LanguageGroupCoverage,
-} from "@shift/glyph-info";
+import type { RequiredGlyph } from "@shift/glyph-info";
 import { SidebarRowButton } from "@/components/sidebar";
 import type { LanguageGlyph } from "@/types/glyphCatalog";
 import { GuideSlot } from "@/components/editor/object-tree/ObjectSectionRow";
 import { MissingGlyphsPopover } from "./MissingGlyphsPopover";
 
 export interface LanguageProps {
-  coverage: LanguageCoverage | LanguageGroupCoverage;
+  /** A language id (`arb-arabic`), script group id (`arabic/basic-shapes`) or character set id. */
+  setId: string;
+  name: string;
+  /**
+   * Shown on hover: a language's autonym, full support and the languages it covers, or where a
+   * character set comes from.
+   */
+  title?: string;
+  presentCount: number;
+  requiredCount: number;
   isActive: boolean;
   canGenerate: boolean;
-  onSelect: (languageId: string) => void;
-  languageGlyphs: (languageId: string) => LanguageGlyph[];
-  onGenerate: (codepoints: readonly number[]) => void;
+  onSelect: (setId: string) => void;
+  languageGlyphs: (setId: string) => LanguageGlyph[];
+  onGenerate: (glyphs: readonly RequiredGlyph[]) => void;
 }
 
+/** One language, script group or character set row: selects its glyphs, and lists what is missing on right-click. */
 export const Language = ({
-  coverage,
+  setId,
+  name,
+  title,
+  presentCount,
+  requiredCount,
   isActive,
   canGenerate,
   onSelect,
   languageGlyphs,
   onGenerate,
 }: LanguageProps) => {
-  const { presentCount, requiredCount } = coverage;
-  const entry = "group" in coverage ? coverage.group : coverage.language;
-  const title = "group" in coverage ? groupTitle(coverage.group) : languageTitle(coverage.language);
-  const complete = requiredCount > 0 && presentCount === requiredCount;
   const rowRef = useRef<HTMLButtonElement>(null);
   const [glyphs, setGlyphs] = useState<LanguageGlyph[] | null>(null);
 
@@ -39,22 +44,20 @@ export const Language = ({
       <SidebarRowButton
         ref={rowRef}
         isActive={isActive}
-        onClick={() => onSelect(entry.id)}
+        onClick={() => onSelect(setId)}
         onContextMenu={(event) => {
           event.preventDefault();
-          setGlyphs(languageGlyphs(entry.id));
+          setGlyphs(languageGlyphs(setId));
         }}
         title={title}
       >
         <GuideSlot className="-ml-2" />
-        <span className="min-w-0 flex-1 truncate pl-5 text-left">{entry.name}</span>
-        <span className="shrink-0 text-xs">
-          {complete ? "✓" : `${presentCount}/${requiredCount}`}
-        </span>
+        <span className="min-w-0 flex-1 truncate pl-5 text-left">{name}</span>
+        <span className="shrink-0 text-xs">{countLabel(presentCount, requiredCount)}</span>
       </SidebarRowButton>
       <MissingGlyphsPopover
         anchor={rowRef}
-        languageName={entry.name}
+        languageName={name}
         glyphs={glyphs}
         canGenerate={canGenerate}
         onClose={() => setGlyphs(null)}
@@ -64,21 +67,13 @@ export const Language = ({
   );
 };
 
-/** Tooltip text: the autonym followed by anything that qualifies how reliable or current the entry is. */
-export function languageTitle(language: LanguageEntry): string | undefined {
-  const qualifiers: string[] = [];
-  if (language.status === "historical") qualifiers.push("Historical");
-  if (language.status === "constructed") qualifiers.push("Constructed");
-  if (language.orthography === "secondary") qualifiers.push("Secondary orthography");
-  if (language.validity === "draft") qualifiers.push("Draft data");
+/**
+ * "3/10", "✓" for a set the font has completely, or "—" for a language that adds nothing beyond
+ * its script's Basic set.
+ */
+function countLabel(presentCount: number, requiredCount: number): string {
+  if (requiredCount === 0) return "—";
+  if (presentCount === requiredCount) return "✓";
 
-  const parts = language.autonym === null ? qualifiers : [language.autonym, ...qualifiers];
-  return parts.length === 0 ? undefined : parts.join(" · ");
-}
-
-/** Tooltip text of a group, saying whether its characters are published or derived. */
-export function groupTitle(group: LanguageGroup): string {
-  return group.basis === "exact"
-    ? "Published character set"
-    : "Derived from Hyperglot and GlyphData";
+  return `${presentCount}/${requiredCount}`;
 }

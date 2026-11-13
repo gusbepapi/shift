@@ -7,11 +7,14 @@ import { generateCharsets } from "./generators/charsets.js";
 import { generateLanguages } from "./generators/languages.js";
 import { generateGroups } from "./generators/groups.js";
 import { generateSearchIndex } from "./generators/search.js";
+import { generateSkeletons } from "./generators/skeletons.js";
+import { generateUnicode } from "./generators/unicode.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RESOURCES_DIR = join(__dirname, "..", "resources");
 const GLYPHS_INFO_DIR = join(__dirname, "..", "vendor", "GlyphsInfo");
 const HYPERGLOT_DIR = join(__dirname, "..", "vendor", "Hyperglot");
+const UNICODE_DIR = join(__dirname, "..", "vendor", "unicode");
 
 function ensureDir(dir: string) {
   if (!existsSync(dir)) {
@@ -52,7 +55,7 @@ function generate() {
 
   // Step 4: languages.json
   const languagesPath = join(RESOURCES_DIR, "languages.json");
-  const languageCount = generateLanguages(HYPERGLOT_DIR, languagesPath);
+  const languageCount = generateLanguages(HYPERGLOT_DIR, UNICODE_DIR, languagesPath);
   console.log(`  languages.json: ${languageCount} languages (${formatSize(languagesPath)})`);
 
   // Step 5: groups.json (depends on languages.json and glyph-data.json)
@@ -60,7 +63,17 @@ function generate() {
   const groupCount = generateGroups(languagesPath, glyphDataPath, groupsPath);
   console.log(`  groups.json: ${groupCount} groups (${formatSize(groupsPath)})`);
 
-  // Step 6: search-data.json (depends on glyph-data.json)
+  // Step 6: skeletons.json
+  const skeletonsPath = join(RESOURCES_DIR, "skeletons.json");
+  const skeletonCount = generateSkeletons(join(UNICODE_DIR, "ArabicShaping.txt"), skeletonsPath);
+  console.log(`  skeletons.json: ${skeletonCount} letters (${formatSize(skeletonsPath)})`);
+
+  // Step 7: unicode.json
+  const unicodePath = join(RESOURCES_DIR, "unicode.json");
+  const unicodeCounts = generateUnicode(UNICODE_DIR, unicodePath);
+  console.log(`  unicode.json: ${JSON.stringify(unicodeCounts)} (${formatSize(unicodePath)})`);
+
+  // Step 8: search-data.json (depends on glyph-data.json)
   const searchDataPath = join(RESOURCES_DIR, "search-data.json");
   const searchCount = generateSearchIndex(glyphDataPath, searchDataPath);
   console.log(`  search-data.json: ${searchCount} entries (${formatSize(searchDataPath)})`);

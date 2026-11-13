@@ -75,10 +75,7 @@ export const ScriptPanel = ({ runId, current, onPick }: ScriptPanelProps) => {
 function useLanguageCatalog(): LanguageCatalog {
   const editor = useEditor();
   const entries = useSignalState(editor.font.glyphEntriesCell);
-  return useMemo(
-    () => getGlyphInfo().createLanguageCatalog(entries.flatMap((entry) => [...entry.unicodes])),
-    [entries],
-  );
+  return useMemo(() => getGlyphInfo().createLanguageCatalog(entries), [entries]);
 }
 
 /** Every language with a BCP 47 tag, by name, and the tag each choice sets. */
@@ -106,7 +103,7 @@ function scriptChoices(
   const codes = new Set<string>(detected);
   if (current) codes.add(current);
   for (const entry of catalog.scripts) {
-    const supported = entry.languages.some((coverage) => coverage.presentCount > 0);
+    const supported = entry.languages.some((coverage) => coverage.fullPresentCount > 0);
     const code = entry.languages[0]?.language.scriptCode;
     if (supported && code) codes.add(code);
   }
