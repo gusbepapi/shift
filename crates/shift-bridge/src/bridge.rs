@@ -1,37 +1,36 @@
-use crate::errors::{self, BridgeError, BridgeResult, generic_failure};
+use crate::errors::{self, BridgeError, BridgeResult, generic_failure, invalid_arg};
 use crate::input::parse_id_list;
 use crate::reply::{PackedReply, answer};
+use crate::wire_napi::IntoEach;
+use crate::wire_napi::{
+  self, NapiGlyphPreview, NapiGlyphProjection, NapiGlyphSnapshot, NapiGlyphSnapshotRequest,
+  NapiLayerRead,
+};
 use napi::bindgen_prelude::*;
 use napi::{Error, Status};
 use napi_derive::napi;
 use shift_backends::{
-  AxisIndex as SourceAxisIndex, DirectoryGlyph, DirectoryInstance, DirectorySource, ExportFormat,
-  FontDirectory, FontExportRequest, FontExportResult, FontExporter, FontSource, FontView,
-  GlyphIndex, GlyphPointKind as SourceGlyphPointKind, GlyphProjection as SourceGlyphProjection,
-  GlyphShape as SourceGlyphShape, OpenedFont, SourceAtlasDescriptor, SourceIds, VariationAxisKind,
-  font_loader::FontLoader,
+  AxisIndex as SourceAxisIndex, BinaryEncoding, BinaryEncodings, DirectoryGlyph, DirectoryInstance,
+  DirectorySource, ExportFormat, FontDirectory, FontExportRequest, FontExportResult, FontExporter,
+  FontSource, FontView, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
+  GlyphProjection as SourceGlyphProjection, GlyphShape as SourceGlyphShape, OpenedFont,
+  SourceAtlasDescriptor, SourceIds, VariationAxisKind, font_loader::FontLoader,
 };
 use shift_font::composite::resolved_contours_to_svg_path;
-use shift_font::{
-  AnchorId, Axis as FontAxis, AxisId, AxisMapping as FontAxisMapping, AxisMappingId,
-  AxisMappingPoint as FontAxisMappingPoint, ComponentId, ContourId, Font, Glyph, GlyphId,
-  GlyphLayer, LayerId, Location as FontLocation, MetricId, MetricKind, NamedInstanceId, PointId,
-  SourceId,
-};
-use shift_slug::{AuthoredAtlasProfile, VariableAtlas};
-use shift_wire::bridges::napi::IntoEach;
-use shift_wire::values;
-use shift_wire::{
+use shift_font::wire::{
   AnchorData, ComponentData, ComponentGlyph, ComponentTransformKind, ContourData, FontMetadata,
   FontMetrics, FontSnapshot, GlyphComponents, GlyphEntry, GlyphLayerShape, GlyphLayerSnapshot,
   GlyphProjection, GlyphSnapshot, GlyphSnapshotRequest, GlyphSourceComponents, GlyphSourceShape,
   GlyphState, GlyphStructure, GlyphVariation, InterpolationSupport, Location as WireLocation,
   MetricDefinition, NamedInstance, PointData, PointType, VariationBasis, VariationDelta,
-  bridges::napi::{
-    NapiGlyphPreview, NapiGlyphProjection, NapiGlyphSnapshot, NapiGlyphSnapshotRequest,
-    NapiLayerRead,
-  },
 };
+use shift_font::{
+  AnchorId, Axis as FontAxis, AxisId, AxisMapping as FontAxisMapping, AxisMappingId,
+  AxisMappingPoint as FontAxisMappingPoint, CompiledHeader, ComponentId, ContourId, Font, Glyph,
+  GlyphId, GlyphLayer, LayerId, Location as FontLocation, MetricId, MetricKind, NamedInstanceId,
+  PointId, SourceId,
+};
+use shift_slug::{AuthoredAtlasProfile, VariableAtlas};
 use shift_workspace::{AcquireScope, FontWorkspace, WorkspaceError};
 use std::{
   collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -52,14 +51,58 @@ use workspace::native_workspace_request;
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct NapiFontExportRequest {
-  pub path: String,
+  /// The directory to export into; Rust names the files in it.
+  pub directory: String,
   pub format: String,
+  /// `"plan"` lists the files the export would write without writing them;
+  /// `"write"`, the default, exports.
+  pub mode: Option<String>,
+  /// The encodings each binary is written in (`"ttf"`, `"woff2"`); TrueType
+  /// only when absent. Source formats ignore it.
+  pub encodings: Option<Vec<String>>,
 }
 
 #[napi(object)]
 pub struct NapiFontExportResult {
   pub path: String,
   pub format: String,
+  /// Every file or UFO directory the export wrote, or would write when planned.
+  pub files: Vec<String>,
+}
+
+/// The encodings an export request names, TrueType only when it names none.
+fn binary_encodings(tokens: Option<&[String]>) -> Result<BinaryEncodings> {
+  let Some(tokens) = tokens else {
+    return Ok(BinaryEncodings::ttf());
+  };
+  let encodings = tokens
+    .iter()
+    .map(|token| BinaryEncoding::try_from(token.as_str()))
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(invalid_arg)?;
+  BinaryEncodings::new(encodings).map_err(invalid_arg)
+}
+
+/// Whether an export request writes its files or only lists them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExportMode {
+  Write,
+  Plan,
+}
+
+impl TryFrom<Option<&str>> for ExportMode {
+  type Error = BridgeError;
+
+  fn try_from(mode: Option<&str>) -> BridgeResult<Self> {
+    match mode {
+      None | Some("write") => Ok(Self::Write),
+      Some("plan") => Ok(Self::Plan),
+      Some(other) => Err(BridgeError::InvalidInput {
+        kind: "export mode",
+        value: other.to_string(),
+      }),
+    }
+  }
 }
 
 struct SlugAtlasGeneration {
@@ -67,25 +110,17 @@ struct SlugAtlasGeneration {
   alignment: usize,
   atlas: VariableAtlas,
 }
-impl TryFrom<NapiFontExportRequest> for FontExportRequest {
-  type Error = Error;
-
-  fn try_from(request: NapiFontExportRequest) -> Result<Self> {
-    let format = ExportFormat::try_from(request.format.as_str())
-      .map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-
-    Ok(Self {
-      path: request.path.into(),
-      format,
-    })
-  }
-}
 
 impl From<FontExportResult> for NapiFontExportResult {
   fn from(result: FontExportResult) -> Self {
     Self {
       path: result.path.to_string_lossy().into_owned(),
       format: result.format.as_str().to_string(),
+      files: result
+        .files
+        .iter()
+        .map(|file| file.to_string_lossy().into_owned())
+        .collect(),
     }
   }
 }
@@ -158,6 +193,50 @@ impl RetainedSource {
       // A preview reads only its source's directory: no lib, kerning or
       // metric interpolation.
       ..Default::default()
+    })
+  }
+
+  /// The source's font without glyphs, under the ids its snapshot gives:
+  /// its names, units per em, axes, axis mappings and sources; and each
+  /// glyph's id in glyph order. What a window's engine opens to map the
+  /// source's locations, evaluate the compiled deltas its glyphs carry and
+  /// shape with its binary.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BridgeError::InvalidInput`] when a mapping names an axis the
+  /// source lacks, and the font's error when it refuses the mappings.
+  fn header(&self) -> BridgeResult<CompiledHeader> {
+    let directory = self.font.directory();
+    let ids = &self.identity;
+    let mut header = Font::empty();
+    header.metadata_mut().family_name = directory.family_name().map(str::to_string);
+    header.metadata_mut().style_name = directory.style_name().map(str::to_string);
+    header.metrics_mut().units_per_em = directory.metrics().units_per_em;
+    for axis in &ids.font_axes {
+      header.add_axis(axis.clone())?;
+    }
+    for source in ids.wire(&ids.source_ids, directory.sources()) {
+      header.add_source(source);
+    }
+    header.set_default_source_id(ids.source_id(directory.default_source())?);
+    header.set_axis_mappings(ids.axis_mappings_of(directory)?)?;
+    Ok(CompiledHeader {
+      font: header,
+      glyph_ids: ids.glyph_ids.to_vec(),
+    })
+  }
+
+  /// The compiled font's file as read.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BridgeError::InvalidInput`] for an authored source (UFO,
+  /// designspace, Glyphs), which has no binary.
+  fn binary(&self) -> BridgeResult<&[u8]> {
+    self.font.binary().ok_or_else(|| BridgeError::InvalidInput {
+      kind: "font source",
+      value: "an authored source has no binary".to_string(),
     })
   }
 
@@ -600,9 +679,13 @@ impl FontView for FontSaveSnapshot {
   }
 }
 
+/// Exports, or plans an export of, an owned copy of the workspace font with
+/// every layer loaded, off the JavaScript thread.
 pub struct ExportFontTask {
-  snapshot: FontSaveSnapshot,
+  font: Font,
   request: FontExportRequest,
+  encodings: BinaryEncodings,
+  mode: ExportMode,
 }
 
 impl Task for ExportFontTask {
@@ -610,9 +693,18 @@ impl Task for ExportFontTask {
   type JsValue = NapiFontExportResult;
 
   fn compute(&mut self) -> Result<Self::Output> {
-    FontExporter::new()
-      .export(&self.snapshot, self.request.clone())
-      .map_err(generic_failure)
+    let exporter = FontExporter::new();
+    match self.mode {
+      ExportMode::Write => exporter.export_with(&self.font, self.request.clone(), &self.encodings),
+      ExportMode::Plan => exporter
+        .plan_with(&self.font, &self.request, &self.encodings)
+        .map(|files| FontExportResult {
+          path: self.request.path.clone(),
+          format: self.request.format,
+          files,
+        }),
+    }
+    .map_err(generic_failure)
   }
 
   fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -1021,9 +1113,16 @@ impl Bridge {
     &mut self,
     request: NapiFontExportRequest,
   ) -> Result<AsyncTask<ExportFontTask>> {
+    let mode = ExportMode::try_from(request.mode.as_deref())?;
+    let format = ExportFormat::try_from(request.format.as_str()).map_err(invalid_arg)?;
+    let encodings = binary_encodings(request.encodings.as_deref())?;
+    let font = self.font_with_all_layers().map_err(generic_failure)?;
+    let request = FontExporter::request_in(&font, format, Path::new(&request.directory));
     Ok(AsyncTask::new(ExportFontTask {
-      snapshot: self.save_snapshot().map_err(generic_failure)?,
-      request: request.try_into()?,
+      font,
+      request,
+      encodings,
+      mode,
     }))
   }
 
@@ -1077,12 +1176,12 @@ impl Bridge {
 
       let projection = font.glyph_projection(glyph_id)?.as_ref().map(Into::into);
 
-      let layers = font
-        .master_layers(glyph)
-        .map(|layer| GlyphLayerSnapshot {
+      let layers = glyph
+        .located_layers(font)
+        .map(|located| GlyphLayerSnapshot {
           glyph_id,
-          source_id: layer.source_id(),
-          state: GlyphState::from_layer(layer),
+          source_id: located.layer.source_id(),
+          state: GlyphState::from_layer(located.layer),
         })
         .collect();
 
@@ -1171,7 +1270,7 @@ impl Bridge {
   pub fn get_glyph_previews(
     &mut self,
     glyph_ids: Vec<String>,
-    location: values::Location,
+    location: wire_napi::Location,
   ) -> errors::Result<Vec<NapiGlyphPreview>> {
     let glyph_ids = parse_id_list::<GlyphId>(&glyph_ids)?;
     let location =
@@ -1282,11 +1381,11 @@ impl Bridge {
   }
 
   #[napi]
-  pub fn map_location(&self, location: values::Location) -> errors::Result<values::Location> {
+  pub fn map_location(&self, location: wire_napi::Location) -> errors::Result<wire_napi::Location> {
     let external =
       shift_font::ExternalLocation::from_untyped(shift_font::Location::try_from(location)?);
     let mapped = self.font()?.mapped_location(&external)?;
-    Ok(shift_wire::Location::from(mapped.as_untyped()).into())
+    Ok(shift_font::wire::Location::from(mapped.as_untyped()).into())
   }
 
   /// Snapshots the font with only the glyphs its thumbnail specimen compiles loaded.
@@ -1295,9 +1394,10 @@ impl Bridge {
     Ok(FontSaveSnapshot::new(self.font()?.clone(), None))
   }
 
-  fn save_snapshot(&mut self) -> BridgeResult<FontSaveSnapshot> {
+  /// An owned copy of the font with every layer loaded.
+  fn font_with_all_layers(&mut self) -> BridgeResult<Font> {
     self.workspace_mut()?.acquire_all_layers()?;
-    Ok(FontSaveSnapshot::new(self.font()?.clone(), None))
+    Ok(self.font()?.clone())
   }
 
   fn workspace(&self) -> BridgeResult<&FontWorkspace> {
@@ -1369,9 +1469,9 @@ mod tests {
     NativeWorkspace, NativeWorkspaceClient, NativeWorkspaceError, SaveState, SourceKind,
   };
   use super::*;
+  use crate::wire_napi::{NapiGlyphSnapshotRequest, NapiGlyphState};
   use pack::{Bytes, CarryingNames, Packed};
   use shift_font::{AnchorSeed, FontIntent, FontIntentSet, PointSeed};
-  use shift_wire::bridges::napi::{NapiGlyphSnapshotRequest, NapiGlyphState};
   use std::cell::RefCell;
   use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2979,7 +3079,7 @@ mod tests {
   }
 
   #[test]
-  fn save_snapshot_includes_applied_glyph_edits() {
+  fn exported_font_includes_applied_glyph_edits() {
     let mut bridge = bridge_with_workspace();
     let (layer_id, contour_id) = pen_setup(&mut bridge);
     let point_id = PointId::new().to_string();
@@ -2995,12 +3095,12 @@ mod tests {
       )
       .unwrap();
 
-    let snapshot = bridge.save_snapshot().unwrap();
-    let glyph = snapshot
-      .glyph("A")
-      .expect("snapshot should include edited A");
+    let font = bridge.font_with_all_layers().unwrap();
+    let glyph = font
+      .glyph_by_name("A")
+      .expect("the exported font should include edited A");
     let layer = glyph
-      .layer_for_source(snapshot.default_source_id().unwrap())
+      .layer_for_source(font.default_source_id().unwrap())
       .expect("edited glyph should include default layer");
 
     assert_eq!(bridge.get_glyphs().unwrap().len(), 1);
@@ -3189,7 +3289,7 @@ mod tests {
     let previews = bridge
       .get_glyph_previews(
         vec![glyph.id.to_string(), missing_glyph_id],
-        values::Location {
+        wire_napi::Location {
           values: HashMap::new(),
         },
       )

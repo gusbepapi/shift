@@ -41,6 +41,7 @@ crates/shift-font/src/
   curve_fit.rs     -- one cubic or quadratic fitted to a connected run of segments, for deletion
   point_arrange.rs -- transform, align and distribute selected points; shift a sidebearing
   svg_path.rs      -- contours from SVG path data, for authoring payloads and pasted SVG
+  wire/            -- the shapes the bridge and the editor's WebAssembly carry to TypeScript: snapshots, layer values, `FontReplacement`, id parsing
   naming.rs        -- names for new glyphs and anchors: the name, or the name numbered `.1`, `.2`, ...
   interpolation.rs -- source compatibility, reusable bases, source values
   projection.rs    -- location-independent glyph payloads and resolved views; compiled anchors at a location
@@ -81,7 +82,8 @@ crates/shift-font/src/
 - `VariationBasis` is the source-neutral Fontdrasil output: normalized regions paired with numeric `VariationDelta` vectors.
 - `InterpolationBasis` combines real source identities with a `VariationBasis` whose vectors produce source weights; it never contains glyph coordinates or metrics.
 - `AxisMappingBasis` combines mapping input/output identities with a `VariationBasis` whose vectors produce output adjustments in design units, added to the input value. Inputs are normalized over the user axis; outputs are not, because design values can lie outside the user range (a default at the axis end with stem-width design values).
-- `DesignNormalization` retains an axis's numerical design minimum, mapped default, and maximum. `normalize` treats values within a relative `1e-9` of the default, `0`, or `±1` as exactly those, because mapped defaults and extremes carry rounding error and the variation model only recognises an exact default; region evaluation clamps normalized coordinates to `-1..=1`. `Font::design_normalization()` derives it from compiled independent mapping bases, preserving unmapped/internal ranges and reversed or nonmonotonic design extrema.
+- `AxisRange` is the one minimum/default/maximum → `-1..=1` rule; `AxisKind::normalize`, the source projection and the atlas axes all call it. `DesignNormalization` retains an axis's numerical design minimum, mapped default, and maximum as an `AxisRange`. `normalize` treats values within a relative `1e-9` of the default, `0`, or `±1` as exactly those, because mapped defaults and extremes carry rounding error and the variation model only recognises an exact default; region evaluation clamps normalized coordinates to `-1..=1`. `Font::design_normalization()` derives it from compiled independent mapping bases, preserving unmapped/internal ranges and reversed or nonmonotonic design extrema.
+- `Font::static_instance` / `Font::static_at` evaluate the font at one location into a font with one master and no axes, for static binaries: glyphs through `GlyphInterpolation` (a glyph without a model keeps its fallback layer), source metrics through `SourceMetricInterpolation`, and kerning through `KerningBlend`. Kerning keeps its groups: each authored pair takes `KerningBlend::pair_value` (a master's own value, else the group pair compilers fill it with), and a glyph pair whose compiled value those pairs do not reproduce gains its own pair.
 - `GlyphInterpolation` combines a reusable basis with one glyph's compatible authored source values. The glyph's default-source layer owns topology when present; otherwise a deterministic master-backed reference layer allows sparse glyph interpolation.
 - `LayerMatch` derives cross-layer contour, point, anchor, and component identity mappings for structurally compatible layers; `LayerMatch::counterparts` maps a list of reference ids to their `Counterparts` in the target, or none for an incomplete match. `LayerDifference` retains ordered structural evidence for incompatible layers.
 - `GlyphProjection` is a compact location-independent glyph payload: shared fallback layers, optional compatible interpolation, an optional decomposition basis, exact-source topology exceptions, `GlyphComponents`, and transitive component identities.
@@ -132,9 +134,9 @@ Coordinates, advance width, smooth flags, anchor positions, and component transf
 
 ## Boundaries
 
-`shift-font` should not expose TypeScript-facing wire contracts. Those belong in `shift-wire`.
+TypeScript-facing wire contracts live apart from the domain model, in `wire` (`shift_font::wire`); the napi twins of those that still cross as napi objects live in `shift-bridge` (`wire_napi.rs`).
 
-`shift-wire` may translate native bases, source values, and projections into transport DTOs, but it must not rebuild source samples, define value ordering or topology compatibility, or evaluate variation models.
+`wire` may translate native bases, source values, and projections into transport DTOs, but it must not rebuild source samples, define value ordering or topology compatibility, or evaluate variation models.
 
 `shift-font` should not perform SQLite persistence or define a durable binary encoding. Canonical document and recovery reads, writes, MessagePack encoding, compression, and compatibility policy belong in `shift-store`.
 
@@ -165,7 +167,7 @@ Transport and workspace layers should pass stable identity to find the model obj
 2. Implement the staged mutation branch in `Font::apply_intents`, delegating the actual edit to the owning model object (`GlyphLayer`, `Font`, or `Source`). Existing metadata, collection, glyph, and layer scopes are compared and coalesced automatically.
 3. If the intent introduces a new authored scope, add one coarse reversible `FontChange` variant, include it in `Font::apply_change_set`, and teach `shift-store` to persist that replacement. Do not add workspace-specific inverse state or replay logic.
 4. If the renderer needs identity synchronously, accept caller-minted IDs through a seed struct such as `PointSeed` rather than returning Rust-minted IDs after the fact.
-5. Derive `Pack` on the payload behind the `pack` feature (`#[cfg_attr(feature = "pack", derive(pack::Pack))]`), and on any value it carries; the window's engine and the native workspace both receive it as is, and its TypeScript type is generated from it. A value whose TypeScript name would clash with one of `shift-wire`'s records takes a `#[pack(rename)]`, as `Axis` (`FontAxis`) does.
+5. Derive `Pack` on the payload behind the `pack` feature (`#[cfg_attr(feature = "pack", derive(pack::Pack))]`), and on any value it carries; the window's engine and the native workspace both receive it as is, and its TypeScript type is generated from it. A value whose TypeScript name would clash with one of `wire`'s records takes a `#[pack(rename)]`, as `Axis` (`FontAxis`) does.
 6. Verify apply/invert round trips and stale-origin atomicity in `shift-font`, persistence in `shift-store`, and undo/redo in `shift-workspace`.
 
 ### Adding a glyph-layer geometry mutation
@@ -206,4 +208,4 @@ cargo test -p shift-font
 - `shift-store` -- canonical SQLite `.shift` documents and recovery persistence.
 - `shift-workspace` -- mutation, ledger, and source/store coordination.
 - `shift-backends` -- import and compiler adapters.
-- `shift-wire` -- transport DTO projection.
+- `wire` -- transport DTO projection (`src/wire/`).

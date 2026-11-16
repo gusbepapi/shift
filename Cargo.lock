@@ -27,6 +27,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -111,6 +126,12 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
 name = "archery"
@@ -271,6 +292,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli"
+version = "9.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "627b7cfb0578f0eafce087a90fcd40add1231900b69e4d4de2d456260a4f5d81"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "6.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75c74c9c51b9140663e196b5fb88bc94c334d7a497c8311cb759d8557874747f"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -295,6 +337,12 @@ dependencies = [
  "quote",
  "syn 2.0.104",
 ]
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -1333,6 +1381,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
+
+[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1590,6 +1648,7 @@ dependencies = [
  "base64 0.22.1",
  "close_already",
  "indexmap",
+ "kurbo",
  "log",
  "plist",
  "quick-xml 0.38.4",
@@ -2432,6 +2491,7 @@ dependencies = [
  "norad 0.18.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "ordered-float",
  "plist",
+ "proptest",
  "quick-xml 0.42.0",
  "rayon",
  "serde",
@@ -2442,7 +2502,9 @@ dependencies = [
  "skrifa",
  "tempfile",
  "thiserror",
+ "ttf2woff2",
  "write-fonts",
+ "wuff",
 ]
 
 [[package]]
@@ -2461,7 +2523,6 @@ dependencies = [
  "shift-slug",
  "shift-specimen",
  "shift-store",
- "shift-wire",
  "shift-workspace",
  "thiserror",
  "tokio",
@@ -2476,6 +2537,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "miette",
+ "rmp-serde",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2537,6 +2599,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "shift-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "norad 0.18.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "shift-backends",
+ "shift-font",
+ "tempfile",
+]
+
+[[package]]
 name = "shift-layout"
 version = "0.1.0"
 dependencies = [
@@ -2567,6 +2640,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.104",
 ]
 
@@ -2643,26 +2717,13 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde-wasm-bindgen",
+ "shift-backends",
  "shift-engine",
  "shift-font",
  "shift-layout",
  "shift-text",
- "shift-wire",
  "thiserror",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "shift-wire"
-version = "0.0.0"
-dependencies = [
- "napi",
- "napi-derive",
- "pack",
- "serde",
- "serde_json",
- "shift-font",
- "thiserror",
 ]
 
 [[package]]
@@ -3139,6 +3200,17 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "ttf2woff2"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e13bfd9cb6a94529c1d33b0f15b69746fe8583a52b9509f59ace80340f4dcf3"
+dependencies = [
+ "brotli",
+ "byteorder",
+ "thiserror",
 ]
 
 [[package]]
@@ -3830,6 +3902,17 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "wuff"
+version = "0.2.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6a992b57b3d1ee972b2e3fd9225e44793104d49818836dd812d5459187712dd"
+dependencies = [
+ "brotli-decompressor",
+ "bytes",
+ "flate2",
+]
 
 [[package]]
 name = "yoke"

@@ -264,6 +264,7 @@ These are allowed to jump around when energy is high, but they should not silent
 - [x] Canonical SQLite `.shift` identity with app-owned sparse recovery bindings and explicit Save/Discard
 - [x] FontLoader with adaptor pattern for extensibility
 - [x] Font compilation to binary (via fontc)
+- [x] Designspace and single-master UFO export from any font, glyph and master order kept, round-trip and property tested
 
 **Serialization**
 
@@ -280,6 +281,7 @@ These are allowed to jump around when energy is high, but they should not silent
 - [x] Edit axis naming/ranges without implicit dependent relocation
 - [x] Add, edit, and remove named instances with idempotent standard-weight presets
 - [x] Restore coupled variation authoring atomically through exact workspace undo/redo
+- [x] Export a document as a designspace or UFO with `shift-cli export`
 
 #### Node.js Native Bindings (shift-node)
 
@@ -451,9 +453,9 @@ These are allowed to jump around when energy is high, but they should not silent
 
 **Grid System**
 
-- [ ] Configurable grid (spacing, subdivisions)
-- [ ] Snap to grid toggle (`G` key)
-- [ ] Visual grid overlay (optional)
+- [x] Configurable grid (spacing, subdivisions)
+- [x] Snap to grid toggle (`G` key)
+- [x] Visual grid overlay (optional)
 
 **Metric Snapping**
 
@@ -500,13 +502,13 @@ These are allowed to jump around when energy is high, but they should not silent
 
 - [x] Glyph thumbnails (render actual outlines)
 - [x] Visual indicator: empty vs. has content
-- [ ] Grid zoom (cell size slider)
+- [x] Grid zoom (cell size slider)
 - [ ] List view alternative
 - [x] Search by glyph name, unicode, or character
 - [ ] Filter: show only empty / filled / charset subset
-- [ ] Multi-select glyphs in grid
+- [x] Multi-select glyphs in grid
 - [ ] Right-click context menu
-- [ ] Keyboard navigation (arrows, Enter to open)
+- [x] Keyboard navigation (arrows, Enter to open)
 
 **Character Set Management**
 
@@ -644,7 +646,7 @@ These are allowed to jump around when energy is high, but they should not silent
 
 - [x] Explicit named-instance IR, persistence, and `fvar` compilation
 - [ ] Instance preview panel
-- [ ] Batch instance export
+- [x] Batch instance export (`shift-cli compile --static`: one static TTF per named instance)
 - [x] STAT table generation
 
 ---
@@ -655,8 +657,8 @@ These are allowed to jump around when energy is high, but they should not silent
 
 - [ ] Draggable sidebearing handles in editor
 - [ ] Numeric sidebearing input in glyph info panel
-- [ ] Link sidebearings (left = right)
-- [ ] Copy metrics from another glyph
+- [x] Link sidebearings (left = right)
+- [x] Copy metrics from another glyph
 
 **Spacing View**
 

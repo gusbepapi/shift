@@ -28,10 +28,13 @@ import {
   type SegmentId,
   type SelectableId,
   type ShiftId,
+  type MetricsKeySide,
+  type MarkColor,
 } from "@shift/types";
 import { isSegmentId, type GlyphGeometry } from "@shift/glyph-state";
 import type { ExternalAxisLocation } from "../../types/variation";
 import type { SourceSelectionMode } from "../../types/sourceSelection";
+import type { GridStorage } from "../../types/grid";
 import type {
   Coordinates,
   LocalBounds,
@@ -92,6 +95,7 @@ import {
 import { cursorToCSS } from "../styles/cursor";
 import { Hover } from "./Hover";
 import { Snapping } from "./Snapping";
+import { Grid } from "./Grid";
 import { Renderer } from "./rendering/Renderer";
 import { Scene } from "./Scene";
 import { SessionScene } from "./SessionScene";
@@ -105,6 +109,7 @@ import { EditorHistory } from "./history/EditorHistory";
 import type { Font } from "../model/Font";
 import type { FontStore } from "../model/FontStore";
 import type { Glyph, GlyphLayer } from "../model/Glyph";
+import { MetricsLinks } from "../model/MetricsLinks";
 import { AnchorEdits } from "../model/anchors/AnchorEdits";
 import type { DeleteMode, GlyphGeometrySelection } from "../../types/glyph";
 import type { Modifiers } from "../tools/core/GestureDetector";
@@ -197,6 +202,8 @@ export class Editor {
   readonly editing: Editing;
   readonly history: EditorHistory;
   readonly hover: Hover;
+  /** The canvas grid's spacing and whether it draws and snaps; session state, not font data. */
+  readonly grid: Grid;
   /** Builds the snap targets tools use while moving or placing glyph points. */
   readonly snapping: Snapping;
   readonly font: Font;
@@ -335,12 +342,18 @@ export class Editor {
       this.sessionMode === "workspace" ? this.font.editCoordinator : null,
     );
     this.history.onCaptureFinishing((changed) => this.#runContentHooks(changed));
+    // A preview looks at its font as a document does, and refuses every
+    // change at the font, saying the font is read-only.
+    if (this.sessionMode === "preview") {
+      this.font.refuseEdits(() => this.notifyPreviewMutationAttempt());
+    }
     this.pages = new Pages(this);
     sceneDocument.followReplays((location) => this.pages.reveal(location));
     // A session without a document starts with one page; setup, not an edit.
     // A document's scene has its first page already.
     if (this.#sessionScene) this.history.withoutRecording(() => this.pages.ensure());
     this.hover = new Hover();
+    this.grid = new Grid(this.sessionMode === "workspace" ? this.#gridStorage() : null);
     this.snapping = new Snapping(this);
     this.#selectedPoints = computed(
       () => this.#resolveSelectedPoints(this.selection.stateCell.value.ids),
@@ -1180,6 +1193,19 @@ export class Editor {
   }
 
   /**
+   * The metrics keys of the scene's only glyph at the active source.
+   *
+   * @returns null with no glyph or several, no active source, or no layer there.
+   */
+  public activeMetricsLinks(): MetricsLinks | null {
+    const node = this.scene.only("glyph");
+    const layer = this.#soleActiveLayer();
+    if (!node || !layer) return null;
+
+    return new MetricsLinks(this.font, node.glyphId, layer);
+  }
+
+  /**
    * Returns a loaded glyph's layer at a source.
    *
    * @returns null when the glyph is not loaded or has no layer at that source.
@@ -1603,6 +1629,36 @@ export class Editor {
     });
   }
 
+  /**
+   * Tags glyphs with a mark colour, or clears their tags, as one undoable step.
+   *
+   * @remarks
+   * The edit is queued on the workspace lane; each glyph's record carries the
+   * colour once the workspace echo arrives. Does nothing for no glyphs.
+   *
+   * @param color - null clears the glyphs' colour.
+   */
+  public setMarkColor(glyphIds: readonly GlyphId[], color: MarkColor | null): void {
+    if (glyphIds.length === 0) return;
+
+    this.font.editCoordinator.transaction("Set Colour", () => {
+      this.font.setMarkColor(glyphIds, color);
+    });
+  }
+
+  /** The font's grid, written as one undoable step per change. */
+  #gridStorage(): GridStorage {
+    return {
+      gridCell: this.font.gridCell,
+      revisionCell: this.font.gridRevisionCell,
+      write: (cells) => {
+        this.font.editCoordinator.transaction("Change grid", () => {
+          this.font.setGrid(cells);
+        });
+      },
+    };
+  }
+
   /** Return the shared external location to the font default. */
   public setSourceToDefault(): void {
     this.setExternalLocation(this.font.defaultLocation());
@@ -1860,6 +1916,8 @@ export class Editor {
    * @returns The value returned by `body`.
    */
   public transaction<TResult>(label: string, body: () => TResult): TResult {
+    // A read-only font refuses each edit `body` makes; there is nothing to group.
+    if (this.font.refusesEdits) return body();
     return this.font.editCoordinator.transaction(label, body);
   }
 
@@ -1877,7 +1935,7 @@ export class Editor {
    * @param width - New advance width in UPM units.
    */
   public setXAdvance(width: number): void {
-    this.#soleActiveLayer()?.setXAdvance(width);
+    this.#setUnlinked("width", "Set advance width", (layer) => layer.setXAdvance(width));
   }
 
   /**
@@ -1886,7 +1944,7 @@ export class Editor {
    * @param value - Desired left sidebearing in UPM units.
    */
   public setLeftSidebearing(value: number): void {
-    this.#soleActiveLayer()?.setLeftSidebearing(value);
+    this.#setUnlinked("left", "Set left sidebearing", (layer) => layer.setLeftSidebearing(value));
   }
 
   /**
@@ -1895,7 +1953,23 @@ export class Editor {
    * @param value - Desired right sidebearing in UPM units.
    */
   public setRightSidebearing(value: number): void {
-    this.#soleActiveLayer()?.setRightSidebearing(value);
+    this.#setUnlinked("right", "Set right sidebearing", (layer) =>
+      layer.setRightSidebearing(value),
+    );
+  }
+
+  /**
+   * Sets one metric of the current glyph layer, first breaking the links that
+   * would pull it back, as one undo step: a typed value replaces a key.
+   */
+  #setUnlinked(side: MetricsKeySide, label: string, set: (layer: GlyphLayer) => void): void {
+    const links = this.activeMetricsLinks();
+    if (!links) return;
+
+    this.transaction(label, () => {
+      links.unlinkFor(side);
+      set(links.layer);
+    });
   }
 
   public get screenMousePositionCell(): Signal<ScreenPoint> {

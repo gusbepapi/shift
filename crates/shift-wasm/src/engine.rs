@@ -1,10 +1,12 @@
 //! The editing engine: an [`EngineSession`] over the open font that applies
 //! the editor's intents synchronously, in the frame they are made.
 //!
-//! Layers load on demand from the store, asked through shift-engine's
-//! [`StoreReader`] request protocol: the session encodes each request and
-//! calls the one function the editor passes in, which forwards it unchanged
-//! to the preload's native reader and returns its reply. Intents arrive as
+//! A session reads what it has not loaded from its [`EngineStore`]. A session
+//! over a store's directory loads layers on demand, asked through
+//! shift-engine's [`StoreReader`] request protocol: the session encodes each
+//! request and calls the one function the editor passes in, which forwards
+//! it unchanged to the preload's native reader and returns its reply. A
+//! resident session holds every layer and asks nothing. Intents arrive as
 //! shift-font's own, packed ([`crate::engine_edits`]), and each touched
 //! layer comes back in the same shape as the workspace's echo.
 
@@ -19,17 +21,18 @@ use shift_engine::{
     ApplyError, EditHistory, EditLocation, EngineSession, LayerSource, RecordCache, RecordSource,
     Recording, Replayed, StoreReadError, StoreReaderClient,
 };
+use shift_font::wire::replacement::FontReplacement;
+use shift_font::wire::{AnchorData, ComponentData, ContourData, values};
 use shift_font::{
-    AppliedIntents, Contour, Font, FontChangeImpact, FontIntent, FontIntentSet, GlyphDataCategory,
-    GlyphId, GlyphLayer, LayerId, NamedGlyph, TouchedLayer,
+    AppliedIntents, CompiledHeader, Contour, Font, FontChangeImpact, FontIntent, FontIntentSet,
+    GlyphDataCategory, GlyphId, GlyphLayer, LayerId, NamedGlyph, TouchedLayer,
 };
-use shift_wire::replacement::FontReplacement;
-use shift_wire::{AnchorData, ComponentData, ContourData, values};
 use wasm_bindgen::prelude::*;
 
-use crate::engine_reads::{FontVariation, InternedIds};
+use crate::engine_reads::{CompiledVariations, FontVariation, InternedIds};
 use crate::page_layout::RunLayouts;
 use crate::shaping::TextShaping;
+use shift_text::shaper_font::ShaperFont;
 
 #[wasm_bindgen(typescript_custom_section)]
 const ENGINE_TYPES: &str = r#"
@@ -136,6 +139,11 @@ enum HostError {
 
     #[error("the store returned layers that do not decode: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
+
+    /// A resident session holds every layer, so asking it to load some
+    /// means they are not in its font.
+    #[error("the resident font has no layers {0:?}")]
+    NotResident(Vec<LayerId>),
 }
 
 impl From<JsValue> for HostError {
@@ -191,68 +199,114 @@ fn send(request: &Function, method: u32, message: Packed) -> Result<Packed, Host
     Ok(Packed { numbers, blobs })
 }
 
-/// The editor's `StoreRequest` as the session's [`LayerSource`], through a
-/// [`StoreReaderClient`].
-struct HostLayers<'a>(&'a Function);
+/// Where a session reads what it has not loaded.
+pub(crate) enum EngineStore {
+    /// The store's reader across the JavaScript boundary, the editor's
+    /// `StoreRequest`: the preload's reader of a `.shift` document or of a
+    /// UFO, Glyphs or designspace file.
+    Host(Function),
+    /// Every layer is loaded: a memory session, which has nothing to read
+    /// and persists nothing.
+    Resident,
+}
 
-impl HostLayers<'_> {
+impl EngineStore {
+    /// The store as the session's [`LayerSource`] and [`RecordSource`].
+    fn reads(&self) -> StoreReads<'_> {
+        match self {
+            Self::Host(request) => StoreReads::Host(request),
+            Self::Resident => StoreReads::Resident,
+        }
+    }
+}
+
+/// An [`EngineStore`] as the session's [`LayerSource`] and [`RecordSource`]:
+/// the editor's `StoreRequest`, through a [`StoreReaderClient`], or a
+/// resident font's answers.
+///
+/// A resident session's font holds every layer, so the session never asks it
+/// to load one, and its loaded layers answer for components and anchors
+/// themselves; what is left to ask has no persisted answer. Glyph data's
+/// categories stay native, so it answers each glyph's as unknown, and records
+/// fall back to the glyph's own category and the font's
+/// `public.openTypeCategories`.
+enum StoreReads<'a> {
+    Host(&'a Function),
+    Resident,
+}
+
+impl StoreReads<'_> {
     fn client(
-        &self,
+        request: &Function,
     ) -> StoreReaderClient<CarryingNames<impl Fn(u32, Packed) -> Result<Packed, HostError> + '_>>
     {
         StoreReaderClient(CarryingNames(|method, message| {
-            send(self.0, method, message)
+            send(request, method, message)
         }))
     }
 }
 
-impl LayerSource for HostLayers<'_> {
+impl LayerSource for StoreReads<'_> {
     type Error = HostError;
 
     fn load_layers(&mut self, layer_ids: &[LayerId]) -> Result<Vec<GlyphLayer>, HostError> {
-        let bytes = self.client().layers(layer_ids.to_vec())??;
-        Ok(rmp_serde::from_slice(&bytes.0)?)
+        match self {
+            Self::Host(request) => {
+                let bytes = Self::client(request).layers(layer_ids.to_vec())??;
+                Ok(rmp_serde::from_slice(&bytes.0)?)
+            }
+            Self::Resident => Err(HostError::NotResident(layer_ids.to_vec())),
+        }
     }
 
     fn bases_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, HostError> {
-        Ok(self.client().bases_of(glyph_ids.to_vec())??)
+        match self {
+            Self::Host(request) => Ok(Self::client(request).bases_of(glyph_ids.to_vec())??),
+            Self::Resident => Ok(Vec::new()),
+        }
     }
 
     fn composites_of(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<GlyphId>, HostError> {
-        Ok(self.client().composites_of(glyph_ids.to_vec())??)
+        match self {
+            Self::Host(request) => Ok(Self::client(request).composites_of(glyph_ids.to_vec())??),
+            Self::Resident => Ok(Vec::new()),
+        }
     }
 }
 
-impl RecordSource for HostLayers<'_> {
+impl RecordSource for StoreReads<'_> {
     type Error = HostError;
 
     fn component_bases(&mut self, glyph_ids: &[GlyphId]) -> Result<Vec<Vec<GlyphId>>, HostError> {
-        if glyph_ids.is_empty() {
-            return Ok(Vec::new());
+        match self {
+            _ if glyph_ids.is_empty() => Ok(Vec::new()),
+            Self::Host(request) => Ok(Self::client(request).component_bases(glyph_ids.to_vec())??),
+            Self::Resident => Ok(vec![Vec::new(); glyph_ids.len()]),
         }
-        Ok(self.client().component_bases(glyph_ids.to_vec())??)
     }
 
     fn glyph_data_categories(
         &mut self,
         glyphs: &[NamedGlyph],
     ) -> Result<Vec<GlyphDataCategory>, HostError> {
-        if glyphs.is_empty() {
-            return Ok(Vec::new());
+        match self {
+            _ if glyphs.is_empty() => Ok(Vec::new()),
+            Self::Host(request) => Self::client(request).glyph_data_categories(glyphs.to_vec()),
+            Self::Resident => Ok(vec![GlyphDataCategory::default(); glyphs.len()]),
         }
-        self.client().glyph_data_categories(glyphs.to_vec())
     }
 
     fn attaching_anchor_layers(
         &mut self,
         layer_ids: &[LayerId],
     ) -> Result<Vec<LayerId>, HostError> {
-        if layer_ids.is_empty() {
-            return Ok(Vec::new());
+        match self {
+            _ if layer_ids.is_empty() => Ok(Vec::new()),
+            Self::Host(request) => {
+                Ok(Self::client(request).attaching_anchor_layers(layer_ids.to_vec())??)
+            }
+            Self::Resident => Ok(Vec::new()),
         }
-        Ok(self
-            .client()
-            .attaching_anchor_layers(layer_ids.to_vec())??)
     }
 }
 
@@ -280,15 +334,17 @@ enum EditEvent {
     Cancelled,
 }
 
-/// An open session, the store request it reads through, its undo history, the
+/// An open session, the store it reads through, its undo history, the
 /// session as it stood when the open edit began, to go back to if it is
 /// cancelled, and the ids the editor's reads name by number.
 pub(crate) struct Engine {
     pub(crate) session: EngineSession,
-    source: Function,
+    store: EngineStore,
     history: EditHistory,
     before_edit: Option<EngineSession>,
     pub(crate) ids: InternedIds,
+    /// The compiled variation bases the editor interned, by number.
+    pub(crate) compiled: CompiledVariations,
     /// The intents `EngineEdits::hold` sent, which the next apply, stage or
     /// preview takes.
     pub(crate) held: Vec<FontIntent>,
@@ -350,10 +406,7 @@ impl Engine {
             let glyph_changes = self
                 .session
                 .glyph_record_changes(
-                    &mut self
-                        .records
-                        .borrow_mut()
-                        .reading(&mut HostLayers(&self.source)),
+                    &mut self.records.borrow_mut().reading(&mut self.store.reads()),
                     &applied.changes,
                 )
                 .map_err(js_error)?;
@@ -398,24 +451,18 @@ impl Engine {
 
     /// Every glyph's record, in name order, as the session's font stands.
     pub(crate) fn glyph_records(&self) -> Result<shift_font::GlyphRecords, StoreReadError> {
-        Ok(self.session.glyph_records(
-            &mut self
-                .records
-                .borrow_mut()
-                .reading(&mut HostLayers(&self.source)),
-        )?)
+        Ok(self
+            .session
+            .glyph_records(&mut self.records.borrow_mut().reading(&mut self.store.reads()))?)
     }
 
     /// What the font's shaper font compiles from, as the session's font stands.
     pub(crate) fn shaper_font_source(
         &self,
     ) -> Result<shift_font::ShaperFontSource, StoreReadError> {
-        Ok(self.session.shaper_font_source(
-            &mut self
-                .records
-                .borrow_mut()
-                .reading(&mut HostLayers(&self.source)),
-        )?)
+        Ok(self
+            .session
+            .shaper_font_source(&mut self.records.borrow_mut().reading(&mut self.store.reads()))?)
     }
 
     /// The intents held for this apply, stage or preview, as one set.
@@ -442,7 +489,7 @@ impl Engine {
             }
         } else {
             self.session
-                .apply(&mut HostLayers(&self.source), &intents)
+                .apply(&mut self.store.reads(), &intents)
                 .map_err(apply_error)?
         };
         let scene = self.session.apply_scene(&scene_intents).map_err(js_error)?;
@@ -456,7 +503,7 @@ impl Engine {
     /// Loads `layer_ids` that are still placeholders, from the source.
     pub(crate) fn load_layers(&mut self, layer_ids: Vec<LayerId>) -> Result<(), JsError> {
         self.session
-            .load_layers(&mut HostLayers(&self.source), layer_ids)
+            .load_layers(&mut self.store.reads(), layer_ids)
             .map_err(js_error)
     }
 }
@@ -497,30 +544,94 @@ pub fn engine_open(
     scene: Option<Vec<u8>>,
 ) -> Result<u32, JsError> {
     let font: Font = rmp_serde::from_slice(directory)?;
-    let mut session = EngineSession::open_directory(font);
-    if let Some(scene) = scene {
-        let nodes: Vec<SceneNode> = rmp_serde::from_slice(&scene)?;
-        session = session.with_scene(nodes.into_iter().collect::<Scene>());
-    }
-    open(session, source)
+    let session = with_scene(EngineSession::open_directory(font), scene)?;
+    open(session, EngineStore::Host(source), TextShaping::default())
 }
 
-/// Keeps `session`, reading through `source`, and returns its handle.
-fn open(session: EngineSession, source: Function) -> Result<u32, JsError> {
+/// Opens a session over a whole font, every layer loaded, as named
+/// MessagePack (`EngineSession::open_loaded`): a memory session, which reads
+/// nothing from a store and persists nothing. `scene` is as for
+/// [`engine_open`]. Returns its handle.
+///
+/// # Errors
+///
+/// Fails when `font` does not decode to a font, or `scene` to scene nodes.
+#[wasm_bindgen(js_name = engineOpenResident)]
+pub fn engine_open_resident(font: &[u8], scene: Option<Vec<u8>>) -> Result<u32, JsError> {
+    let font: Font = rmp_serde::from_slice(font)?;
+    let session = with_scene(EngineSession::open_loaded(font), scene)?;
+    open(session, EngineStore::Resident, TextShaping::default())
+}
+
+/// Opens a session over a compiled font (TrueType, OpenType): `header`, a
+/// named MessagePack `CompiledHeader` (its font without glyphs and the id of
+/// each glyph in glyph order), resident, with `binary`, the font's file, as
+/// its shaper font, so its text shapes with every lookup the font ships.
+/// When `binary` cannot shape under the header's glyph ids and axes, the
+/// session still opens and its text lays out as typed, saying why. Returns
+/// its handle.
+///
+/// # Errors
+///
+/// Fails when `header` does not decode to a compiled font's header.
+#[wasm_bindgen(js_name = engineOpenCompiled)]
+pub fn engine_open_compiled(header: &[u8], binary: Vec<u8>) -> Result<u32, JsError> {
+    let CompiledHeader { font, glyph_ids } = rmp_serde::from_slice(header)?;
+    let shaper = ShaperFont::from_binary(
+        binary,
+        glyph_ids.into_iter().map(Some).collect(),
+        font.axes(),
+        font.axis_mappings(),
+    );
+    open(
+        EngineSession::open_loaded(font),
+        EngineStore::Resident,
+        TextShaping::whole(shaper),
+    )
+}
+
+/// A new font with one source and no glyphs, named `family_name`, with
+/// `units_per_em`, as named MessagePack: what [`engine_open_resident`] opens
+/// for a font started from nothing, as an untitled document starts.
+///
+/// # Errors
+///
+/// Fails when the font cannot be encoded.
+#[wasm_bindgen(js_name = engineNewFont)]
+pub fn engine_new_font(family_name: String, units_per_em: f64) -> Result<Vec<u8>, JsError> {
+    let mut font = Font::new();
+    font.metadata_mut().family_name = Some(family_name);
+    font.metrics_mut().units_per_em = units_per_em;
+    Ok(rmp_serde::to_vec_named(&font)?)
+}
+
+/// `session` with `scene`, as the store's `scene_nodes` returns it, when
+/// there is one.
+fn with_scene(session: EngineSession, scene: Option<Vec<u8>>) -> Result<EngineSession, JsError> {
+    let Some(scene) = scene else {
+        return Ok(session);
+    };
+    let nodes: Vec<SceneNode> = rmp_serde::from_slice(&scene)?;
+    Ok(session.with_scene(nodes.into_iter().collect::<Scene>()))
+}
+
+/// Keeps `session`, reading through `store`, and returns its handle.
+fn open(session: EngineSession, store: EngineStore, shaping: TextShaping) -> Result<u32, JsError> {
     ENGINES.with_borrow_mut(|engines| {
         let handle = u32::try_from(engines.len())?;
         engines.push(Some(Engine {
             session,
-            source,
+            store,
             history: EditHistory::default(),
             before_edit: None,
             ids: InternedIds::default(),
+            compiled: CompiledVariations::default(),
             held: Vec::new(),
             held_scene: Vec::new(),
             replayed_location: None,
             replaced: None,
             variation: RefCell::default(),
-            shaping: TextShaping::default(),
+            shaping,
             page_runs: RefCell::default(),
             records: RefCell::new(RecordCache::default()),
             edit_impact: FontChangeImpact::empty(),
@@ -680,7 +791,7 @@ pub fn engine_undo(handle: u32) -> Result<JsValue, JsError> {
         let before = engine.session.font().clone();
         let undone = engine
             .history
-            .undo(&mut engine.session, &mut HostLayers(&engine.source))
+            .undo(&mut engine.session, &mut engine.store.reads())
             .map_err(apply_error)?;
         replayed(engine, &before, undone)
     })
@@ -698,7 +809,7 @@ pub fn engine_redo(handle: u32) -> Result<JsValue, JsError> {
         let before = engine.session.font().clone();
         let redone = engine
             .history
-            .redo(&mut engine.session, &mut HostLayers(&engine.source))
+            .redo(&mut engine.session, &mut engine.store.reads())
             .map_err(apply_error)?;
         replayed(engine, &before, redone)
     })
@@ -775,7 +886,7 @@ pub fn engine_preview(handle: u32) -> Result<Array, JsError> {
         let set = engine.take_held();
         let staged = engine
             .session
-            .stage_loaded(&mut HostLayers(&engine.source), &set)
+            .stage_loaded(&mut engine.store.reads(), &set)
             .map_err(apply_error)?;
         // A preview keeps nothing, so the session's font is what it started
         // from; text lays out from the previewed font while it is shown.
@@ -797,7 +908,7 @@ pub fn engine_show_preview(handle: u32) -> Result<(), JsError> {
         let set = engine.take_held();
         let staged = engine
             .session
-            .stage_loaded(&mut HostLayers(&engine.source), &set)
+            .stage_loaded(&mut engine.store.reads(), &set)
             .map_err(apply_error)?;
         engine.previewed = Some(staged.font().clone());
         Ok(())
@@ -842,7 +953,7 @@ pub fn engine_preload(handle: u32, glyph_ids: Vec<String>) -> Result<(), JsError
     with_engine(handle, |engine| {
         engine
             .session
-            .load_glyph_closure(&mut HostLayers(&engine.source), glyph_ids)
+            .load_glyph_closure(&mut engine.store.reads(), glyph_ids)
             .map_err(js_error)?;
         // Runs laid out from the placeholders of what loaded lay out again.
         engine
@@ -897,7 +1008,7 @@ fn engine_layer(before: &Font, touched: &TouchedLayer) -> Result<JsValue, JsErro
         JsValue::NULL
     };
     set(&layer, "structure", &structure)?;
-    let values = shift_wire::values_from_layer(source);
+    let values = shift_font::wire::values_from_layer(source);
     set(&layer, "values", &Float64Array::from(&values[..]))?;
     set(
         &layer,

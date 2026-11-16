@@ -12,9 +12,9 @@ use crate::collection::Identified;
 use crate::error::{CoreError, CoreResult, EntityKind};
 
 use crate::{
-    Axis, AxisMapping, Component, FontMetadata, Glyph, GlyphId, GlyphLayer, KerningGroup,
-    KerningGroupId, KerningPair, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition,
-    NamedInstance, Source, SourceId, TouchedLayer,
+    Axis, AxisMapping, Component, FontMetadata, GRID_LIB_KEY, Glyph, GlyphId, GlyphLayer,
+    KerningGroup, KerningGroupId, KerningPair, LANGUAGES_LIB_KEY, LayerId, LibValue,
+    MetricDefinition, NamedInstance, Source, SourceId, TouchedLayer,
 };
 
 /// One domain projection a font change can invalidate, by name: each is one
@@ -42,11 +42,13 @@ pub enum FontChangeFlag {
     /// The canvas the font is shown on: its pages, text runs and placed
     /// glyphs. A font change never sets it; a scene edit does.
     Scene,
+    /// The grid the font is drawn on.
+    Grid,
 }
 
 impl FontChangeFlag {
     /// Every flag, in bit order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Metadata,
         Self::Languages,
         Self::Glyphs,
@@ -60,6 +62,7 @@ impl FontChangeFlag {
         Self::Kerning,
         Self::Layers,
         Self::Scene,
+        Self::Grid,
     ];
 
     /// The flag's bit in a [`FontChangeImpact`].
@@ -97,6 +100,8 @@ bitflags! {
         const LAYERS = FontChangeFlag::Layers.bit();
         /// The canvas the font is shown on, which only scene edits change.
         const SCENE = FontChangeFlag::Scene.bit();
+        /// The grid the font is drawn on.
+        const GRID = FontChangeFlag::Grid.bit();
     }
 }
 
@@ -160,7 +165,7 @@ impl Replacement<Option<Glyph>> {
 
     /// The layers this replacement writes: every layer of a new glyph, and
     /// the layers of a replaced glyph that differ from what it had.
-    pub fn changed_layers(&self) -> impl Iterator<Item = &GlyphLayer> {
+    pub fn changed_layers(&self) -> impl Iterator<Item = &Arc<GlyphLayer>> {
         self.after.iter().flat_map(move |glyph| {
             glyph
                 .layers()
@@ -171,7 +176,7 @@ impl Replacement<Option<Glyph>> {
                         .and_then(|before| before.layers().get(*layer_id))
                         .is_none_or(|before| before != *layer)
                 })
-                .map(|(_, layer)| layer.as_ref())
+                .map(|(_, layer)| layer)
         })
     }
 }
@@ -320,8 +325,8 @@ impl FontChange {
         replaced.into_iter().flatten().chain(owner)
     }
 
-    /// The layers this change leaves behind; a created glyph's layers are
-    /// structural.
+    /// The layers this change leaves behind: a replaced layer, or every layer
+    /// a replaced glyph changes, which count as structural.
     pub fn touched_layers(&self) -> impl Iterator<Item = TouchedLayer> + '_ {
         let replaced = match self {
             Self::Layer {
@@ -332,14 +337,17 @@ impl FontChange {
                 .map(|layer| TouchedLayer::new(layer, *structural)),
             _ => None,
         };
-        let created = match self {
-            Self::Glyph(value) if value.creates() => value.after.as_ref(),
+        // A created glyph's layers all count as changed; a replaced glyph's
+        // changed layers are the ones an edit moved with it, such as a side
+        // following a metrics key the same edit set.
+        let replaced_glyph = match self {
+            Self::Glyph(value) => Some(value),
             _ => None,
         };
         replaced.into_iter().chain(
-            created
+            replaced_glyph
                 .into_iter()
-                .flat_map(|glyph| glyph.layers().values())
+                .flat_map(|glyph| glyph.changed_layers())
                 .map(|layer| TouchedLayer::new(layer, true)),
         )
     }
@@ -348,7 +356,7 @@ impl FontChange {
     /// layers of a replaced glyph.
     pub fn written_layers(&self) -> impl Iterator<Item = &GlyphLayer> + '_ {
         let replaced = match self {
-            Self::Glyph(value) => Some(value.changed_layers()),
+            Self::Glyph(value) => Some(value.changed_layers().map(Arc::as_ref)),
             _ => None,
         };
         let layer = match self {
@@ -373,6 +381,7 @@ impl FontChange {
         match self {
             Self::Metadata(_) => FontChangeImpact::METADATA,
             Self::LibValue { key, .. } if key == LANGUAGES_LIB_KEY => FontChangeImpact::LANGUAGES,
+            Self::LibValue { key, .. } if key == GRID_LIB_KEY => FontChangeImpact::GRID,
             Self::Axes(_) => {
                 FontChangeImpact::AXES
                     | FontChangeImpact::SOURCES

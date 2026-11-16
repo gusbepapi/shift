@@ -90,10 +90,35 @@ export type WorkspaceDocumentIdentity = {
   canonicalPath: string;
 };
 
-/** Identifies the compiled font written by a workspace export. */
+/**
+ * A format the workspace exports, as the bridge names it: a variable (or,
+ * without axes, static) TrueType binary, one static binary per named
+ * instance, a designspace with one UFO per master, or a single UFO.
+ */
+export type WorkspaceExportFormat = "ttf" | "static-ttf" | "designspace" | "ufo";
+
+/** A file encoding of an exported binary: plain TrueType, or WOFF2 for the web. */
+export type WorkspaceBinaryEncoding = "ttf" | "woff2";
+
+/** Whether an export writes its files or only lists the files it would write. */
+export type WorkspaceExportMode = "write" | "plan";
+
+/** One export of the workspace into a folder, where Rust names the files. */
+export type WorkspaceExportRequest = {
+  directory: string;
+  format: WorkspaceExportFormat;
+  mode: WorkspaceExportMode;
+  /** The encodings each binary is written in; never empty. Source formats ignore it. */
+  encodings: readonly WorkspaceBinaryEncoding[];
+};
+
+/** What a workspace export wrote, or would write when planned. */
 export type WorkspaceExportResult = {
+  /** The export's main output: its binary, designspace or UFO, or for static binaries the folder. */
   path: string;
-  format: "ttf";
+  format: WorkspaceExportFormat;
+  /** Every file or UFO folder the export writes, the main output first. */
+  files: readonly string[];
 };
 
 /** What the workspace wrote for one persisted change set, and the document state it left. */
@@ -306,6 +331,24 @@ export interface WorkspaceSync {
   sourceSnapshot(): Promise<FontSourceSnapshot | null>;
 
   /**
+   * Reads a compiled font's preview (TrueType, OpenType) as its window's
+   * engine opens it: its font without glyphs (axes, axis mappings and
+   * sources, under the ids its snapshot gives them) and each glyph's id in
+   * glyph order, as a named MessagePack `CompiledHeader`.
+   *
+   * @throws {Error} when no preview is open.
+   */
+  sourceHeader(): Promise<Uint8Array>;
+
+  /**
+   * Reads a compiled font's preview (TrueType, OpenType) file as read: what
+   * its window's engine shapes text with.
+   *
+   * @throws {Error} when no preview is open, or it is of an authored source.
+   */
+  sourceBinary(): Promise<Uint8Array>;
+
+  /**
    * Reads one retained, location-independent glyph of a compiled font's preview
    * (TrueType, OpenType) and its component closure. Other previews read glyphs
    * from their engine.
@@ -402,16 +445,17 @@ export interface WorkspaceSync {
   releaseRetiredStores(): Promise<null>;
 
   /**
-   * Captures the committed workspace and compiles it, without changing document state.
+   * Captures the committed workspace and exports it into a folder, or lists
+   * the files that export would write, without changing document state.
    *
    * @remarks
    * The capture waits behind earlier edits; compiling releases the queue.
    *
-   * @param path - Destination selected by the user; must end in `.ttf`.
-   * @returns The written font's path and format.
-   * @throws {Error} when compilation fails.
+   * @param request - Folder, format, and whether to write or only plan.
+   * @returns The files written, or that would be written.
+   * @throws {Error} when the export cannot be represented or its files cannot be written.
    */
-  export(path: string): Promise<WorkspaceExportResult>;
+  export(request: WorkspaceExportRequest): Promise<WorkspaceExportResult>;
 
   /**
    * Reads replace-grade glyph snapshots by stable glyph id.
@@ -506,6 +550,8 @@ export const workspaceSyncMethods: LaneMethods<WorkspaceSync> = {
   storeLocation: true,
   directory: true,
   sourceSnapshot: true,
+  sourceHeader: true,
+  sourceBinary: true,
   sourceGlyph: true,
   prepareSourceAtlasPage: true,
   discardSourceAtlasPage: true,

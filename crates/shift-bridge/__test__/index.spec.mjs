@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { PackError } from "@shift/pack";
 import { nativeBridge } from "./bridge.mjs";
-import { engineFontRecords } from "./engineReads.mjs";
+import { engineCompiledShaping, engineFontRecords } from "./engineReads.mjs";
 
 const shortIdAlphabet = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
 const shortIdLength = 10;
@@ -147,17 +147,33 @@ describe("Bridge", () => {
     expect(glyphs[0].layers).toEqual([{ id: layerId, sourceId: defaultSourceId() }]);
   });
 
-  it("exports the live workspace font through an explicit export path", async () => {
+  it("exports the live workspace font into a folder, naming the file itself", async () => {
     createGlyphLayer(".notdef", []);
     const layerId = createGlyphLayer();
     const contourId = addContour(layerId);
     addPoint(layerId, contourId, 10, 20);
 
-    const outputPath = join(tempDir, "output.ttf");
-    const result = await bridge.napi.exportWorkspace({ path: outputPath, format: "ttf" });
+    const result = await bridge.napi.exportWorkspace({ directory: tempDir, format: "ttf" });
 
-    expect(result).toMatchObject({ path: outputPath, format: "ttf" });
-    expect(existsSync(outputPath)).toBe(true);
+    expect(result).toMatchObject({ format: "ttf", files: [result.path] });
+    expect(result.path.startsWith(tempDir)).toBe(true);
+    expect(result.path.endsWith(".ttf")).toBe(true);
+    expect(existsSync(result.path)).toBe(true);
+  });
+
+  it("plans an export's files without writing them", async () => {
+    createGlyphLayer(".notdef", []);
+    const outputDirectory = join(tempDir, "planned");
+
+    const planned = await bridge.napi.exportWorkspace({
+      directory: outputDirectory,
+      format: "designspace",
+      mode: "plan",
+    });
+
+    expect(planned.files[0]).toBe(planned.path);
+    expect(planned.files.slice(1).every((file) => file.endsWith(".ufo"))).toBe(true);
+    expect(existsSync(outputDirectory)).toBe(false);
   });
 
   function openMutatorWorkspace() {
@@ -165,6 +181,30 @@ describe("Bridge", () => {
     const storePath = join(tempDir, "mutatorsans.sqlite");
     bridge.workspace.openWorkspace(sourcePath, storePath);
   }
+
+  it("hands a compiled font's file and glyph order to the engine, which shapes with it", () => {
+    bridge.workspace.closeWorkspace();
+    const sourcePath = join(
+      repositoryRoot,
+      "packages/editor/src/ui/assets/fonts/Inter-VariableFont.ttf",
+    );
+    const font = bridge.source.openFontSource(sourcePath);
+    const nameOf = new Map(font.glyphs.map(({ id, name }) => [id, name]));
+
+    // The file as read, byte for byte.
+    expect(Buffer.compare(bridge.source.fontSourceBinary(), readFileSync(sourcePath))).toBe(0);
+    const { features, substitutions } = engineCompiledShaping(bridge, "calt");
+    expect(features).toEqual(expect.arrayContaining(["calt", "kern", "ss01"]));
+    // The shaper's glyphs come back as the preview's glyph ids.
+    expect(substitutions.map(({ output }) => nameOf.get(output))).toContain("arrowright");
+  });
+
+  it("refuses a binary for an authored font source", () => {
+    bridge.workspace.closeWorkspace();
+    bridge.source.openFontSource(join(repositoryRoot, "fixtures/fonts/ShapingTest.ufo"));
+
+    expect(() => bridge.source.fontSourceBinary()).toThrow(PackError);
+  });
 
   it("transports imported variation without fabricating authored sources", () => {
     bridge.workspace.closeWorkspace();

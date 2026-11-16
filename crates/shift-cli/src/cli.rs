@@ -9,7 +9,7 @@ use crate::inspect::InspectView;
 use crate::proof::ProofArgs;
 
 mod font;
-pub(crate) use font::{FontInfoArgs, SetFontArgs};
+pub(crate) use font::{FontInfoArgs, PackFontArgs, SetFontArgs};
 mod kerning;
 pub(crate) use kerning::{
     AssignKerningGroupArgs, CreateKerningGroupArgs, DeleteKerningGroupArgs, GetKerningArgs,
@@ -55,6 +55,20 @@ pub(crate) enum Command {
 
     /// Compile a SQLite .shift document to a TrueType font.
     Compile(CompileArgs),
+
+    /// Export a SQLite .shift document as editable sources.
+    ///
+    /// The output's extension picks the format: `.designspace` writes the
+    /// designspace with one UFO per master beside it, and `.ufo` writes one
+    /// UFO for a font with a single master. Use `compile` for binaries.
+    Export(ExportArgs),
+
+    /// Import a font source as a new SQLite .shift document.
+    ///
+    /// Reads a UFO, Designspace, Glyphs, TTF, or OTF font the way the app opens
+    /// one, and writes every glyph, layer, kerning pair, feature, and named
+    /// instance into the new document. Prints what the import dropped.
+    Import(ImportArgs),
 
     /// Render text or a glyph grid set in a font to a PNG or SVG proof image.
     Proof(ProofArgs),
@@ -121,6 +135,10 @@ pub(crate) enum FontCommand {
 
     /// Set naming, attribution, license metadata, and one master's metrics atomically.
     Set(Box<SetFontArgs>),
+
+    /// Write a font, or a few of its glyphs, as the SDK's memory sessions open it:
+    /// shift-font's `Font` with every layer, as named MessagePack.
+    Pack(PackFontArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -397,9 +415,45 @@ pub(crate) struct CompileArgs {
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
 
-    /// Path for the compiled .ttf output.
+    /// Path for the compiled .ttf output; with --static, the directory for
+    /// the static fonts.
+    #[arg(short, long, value_hint = ValueHint::AnyPath)]
+    pub output: PathBuf,
+
+    /// Compile one static .ttf per named instance into the --output
+    /// directory, each named after its instance's PostScript name.
+    #[arg(long = "static")]
+    pub static_instances: bool,
+
+    /// Also write each compiled font as WOFF2, beside its .ttf.
+    #[arg(long)]
+    pub woff2: bool,
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct ExportArgs {
+    /// Path to the canonical SQLite .shift document.
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub path: PathBuf,
+
+    /// Path for the exported .designspace or .ufo; its extension picks the format.
+    #[arg(short, long, value_hint = ValueHint::AnyPath)]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ImportArgs {
+    /// Path to a UFO, Designspace, Glyphs, TTF, or OTF font source.
+    #[arg(value_hint = ValueHint::AnyPath)]
+    pub source: PathBuf,
+
+    /// Path for the new .shift document; refuses to overwrite an existing file.
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     pub output: PathBuf,
+
+    /// Emit a structured result for scripts and agents.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Parser)]

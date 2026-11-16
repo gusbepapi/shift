@@ -9,6 +9,8 @@ use crate::entity::{
 use crate::glyph_category::{GlyphCategory, GlyphSubcategory};
 use crate::guideline::Guideline;
 use crate::lib_data::LibData;
+use crate::mark_color::MarkColor;
+use crate::metrics_keys::{MetricsKey, MetricsKeySide, MetricsKeys};
 use crate::point::{Canonical, Point};
 use crate::{CoreError, CoreResult, GlyphName};
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,12 @@ pub struct Glyph {
     /// Sorted by layer id, so a glyph serializes to the same bytes every time.
     layers: BTreeMap<LayerId, Arc<GlyphLayer>>,
     lib: LibData,
+    /// Keys that apply in every source; a layer's own keys override them.
+    #[serde(default, skip_serializing_if = "MetricsKeys::is_empty")]
+    metrics_keys: MetricsKeys,
+    /// The colour the glyph is tagged with, in every source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mark_color: Option<MarkColor>,
 }
 
 impl Identified for Glyph {
@@ -49,6 +57,13 @@ pub struct GlyphLayer {
     anchors: Vec<Anchor>,
     guidelines: Vec<Guideline>,
     lib: LibData,
+    /// Keys for this layer's source only, overriding the glyph's.
+    ///
+    /// Last, and skipped when empty, so layers stored before it existed
+    /// still decode from positional MessagePack and unkeyed layers keep the
+    /// same bytes.
+    #[serde(default, skip_serializing_if = "MetricsKeys::is_empty")]
+    metrics_keys: MetricsKeys,
 }
 
 impl GlyphLayer {
@@ -84,6 +99,7 @@ impl GlyphLayer {
             anchors: Vec::new(),
             guidelines: Vec::new(),
             lib: LibData::new(),
+            metrics_keys: MetricsKeys::new(),
         }
     }
 
@@ -109,10 +125,20 @@ impl GlyphLayer {
         layer
     }
 
+    /// This layer's advance, height, lib, and metrics keys under `id` and
+    /// `source_id`, with no contours, components, anchors, or guidelines:
+    /// the start of a copy that rebuilds its content.
+    fn without_content(&self, id: LayerId, source_id: SourceId) -> Self {
+        Self {
+            height: self.height,
+            lib: self.lib.clone(),
+            metrics_keys: self.metrics_keys.clone(),
+            ..Self::with_width(id, source_id, self.width)
+        }
+    }
+
     pub fn clone_with_fresh_ids(&self, id: LayerId, source_id: SourceId) -> Self {
-        let mut layer = Self::with_width(id, source_id, self.width);
-        layer.height = self.height;
-        layer.lib = self.lib.clone();
+        let mut layer = self.without_content(id, source_id);
 
         for contour in self.contours_iter() {
             let mut cloned_contour = Contour::new();
@@ -166,9 +192,7 @@ impl GlyphLayer {
     #[must_use]
     pub fn with_derived_entity_ids(&self) -> Self {
         let namespace = self.id.as_str();
-        let mut layer = Self::with_width(self.id, self.source_id, self.width);
-        layer.height = self.height;
-        layer.lib = self.lib.clone();
+        let mut layer = self.without_content(self.id, self.source_id);
         for (contour_index, contour) in self.contours_iter().enumerate() {
             let place = format!("contour {contour_index}");
             let mut derived = Contour::with_id(ContourId::derived(namespace, &place));
@@ -298,6 +322,15 @@ impl GlyphLayer {
 
     pub fn height(&self) -> Option<f64> {
         self.height
+    }
+
+    /// The metrics keys for this layer's source only.
+    pub fn metrics_keys(&self) -> &MetricsKeys {
+        &self.metrics_keys
+    }
+
+    pub fn metrics_keys_mut(&mut self) -> &mut MetricsKeys {
+        &mut self.metrics_keys
     }
 
     pub fn set_width(&mut self, width: f64) {
@@ -477,18 +510,15 @@ impl Glyph {
             sub_category: None,
             layers: BTreeMap::new(),
             lib: LibData::new(),
+            metrics_keys: MetricsKeys::new(),
+            mark_color: None,
         }
     }
 
     pub fn with_unicode(name: impl Into<GlyphName>, unicode: u32) -> Self {
         Self {
-            id: GlyphId::new(),
-            name: name.into(),
             unicodes: vec![unicode],
-            category: None,
-            sub_category: None,
-            layers: BTreeMap::new(),
-            lib: LibData::new(),
+            ..Self::new(name)
         }
     }
 
@@ -548,6 +578,37 @@ impl Glyph {
     /// Overrides the glyph data subcategory; `None` falls back to it.
     pub fn set_sub_category(&mut self, sub_category: Option<GlyphSubcategory>) {
         self.sub_category = sub_category;
+    }
+
+    /// The metrics keys that apply in every source.
+    pub fn metrics_keys(&self) -> &MetricsKeys {
+        &self.metrics_keys
+    }
+
+    /// The key for `side` in `source_id`: the layer's own key, or else the
+    /// glyph's. `None` when neither has one or the glyph has no layer there.
+    pub fn metrics_key(&self, source_id: SourceId, side: MetricsKeySide) -> Option<&MetricsKey> {
+        let layer = self.layer_for_source(source_id)?;
+        layer
+            .metrics_keys()
+            .get(side)
+            .or_else(|| self.metrics_keys.get(side))
+    }
+
+    pub fn metrics_keys_mut(&mut self) -> &mut MetricsKeys {
+        &mut self.metrics_keys
+    }
+
+    /// The colour the glyph is tagged with, if any. A layer's lib may hold
+    /// a colour of its own from the file it came from; this is the one the
+    /// editor shows.
+    pub fn mark_color(&self) -> Option<MarkColor> {
+        self.mark_color
+    }
+
+    /// Tags the glyph with `color`, or clears its tag.
+    pub fn set_mark_color(&mut self, color: Option<MarkColor>) {
+        self.mark_color = color;
     }
 
     pub fn layers(&self) -> &BTreeMap<LayerId, Arc<GlyphLayer>> {
@@ -700,6 +761,20 @@ mod tests {
         assert_eq!(derived, second.with_derived_entity_ids());
         let ids: HashSet<GlyphEntityId> = derived.entity_ids().collect();
         assert_eq!(ids.len(), first.entity_ids().count());
+    }
+
+    #[test]
+    fn copies_that_rebuild_content_keep_the_layers_metrics_keys() {
+        let mut layer = converted(LayerId::new(), SourceId::new());
+        layer
+            .metrics_keys_mut()
+            .set(MetricsKeySide::Right, MetricsKey::new("=|"));
+
+        let derived = layer.with_derived_entity_ids();
+        let fresh = layer.clone_with_fresh_ids(LayerId::new(), SourceId::new());
+
+        assert_eq!(derived.metrics_keys(), layer.metrics_keys());
+        assert_eq!(fresh.metrics_keys(), layer.metrics_keys());
     }
 
     #[test]

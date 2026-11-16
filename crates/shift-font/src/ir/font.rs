@@ -10,13 +10,16 @@ use crate::error::{CoreError, CoreResult, EntityKind};
 use crate::features::FeatureData;
 use crate::glyph::{Glyph, GlyphLayer};
 use crate::glyph_category::{GlyphCategory, GlyphSubcategory};
+use crate::grid::{GRID_LIB_KEY, Grid};
 use crate::guideline::Guideline;
 use crate::interpolation::GlyphInterpolationValues;
 use crate::kerning::Kerning;
 use crate::lib_data::{LibData, LibValue};
+use crate::mark_color::MarkColor;
 use crate::metrics::{
     FontMetrics, MetricDefinition, MetricDefinitionList, MetricKind, MetricValue, StandardMetrics,
 };
+use crate::metrics_keys::{MetricsKey, MetricsKeySide, MetricsKeys};
 use crate::named_instance::{NamedInstance, validate_named_instances};
 use crate::source::{Source, SourceList};
 use crate::{AxisLabelId, GlyphName, NamedInstanceId};
@@ -719,46 +722,34 @@ impl Font {
     ///
     /// That is its [default master layer](Self::default_master_layer), or else
     /// the master layer with the most contours and components, taking the
-    /// earliest in [`Self::master_layers`] order on a tie.
+    /// earliest in [`Glyph::located_layers`] order on a tie.
     pub fn fallback_layer<'a>(&'a self, glyph: &'a Glyph) -> Option<&'a Arc<GlyphLayer>> {
         if let Some(layer) = self.default_master_layer(glyph) {
             return Some(layer);
         }
 
         let complexity = |layer: &GlyphLayer| layer.contours().len() + layer.components().len();
-        self.master_layers(glyph).reduce(|preferred, candidate| {
-            if complexity(candidate) > complexity(preferred) {
-                candidate
-            } else {
-                preferred
-            }
-        })
+        glyph
+            .located_layers(self)
+            .map(|located| located.layer)
+            .reduce(|preferred, candidate| {
+                if complexity(candidate) > complexity(preferred) {
+                    candidate
+                } else {
+                    preferred
+                }
+            })
     }
 
     /// Returns each master that `glyph` draws, paired with the glyph's layer on it, in source
-    /// order.
+    /// order: [`Glyph::located_layers`] for readers that report per source.
     pub fn masters_with_layers<'a>(
         &'a self,
         glyph: &'a Glyph,
     ) -> impl Iterator<Item = (&'a Source, &'a GlyphLayer)> {
-        self.masters()
-            .filter_map(|source| Some((source, glyph.layer_for_source(source.id())?)))
-    }
-
-    /// Returns `glyph`'s layers on [master sources](Self::masters), in source order, and by
-    /// layer ID among layers on the same source.
-    pub fn master_layers<'a>(
-        &'a self,
-        glyph: &'a Glyph,
-    ) -> impl Iterator<Item = &'a Arc<GlyphLayer>> {
-        self.masters().flat_map(move |source| {
-            let mut layers = glyph
-                .layers()
-                .values()
-                .filter(|layer| layer.source_id() == source.id())
-                .collect::<Vec<_>>();
-            layers.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
-            layers
+        glyph.located_layers(self).filter_map(|located| {
+            let source = located.location.base_source(self)?;
+            Some((source, located.layer.as_ref()))
         })
     }
 
@@ -974,11 +965,7 @@ impl Font {
         self.index().owner(layer_id).copied()
     }
 
-    pub fn layer_id_for_glyph_source(
-        &self,
-        glyph_id: GlyphId,
-        source_id: SourceId,
-    ) -> Option<LayerId> {
+    pub fn layer_id_for_source(&self, glyph_id: GlyphId, source_id: SourceId) -> Option<LayerId> {
         self.index().layer_at(glyph_id, source_id).copied()
     }
 
@@ -1153,6 +1140,12 @@ impl Font {
         self.index().composites_of(base_glyph_id)
     }
 
+    /// Every glyph with a metrics key, on itself or on any of its layers, in
+    /// id order. Placeholder layers count: they carry their keys.
+    pub fn metrics_keyed_glyph_ids(&self) -> impl Iterator<Item = GlyphId> + '_ {
+        self.index().metrics_keyed_glyphs().copied()
+    }
+
     /// Glyphs with a loaded layer that has a component of a glyph owning one
     /// of `layer_ids`: the composites that follow those layers' anchors.
     pub fn dependent_glyph_ids<'a>(
@@ -1289,6 +1282,38 @@ impl Font {
         self.data().glyphs.len()
     }
 
+    /// This font with only `kept` and the glyphs their components use,
+    /// transitively, in the font's order, and with no kerning or feature
+    /// code, which may name glyphs it leaves out: a font that shows a few
+    /// glyphs, as a memory session opens one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GlyphNotFound`] when the font has no glyph in
+    /// `kept`.
+    pub fn subset(&self, kept: impl IntoIterator<Item = GlyphId>) -> CoreResult<Self> {
+        let mut closure = BTreeSet::new();
+        let mut frontier: Vec<GlyphId> = kept.into_iter().collect();
+        while let Some(glyph_id) = frontier.pop() {
+            self.require_glyph(glyph_id)?;
+            if closure.insert(glyph_id) {
+                frontier.extend(self.component_glyph_ids_of_glyphs([&glyph_id]));
+            }
+        }
+        let mut subset = self.clone();
+        let dropped: Vec<GlyphId> = self
+            .glyphs()
+            .map(Glyph::id)
+            .filter(|glyph_id| !closure.contains(glyph_id))
+            .collect();
+        for glyph_id in dropped {
+            subset.remove_glyph(glyph_id);
+        }
+        *subset.kerning_mut() = Kerning::new();
+        *subset.features_mut() = FeatureData::default();
+        Ok(subset)
+    }
+
     /// Renames a glyph.
     ///
     /// # Errors
@@ -1297,12 +1322,7 @@ impl Font {
     /// [`CoreError::DuplicateGlyphName`] when another glyph has the name. The font is unchanged on
     /// failure.
     pub fn rename_glyph(&mut self, glyph_id: GlyphId, name: GlyphName) -> CoreResult<()> {
-        let mut state = (*self.state).clone();
-        let glyph = state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?;
-        Arc::make_mut(glyph).set_name(name);
-        state.rebuild_index()?;
-        self.state = Arc::new(state);
-        Ok(())
+        self.edit_indexed_glyph(glyph_id, |glyph| glyph.set_name(name))
     }
 
     /// Replaces a glyph's Unicode code points.
@@ -1311,9 +1331,24 @@ impl Font {
     ///
     /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing.
     pub fn set_glyph_unicodes(&mut self, glyph_id: GlyphId, unicodes: Vec<u32>) -> CoreResult<()> {
+        self.edit_indexed_glyph(glyph_id, |glyph| glyph.set_unicodes(unicodes))
+    }
+
+    /// Applies `edit` to a glyph's indexed identity (its name or code points)
+    /// and re-indexes the font.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing, and the
+    /// index's error when the edit breaks it. The font is unchanged on failure.
+    fn edit_indexed_glyph(
+        &mut self,
+        glyph_id: GlyphId,
+        edit: impl FnOnce(&mut Glyph),
+    ) -> CoreResult<()> {
         let mut state = (*self.state).clone();
         let glyph = state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?;
-        Arc::make_mut(glyph).set_unicodes(unicodes);
+        edit(Arc::make_mut(glyph));
         state.rebuild_index()?;
         self.state = Arc::new(state);
         Ok(())
@@ -1339,6 +1374,99 @@ impl Font {
         Ok(())
     }
 
+    /// Tags every glyph in `glyph_ids` with `color`, or clears their tags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::MarkColorOutOfRange`] for a custom colour with a
+    /// channel outside 0 to 1, and [`CoreError::GlyphNotFound`] when a glyph
+    /// is missing. The font is unchanged on failure.
+    pub fn set_mark_color(
+        &mut self,
+        glyph_ids: &[GlyphId],
+        color: Option<MarkColor>,
+    ) -> CoreResult<()> {
+        if let Some(color) = color.filter(|color| !color.is_valid()) {
+            return Err(CoreError::MarkColorOutOfRange(color.rgba()));
+        }
+
+        let mut state = (*self.state).clone();
+        for glyph_id in glyph_ids {
+            let glyph = state.data.glyphs.get_mut(glyph_id).require(glyph_id)?;
+            Arc::make_mut(glyph).set_mark_color(color);
+        }
+        self.state = Arc::new(state);
+        Ok(())
+    }
+
+    /// Sets or clears one of a layer's own metrics keys, re-indexing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::LayerNotFound`] when the layer is missing.
+    pub fn set_layer_metrics_key(
+        &mut self,
+        layer_id: LayerId,
+        side: MetricsKeySide,
+        key: Option<MetricsKey>,
+    ) -> CoreResult<()> {
+        let before = self.layer_snapshot(layer_id)?;
+        self.require_layer_mut(layer_id)?
+            .metrics_keys_mut()
+            .set(side, key);
+        self.reindex_layer(layer_id, &before)
+    }
+
+    /// Clears `sides`' keys on a layer and on its glyph, so none of them
+    /// applies in the layer's source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::LayerNotFound`] when the layer is missing.
+    pub fn clear_metrics_keys(
+        &mut self,
+        layer_id: LayerId,
+        sides: &[MetricsKeySide],
+    ) -> CoreResult<()> {
+        let glyph_id = self.require_layer_owner(layer_id)?;
+        for side in sides {
+            if self
+                .require_layer(layer_id)?
+                .metrics_keys()
+                .get(*side)
+                .is_some()
+            {
+                self.set_layer_metrics_key(layer_id, *side, None)?;
+            }
+        }
+        let mut keys = self.require_glyph(glyph_id)?.metrics_keys().clone();
+        if sides.iter().all(|side| keys.get(*side).is_none()) {
+            return Ok(());
+        }
+        for side in sides {
+            keys.set(*side, None);
+        }
+        self.set_glyph_metrics_keys(glyph_id, keys)
+    }
+
+    /// Replaces the metrics keys the glyph has in every source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing.
+    pub fn set_glyph_metrics_keys(
+        &mut self,
+        glyph_id: GlyphId,
+        metrics_keys: MetricsKeys,
+    ) -> CoreResult<()> {
+        let mut state = (*self.state).clone();
+        let glyph = Arc::make_mut(state.data.glyphs.get_mut(&glyph_id).require(&glyph_id)?);
+        *glyph.metrics_keys_mut() = metrics_keys;
+        state.rebuild_index()?;
+        self.state = Arc::new(state);
+        Ok(())
+    }
+
     /// Adds an empty layer for `glyph_id` at `source_id`.
     ///
     /// # Errors
@@ -1358,10 +1486,7 @@ impl Font {
         if self.index().owner(layer_id).is_some() {
             return Err(CoreError::DuplicateLayerId(layer_id));
         }
-        if self
-            .layer_id_for_glyph_source(glyph_id, source_id)
-            .is_some()
-        {
+        if self.layer_id_for_source(glyph_id, source_id).is_some() {
             return Err(CoreError::DuplicateGlyphLayer {
                 glyph_id,
                 source_id,
@@ -1578,6 +1703,13 @@ impl Font {
         }
     }
 
+    /// The grid the font is drawn on, stored under [`GRID_LIB_KEY`]; `None`
+    /// when the font stores none, or stores a value [`Grid::from_lib`] cannot
+    /// read, so the editor uses its default grid.
+    pub fn grid(&self) -> Option<Grid> {
+        Grid::from_lib(self.lib().get(GRID_LIB_KEY)?)
+    }
+
     /// Source-format font-info fields that Shift does not model, preserved
     /// as a plist-shaped map keyed by the format's field names (e.g. UFO
     /// `fontinfo.plist` keys). Modeled fields never appear here; they live
@@ -1696,6 +1828,40 @@ mod tests {
     };
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_subset_keeps_the_glyphs_asked_for_and_the_glyphs_their_components_use() {
+        let mut font = Font::new();
+        let source_id = font.default_source_id().unwrap();
+        let glyph = |name: &str, components: &[(GlyphId, &str)]| {
+            let mut glyph = Glyph::new(name);
+            let mut layer = GlyphLayer::with_width(LayerId::new(), source_id, 500.0);
+            for (base, base_name) in components {
+                layer.add_component(Component::new(*base, *base_name));
+            }
+            glyph.set_layer(layer);
+            glyph
+        };
+        let a = font.insert_glyph(glyph("a", &[])).unwrap();
+        let acute = font.insert_glyph(glyph("acute", &[])).unwrap();
+        let aacute = font
+            .insert_glyph(glyph("aacute", &[(a, "a"), (acute, "acute")]))
+            .unwrap();
+        font.insert_glyph(glyph("b", &[])).unwrap();
+        font.features_mut()
+            .set_fea_source(Some("feature liga { sub b by a; } liga;".into()));
+
+        let subset = font.subset([aacute]).unwrap();
+
+        let names: Vec<&str> = subset.glyphs().map(Glyph::name).collect();
+        assert_eq!(names, ["a", "acute", "aacute"]);
+        assert_eq!(subset.glyph(aacute), font.glyph(aacute));
+        assert_eq!(subset.features(), &FeatureData::default());
+        assert!(matches!(
+            font.subset([GlyphId::new()]),
+            Err(CoreError::GlyphNotFound(_))
+        ));
+    }
 
     #[derive(Clone, Copy)]
     struct PerfFontMark {
@@ -1976,7 +2142,7 @@ mod tests {
         assert!(font.glyph_by_name("A").is_some());
         assert_eq!(font.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            font.layer_id_for_glyph_source(glyph_id, font.default_source_id().unwrap()),
+            font.layer_id_for_source(glyph_id, font.default_source_id().unwrap()),
             Some(layer_id)
         );
         assert_eq!(
@@ -2432,6 +2598,30 @@ mod tests {
     }
 
     #[test]
+    fn identity_edits_reindex_and_leave_the_font_unchanged_on_failure() {
+        let mut font = Font::new();
+        let a = font.insert_glyph(Glyph::with_unicode("A", 0x41)).unwrap();
+        let b = font.insert_glyph(Glyph::new("B")).unwrap();
+
+        font.set_glyph_unicodes(a, vec![0x61]).unwrap();
+        assert_eq!(font.glyphs_by_unicode(0x41).count(), 0);
+        assert_eq!(
+            font.glyphs_by_unicode(0x61)
+                .map(Glyph::id)
+                .collect::<Vec<_>>(),
+            vec![a]
+        );
+
+        let before = font.clone();
+        assert!(font.rename_glyph(b, GlyphName::from("A")).is_err());
+        assert!(
+            font.set_glyph_unicodes(GlyphId::from_raw("missing"), vec![0x42])
+                .is_err()
+        );
+        assert_eq!(font, before);
+    }
+
+    #[test]
     fn unicode_lookup_returns_all_matching_glyphs() {
         let mut font = Font::new();
         let a = font.insert_glyph(Glyph::with_unicode("A", 0x41)).unwrap();
@@ -2472,7 +2662,7 @@ mod tests {
         assert_eq!(decoded.glyph_id_by_name("A"), Some(glyph_id));
         assert_eq!(decoded.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            decoded.layer_id_for_glyph_source(glyph_id, source_id),
+            decoded.layer_id_for_source(glyph_id, source_id),
             Some(layer_id)
         );
         assert_eq!(
@@ -2515,7 +2705,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_glyph_source_layer_is_an_error() {
+    fn duplicate_source_layer_is_an_error() {
         let mut font = Font::new();
         let source_id = font.default_source_id().unwrap();
         let glyph_id = font.insert_glyph(Glyph::new("A")).unwrap();
@@ -2565,18 +2755,18 @@ mod tests {
 
         assert_eq!(font.glyph_id_by_layer(layer_id), Some(glyph_id));
         assert_eq!(
-            font.layer_id_for_glyph_source(glyph_id, source_id),
+            font.layer_id_for_source(glyph_id, source_id),
             Some(layer_id)
         );
 
         font.remove_glyph_layer(layer_id).unwrap();
 
         assert_eq!(font.glyph_id_by_layer(layer_id), None);
-        assert_eq!(font.layer_id_for_glyph_source(glyph_id, source_id), None);
+        assert_eq!(font.layer_id_for_source(glyph_id, source_id), None);
     }
 
     #[test]
-    fn index_validation_rejects_duplicate_layers_for_one_glyph_source() {
+    fn index_validation_rejects_duplicate_layers_for_one_source() {
         let source_id = SourceId::new();
         let mut glyph = Glyph::new("A");
         glyph.set_layer(GlyphLayer::new(LayerId::new(), source_id));
@@ -2722,7 +2912,7 @@ mod tests {
         let mut font = synthetic_point_heavy_font(mark);
         let glyph_id = font.glyph_id_by_name("g05000").unwrap();
         let layer_id = font
-            .layer_id_for_glyph_source(glyph_id, font.default_source_id().unwrap())
+            .layer_id_for_source(glyph_id, font.default_source_id().unwrap())
             .unwrap();
         let point_ids: Vec<PointId> = font
             .layer(layer_id)
@@ -2820,7 +3010,7 @@ mod tests {
         let default_source_id = font.default_source_id().unwrap();
         let glyph_id = font.glyph_id_by_name("g00000").unwrap();
         let layer_id = font
-            .layer_id_for_glyph_source(glyph_id, default_source_id)
+            .layer_id_for_source(glyph_id, default_source_id)
             .unwrap();
         let other_glyph_id = font.glyph_id_by_name("g00001").unwrap();
         let start = Instant::now();
@@ -2939,7 +3129,7 @@ mod tests {
 
         assert_eq!(removed.id(), layer_id);
         assert_eq!(font.glyph_id_by_layer(layer_id), None);
-        assert_eq!(font.layer_id_for_glyph_source(glyph_id, source_id), None);
+        assert_eq!(font.layer_id_for_source(glyph_id, source_id), None);
         print_perf_mark("create/remove layer and rebuild indexes", mark, elapsed);
         assert_within_budget(
             elapsed,

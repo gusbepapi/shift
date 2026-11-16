@@ -8,11 +8,16 @@ use proptest::prelude::*;
 use shift_engine::{EditHistory, EngineSession, LayerSource, RecordCache, RecordSource, Recording};
 use shift_font::test_support::sample_font;
 
+use shift_font::linked_metrics::MetricsKeyEvaluator;
 use shift_font::{
     AddComponent, Anchor, AnchorId, Component, ComponentId, CreateGlyph, DecomposeComponents,
     DecomposedTransform, Font, FontIntent, FontIntentSet, Glyph, GlyphCategory, GlyphDataCategory,
     GlyphId, GlyphLayer, GlyphName, GlyphSubcategory, LayerId, MoveAnchors, MovePoints, NamedGlyph,
     OpenTypeCategory, RemoveAnchors, SourceId, UpdateGlyph, contour,
+};
+use shift_font::{
+    MarkColor, MetricsKey, MetricsKeySide, NamedMarkColor, SetMarkColor, ShiftSidebearing,
+    Sidebearing,
 };
 
 const BASES: usize = 4;
@@ -363,7 +368,7 @@ proptest! {
 }
 
 /// `font` with every layer replaced by an empty placeholder of the same
-/// identity and metrics, as a store's directory loads it.
+/// identity, metrics and metrics keys, as a store's directory loads it.
 fn placeholders(font: &Font) -> Font {
     let mut directory = font.clone();
     let layers: Vec<GlyphLayer> = font
@@ -373,6 +378,7 @@ fn placeholders(font: &Font) -> Font {
             let mut placeholder =
                 GlyphLayer::with_width(layer.id(), layer.source_id(), layer.width());
             placeholder.set_height(layer.height());
+            *placeholder.metrics_keys_mut() = layer.metrics_keys().clone();
             placeholder
         })
         .collect();
@@ -438,6 +444,43 @@ fn components_not_persisted_yet_still_load_their_bases() {
             .iter()
             .all(|layer_id| !session.residency().is_unloaded(*layer_id))
     );
+}
+
+#[test]
+fn an_edit_loads_the_glyphs_linked_to_it_and_moves_them() {
+    let mut font = composite_font();
+    let source = font.sources()[0].id();
+    let left = |text: &str| -> shift_font::MetricsKeys {
+        [(MetricsKeySide::Left, MetricsKey::new(text).unwrap())]
+            .into_iter()
+            .collect()
+    };
+    font.set_glyph_metrics_keys(GlyphId::from_raw("base1"), left("=base0"))
+        .unwrap();
+    let mut keyed_layer = font
+        .layer(LayerId::from_raw(format!("base2@{source}")))
+        .unwrap()
+        .clone();
+    *keyed_layer.metrics_keys_mut() = left("==base0+5");
+    font.replace_glyph_layers(vec![keyed_layer]).unwrap();
+    let mut persisted = Persisted(font.clone());
+    let mut session = EngineSession::open_directory(placeholders(&font));
+
+    let edit = FontIntentSet::from(FontIntent::from(ShiftSidebearing {
+        layer_id: LayerId::from_raw(format!("base0@{source}")),
+        sidebearing: Sidebearing::Left,
+        delta: 30.0,
+    }));
+    session.apply(&mut persisted, &edit).unwrap();
+
+    let mut evaluator = MetricsKeyEvaluator::new(session.font(), source).unwrap();
+    let mut left_of = |name: &str| {
+        evaluator
+            .current(GlyphId::from_raw(name), MetricsKeySide::Left)
+            .unwrap()
+    };
+    assert_eq!(left_of("base1"), 30.0);
+    assert_eq!(left_of("base2"), 35.0);
 }
 
 #[test]
@@ -1124,4 +1167,42 @@ fn opening_a_glyph_page_keeps_the_history_at_its_save() {
         history.matches_saved(),
         "navigation leaves the history at its save"
     );
+}
+
+#[test]
+fn tagging_several_glyphs_in_a_partly_loaded_session_undoes_as_one_edit() {
+    let glyph_ids = vec![GlyphId::from_raw("base0"), GlyphId::from_raw("composite0")];
+    let red = Some(MarkColor::Named(NamedMarkColor::Red));
+    let tag = FontIntentSet::from(SetMarkColor {
+        glyph_ids: glyph_ids.clone(),
+        color: red,
+    });
+    let font = composite_font();
+    let mut persisted = Persisted(font.clone());
+    let mut session = EngineSession::open_directory(placeholders(&font));
+    let mut history = EditHistory::default();
+    let colors = |session: &EngineSession| {
+        let color = |id: &GlyphId| session.font().glyph(*id).unwrap().mark_color();
+        glyph_ids.iter().map(color).collect::<Vec<_>>()
+    };
+
+    history.begin(None);
+    history.record(session.apply(&mut persisted, &tag).unwrap().changes);
+    history
+        .end(session.font(), session.scene(), Recording::Undoable)
+        .unwrap()
+        .expect("the edit tagged the glyphs");
+    assert_eq!(colors(&session), [red, red]);
+
+    history.undo(&mut session, &mut persisted).unwrap();
+    assert_eq!(colors(&session), [None, None]);
+    assert!(
+        history
+            .undo(&mut session, &mut persisted)
+            .unwrap()
+            .is_none()
+    );
+
+    history.redo(&mut session, &mut persisted).unwrap();
+    assert_eq!(colors(&session), [red, red]);
 }

@@ -163,7 +163,7 @@ export interface ComponentTransform {
 export function computed<T>(fn: () => T, options?: ComputedOptions<T>): ComputedSignal<T>;
 
 // @public
-export function createMemoryFontSession(input: MemoryFontSessionOptions): MemoryFontSession;
+export function createMemoryFontSession(input: MemoryFontSessionOptions): Promise<MemoryFontSession>;
 
 // @public
 export type DesignAxisLocation = AxisLocation<"design">;
@@ -174,7 +174,7 @@ export class Designspace {
         axesCell: Signal<readonly Axis$1[]>;
         mappingBasesCell: Signal<readonly AxisMappingBasis[]>;
         sourcesCell: Signal<readonly Source[]>;
-        variationCell?: Signal<VariationReader>;
+        variationCell: Signal<FontVariation | null>;
     });
     // (undocumented)
     get axes(): readonly Axis[];
@@ -209,6 +209,7 @@ export class Designspace {
 // @beta
 export class Editor {
     constructor(options: EditorOptions);
+    activeMetricsLinks(): MetricsLinks | null;
     // (undocumented)
     get activeSource(): Source | null;
     // (undocumented)
@@ -298,6 +299,7 @@ export class Editor {
     // (undocumented)
     getToolState(scope: ToolStateScope, toolId: string, key: string): unknown;
     glyphForId(glyphId: GlyphId): Glyph | null;
+    readonly grid: Grid;
     handlesVisible(id: PointId | ContourId, contourId?: ContourId): boolean;
     hideHandles(id: PointId | ContourId): () => void;
     // (undocumented)
@@ -379,6 +381,7 @@ export class Editor {
     setExternalLocation(location: ExternalAxisLocation): void;
     setLanguageIds(ids: readonly string[]): void;
     setLeftSidebearing(value: number): void;
+    setMarkColor(glyphIds: readonly GlyphId[], color: MarkColor | null): void;
     // (undocumented)
     setPan(pan: Point2D): void;
     // (undocumented)
@@ -452,6 +455,18 @@ export interface EditorGlyph {
 }
 
 // @public
+export interface EditorGrid {
+    snap: boolean;
+    spacingX: number;
+    spacingY: number;
+    subdivisions: number;
+    visible: boolean;
+}
+
+// @public
+export type EditorGridChange = Partial<EditorGrid>;
+
+// @public
 export interface EditorInspection extends EditorView {
     // (undocumented)
     mode: ShiftSessionMode;
@@ -480,6 +495,8 @@ export interface EditorSetToolInput extends ShiftTarget {
 export interface EditorSetViewInput extends ShiftTarget {
     // (undocumented)
     center?: Point2D;
+    // (undocumented)
+    grid?: EditorGridChange;
     // (undocumented)
     zoom?: number;
 }
@@ -513,6 +530,7 @@ export interface EditorView {
     externalLocation: AxisCoordinate[];
     // (undocumented)
     glyph: EditorGlyph | null;
+    grid: EditorGrid;
     pages: EditorPage[];
     // (undocumented)
     route: string;
@@ -601,6 +619,8 @@ export class Font {
     glyphRecords(): readonly GlyphRecord[];
     get glyphRecordsCell(): Signal<readonly GlyphRecord[]>;
     glyphsAfter(after: GlyphId | null, limit: number): GlyphDirectoryPage | null;
+    get gridCell(): Signal<Grid$1 | null>;
+    get gridRevisionCell(): Signal<number>;
     hasGlyph(glyphId: GlyphId): boolean;
     get invalidGlyphsCell(): Signal<GlyphInvalidation>;
     isNonspacingMark(name: GlyphName): boolean;
@@ -618,6 +638,7 @@ export class Font {
     layerIdForSegment(segmentId: SegmentId): LayerId | null;
     layerState(layerId: LayerId): GlyphLayerState | null;
     layoutText(run: TextRun, location: ExternalAxisLocation, sourceId: SourceId | null): PlacedText | null;
+    linkedSides(glyphId: GlyphId, sourceId: SourceId): readonly SideLink[];
     // (undocumented)
     get loaded(): boolean;
     get loadedCell(): Signal<boolean>;
@@ -636,6 +657,7 @@ export class Font {
     get metricsCell(): Signal<FontMetrics>;
     metricsForLayerSource(sourceId: SourceId): SourceMetrics;
     metricsForSource(sourceId: SourceId): SourceMetrics;
+    metricsKeyProblem(text: string): string | null;
     missingPairOrigin(sourceId: SourceId): MissingKerningOrigin;
     namedInstance(instanceId: NamedInstanceId): NamedInstance | null;
     namedInstanceNamed(name: string): NamedInstance | null;
@@ -658,10 +680,12 @@ export class Font {
     renameKerningGroup(groupId: KerningGroupId, name: string): Promise<void>;
     resolveLayers(layerIds: readonly LayerId[]): Promise<readonly LayerRead[]>;
     setAxisMappings(mappings: readonly AxisMapping[]): Promise<void>;
+    setGrid(grid: Grid$1 | null): void;
     setIndependentAxisMapping(axis: Axis$1, mapping: AxisMapping): Promise<void>;
     setKerningException(sourceId: SourceId, first: GlyphId, second: GlyphId, position: KerningPairPosition, exception: boolean): boolean;
     setKerningValues(edits: readonly KerningValueEdit[], label: string): void;
     setLanguageIds(languageIds: readonly string[]): void;
+    setMarkColor(glyphIds: readonly GlyphId[], color: MarkColor | null): void;
     setMetricDefinitions(definitions: readonly MetricDefinition[]): Promise<void>;
     setPrimaryCodepoint(glyphId: GlyphId, text: string): GlyphIdentityEdit;
     source(sourceId: SourceId): Source | null;
@@ -716,6 +740,7 @@ export interface FontSnapshot {
     readonly axisMappings: readonly AxisMapping[];
     // (undocumented)
     readonly glyphs: readonly GlyphEntry[];
+    readonly grid?: Grid$1 | null;
     // (undocumented)
     readonly kerning: KerningSnapshot;
     readonly languageIds?: readonly string[] | null;
@@ -865,6 +890,7 @@ export interface GlyphRecord {
     readonly layers: readonly GlyphLayerRecord[];
     readonly ligature?: Ligature | null;
     readonly mark: boolean;
+    readonly markColor?: MarkColor | null;
     // (undocumented)
     readonly name: GlyphName;
     readonly nonspacingMark: boolean;
@@ -1142,6 +1168,13 @@ export interface LocationResolveInput extends ShiftTarget {
 }
 
 // @public
+export interface MemoryEditorOptions {
+    // (undocumented)
+    readonly clipboard: SystemClipboard;
+    readonly tools?: readonly MemoryToolName[];
+}
+
+// @public
 export interface MemoryFontSession {
     // (undocumented)
     dispose(): void;
@@ -1158,24 +1191,30 @@ export interface MemoryFontSession {
 }
 
 // @public
-export interface MemoryFontSessionOptions {
-    // (undocumented)
-    readonly clipboard: SystemClipboard;
+export interface MemoryFontSessionOptions extends MemoryEditorOptions {
     // (undocumented)
     readonly source: MemoryFontSource;
-    readonly tools?: readonly MemoryToolName[];
 }
 
 // @public
-export interface MemoryFontSource extends GlyphReader {
+export interface MemoryFontSource {
     // (undocumented)
-    readonly font: FontSnapshot;
-    // (undocumented)
-    readonly records: readonly GlyphRecord[];
+    readonly font: Uint8Array;
 }
 
 // @public
 export type MemoryToolName = "select" | "hand";
+
+// @public
+export interface NewMemoryFont {
+    // (undocumented)
+    readonly familyName: string;
+    // (undocumented)
+    readonly unitsPerEm: number;
+}
+
+// @public
+export function newMemoryFontSource(input: NewMemoryFont): Promise<MemoryFontSource>;
 
 // @public
 export interface OutlineBounds {

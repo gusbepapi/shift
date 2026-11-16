@@ -1,19 +1,25 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "fuzz"]
+# The fuzz targets build only when named (`-p shift-fuzz`, `--workspace`, or
+# `cargo fuzz` in `fuzz/`).
+default-members = ["crates/*"]
 
 
 # Lints for every crate (each opts in with `[lints] workspace = true`). CI runs
 # clippy with `-D warnings`, so "warn" blocks merges. Add a lint here once the
-# workspace is clean for it; the planned ones are in the rust skill.
+# workspace is clean for it. A lint that still has hits is ratcheted instead:
+# `clippy-ratchet.json` holds its count per crate, which may only go down
+# (`pnpm lint:rust-ratchet`).
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_qualifications = "warn"
 unreachable_pub = "warn"
 
 [workspace.lints.clippy]
-# `unwrap_used` and `print_stdout` are set in each library's lib.rs, so they
-# cover library code but not integration tests or examples.
+# clippy.toml lets tests print; tools and examples that print say so in an
+# `expect` with a reason.
+print_stdout = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
@@ -57,16 +63,30 @@ struct_excessive_bools = "warn"
 # Name the type once: `Self` inside its own impl.
 use_self = "warn"
 map_unwrap_or = "warn"
+# Write the short form: no else after an exit, no negated if/else, no
+# ceremony around iterators and strings.
+redundant_else = "warn"
+if_not_else = "warn"
+explicit_into_iter_loop = "warn"
+manual_string_new = "warn"
+flat_map_option = "warn"
+inefficient_to_string = "warn"
+needless_raw_string_hashes = "warn"
 # `Arc::clone(&x)` shows a reference-count bump, not a deep copy.
 clone_on_ref_ptr = "warn"
 # The rustdoc skill requires `# Errors` on every public fallible function.
 missing_errors_doc = "warn"
+# No hits today: robustness and efficiency lints that keep it so.
+ignore_without_reason = "warn"
+unnecessary_box_returns = "warn"
+format_push_string = "warn"
+rc_buffer = "warn"
+large_stack_arrays = "warn"
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-shift-wire = { path = "crates/shift-wire" }
 shift-backends = { path = "crates/shift-backends" }
 shift-bridge = { path = "crates/shift-bridge" }
 shift-config = { path = "crates/shift-config" }

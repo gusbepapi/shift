@@ -146,6 +146,20 @@ const viewCommands: Command[] = [
     run: (ctx) => ctx.renderer.run("view.zoomOut"),
   },
   {
+    id: "view.toggleGrid",
+    effect: "view",
+    label: "Show Grid",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.renderer.run("view.toggleGrid"),
+  },
+  {
+    id: "view.toggleSnapToGrid",
+    effect: "view",
+    label: "Snap to Grid",
+    enabled: (ctx) => ctx.document.hasWorkspace(),
+    run: (ctx) => ctx.renderer.run("view.toggleSnapToGrid"),
+  },
+  {
     id: "ui.increaseSize",
     effect: "view",
     label: "Increase Interface Size",
@@ -210,11 +224,11 @@ const fileCommands: Command[] = [
     run: (ctx) => ctx.document.saveAs(),
   },
   {
-    id: "file.exportTtf",
+    id: "file.export",
     effect: "file",
-    label: "TrueType (.ttf)…",
-    enabled: (ctx) => ctx.document.hasWorkspace(),
-    run: (ctx) => ctx.document.exportTtf(),
+    label: "Export",
+    enabled: (ctx) => ctx.document.hasWorkspace() && ctx.renderer.available(),
+    run: (ctx) => ctx.renderer.run("file.export"),
   },
 ];
 const editCommands: Command[] = [

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Font } from "@shift/editor/model";
 import { signal } from "@shift/editor/signals";
@@ -13,6 +14,24 @@ import {
 import type { GlyphName } from "@shift/types";
 import { FONTS } from "@/testing/fontFixture";
 import { createWorkspaceStack, openPreviewStack } from "@/testing/workspaceStack";
+
+/** A variable TrueType font with a weight axis, compiled deltas and no authored sources. */
+const VARIABLE_TTF = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../assets/fonts/HostGrotesk-VariableFont_wght.ttf",
+);
+
+/** Inter's variable TrueType font: `calt`, `kern` and stylistic sets in its own GSUB and GPOS. */
+const INTER_TTF = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../../../../packages/editor/src/ui/assets/fonts/Inter-VariableFont.ttf",
+);
+
+/** Noto Naskh Arabic: joining forms and lam-alef ligatures in its own GSUB. */
+const NASKH_TTF = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../../../../fixtures/fonts/noto-naskh-arabic/NotoNaskhArabic-Regular.ttf",
+);
 
 /** What closes after each test: previews, stacks and saved documents. */
 const opened: (() => void)[] = [];
@@ -43,9 +62,16 @@ async function savedDocument(sourcePath: string): Promise<Font> {
   return reopened.font;
 }
 
-/** The names of the glyphs `text` lays out as, in display order, shaped as proof text is. */
-function shaped(font: Font, text: string): (string | null)[] {
-  const run = { items: typedTextItems(text), settings: { shaping: true, features: {} } };
+/**
+ * The names of the glyphs `text` lays out as, in display order, shaped as
+ * proof text is, with `features` turned on or off.
+ */
+function shaped(
+  font: Font,
+  text: string,
+  features: Readonly<Record<string, boolean>> = {},
+): (string | null)[] {
+  const run = { items: typedTextItems(text), settings: { shaping: true, features } };
   const placed = font.layoutText(run, emptyExternalAxisLocation(), null);
   if (!placed) return [];
   return placed.layout.glyphs.map(({ glyphId }) => (glyphId ? font.glyphName(glyphId) : null));
@@ -111,5 +137,90 @@ describe("a preview reads the font as the .shift it saves as", () => {
 
     expect(kerning(previewed)).not.toBe(0);
     expect(kerning(previewed)).toBe(kerning(saved));
+  });
+});
+
+describe("a compiled font's preview evaluates its glyphs' deltas in its engine", () => {
+  /** The bounds of every point `name` draws at `location`, off-curve points included. */
+  async function pointBounds(font: Font, name: string, location: ExternalAxisLocation) {
+    const points = (await drawn(font, name, location)).flatMap((contour) => contour.points);
+    const xs = points.map(({ x }) => x);
+    const ys = points.map(({ y }) => y);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+
+  it("draws a glyph's outline from its compiled deltas at a weight", async () => {
+    const font = await preview(VARIABLE_TTF);
+    const regular = await drawn(font, "a", font.designspace.defaultLocation());
+    const bold = await drawn(font, "a", at(font, { wght: 800 }));
+
+    expect(bold.map((contour) => contour.points.length)).toEqual(
+      regular.map((contour) => contour.points.length),
+    );
+    expect(bold).not.toEqual(regular);
+  });
+
+  it("places a glyph's points at a mapped weight as fontTools' instancer does", async () => {
+    const font = await preview(VARIABLE_TTF);
+    const near = (bounds: readonly number[]) => bounds.map((value) => expect.closeTo(value, 3));
+
+    // fontTools 4 `instantiateVariableFont(font, {"wght": …})`: the glyf
+    // coordinates' bounds, through the font's avar at 550.
+    expect(await pointBounds(font, "o", at(font, { wght: 550 }))).toEqual(
+      near([26.35675, -12, 549.64325, 508]),
+    );
+    expect(await pointBounds(font, "o", at(font, { wght: 800 }))).toEqual(
+      near([21, -12, 555, 508]),
+    );
+  });
+});
+
+describe("a compiled font's preview shapes proof text with the binary itself", () => {
+  it("substitutes with the font's own GSUB unless a run turns the feature off", async () => {
+    const font = await preview(INTER_TTF);
+
+    expect(shaped(font, "->")).toEqual(["arrowright"]);
+    expect(shaped(font, "->", { calt: false })).toEqual(["hyphen", "greater"]);
+  });
+
+  it("joins Arabic with the font's own forms, as a proof of the file does", async () => {
+    const font = await preview(NASKH_TTF);
+
+    expect(shaped(font, "ببب")).toEqual(["uniFE90", "uniFE92", "uniFE91"]);
+    expect(shaped(font, "لا")).toEqual(["uniFE8E.rlig", "uniFEDF.rlig"]);
+  });
+
+  it("lists the features the font ships, for the Features section to toggle", async () => {
+    const font = await preview(INTER_TTF);
+    const tags = font.fontFeatures().map((feature) => feature.tag);
+
+    expect(tags).toEqual(expect.arrayContaining(["calt", "kern", "ss01", "tnum"]));
+  });
+
+  it("sets each glyph at the font's own advance with shaping off", async () => {
+    const font = await preview(INTER_TTF);
+    const placed = font.layoutText(
+      { items: typedTextItems("office"), settings: { shaping: false, features: {} } },
+      emptyExternalAxisLocation(),
+      null,
+    );
+
+    // One glyph per character, each where the one before it ends: Inter's
+    // hmtx advances (o 1228, f 758, i 496, c 1170).
+    expect(placed?.layout.glyphs.map((glyph) => glyph.left)).toEqual([
+      0, 1228, 1986, 2744, 3240, 4410,
+    ]);
+  });
+
+  it("kerns a pair by the font's own GPOS", async () => {
+    const font = await preview(INTER_TTF);
+    const width = (features: Readonly<Record<string, boolean>>) =>
+      font.layoutText(
+        { items: typedTextItems("AV"), settings: { shaping: true, features } },
+        emptyExternalAxisLocation(),
+        null,
+      )?.layout.width;
+
+    expect(width({})).toBeLessThan(width({ kern: false }) ?? 0);
   });
 });

@@ -3,15 +3,15 @@
 //! font's records.
 
 use pack::{Bytes, Pack};
-use shift_font::{
-  FontChangeImpact, FontChangeSet, FontIntent, FontIntentSet, Glyph, GlyphId, GlyphRecordChanges,
-  GlyphRecords, LayerId, OpenTypeCategories,
-};
-use shift_wire::replacement::FontReplacement;
-use shift_wire::{
+use shift_font::wire::replacement::FontReplacement;
+use shift_font::wire::{
   AxisMapping, AxisMappingBasis, FontMetadata, FontMetrics, GlyphChangedEntities,
   GlyphLayerSnapshot, GlyphStructure, MetricDefinition, NamedInstance,
   SourceMetricsInterpolationSnapshot,
+};
+use shift_font::{
+  FontChangeImpact, FontChangeSet, FontIntent, FontIntentSet, Glyph, GlyphId, GlyphRecordChanges,
+  GlyphRecords, LayerId, OpenTypeCategories,
 };
 use shift_workspace::{
   AcquireScope, DocumentIdentity as StoreDocumentIdentity, FontWorkspace, NewWorkspace,
@@ -244,6 +244,14 @@ pub(crate) trait NativeWorkspace {
   ///
   /// Fails when no workspace is open.
   fn get_language_ids(&self) -> Result<Option<Vec<String>>, NativeWorkspaceError>;
+
+  /// The grid the font is drawn on; `None` when the font stores none, so the
+  /// editor uses its default grid.
+  ///
+  /// # Errors
+  ///
+  /// Fails when no workspace is open.
+  fn grid(&self) -> Result<Option<shift_font::Grid>, NativeWorkspaceError>;
 
   /// The font's named instances, in order.
   ///
@@ -614,6 +622,10 @@ impl NativeWorkspace for Bridge {
     Ok(self.font()?.language_ids())
   }
 
+  fn grid(&self) -> Result<Option<shift_font::Grid>, NativeWorkspaceError> {
+    Ok(self.font()?.grid())
+  }
+
   fn get_named_instances(&self) -> Result<Vec<NamedInstance>, NativeWorkspaceError> {
     Ok(
       self
@@ -733,7 +745,7 @@ impl Bridge {
         structure: touched
           .structural
           .then(|| GlyphStructure::from(touched.layer.as_ref())),
-        values: shift_wire::values_from_layer(touched.layer.as_ref()),
+        values: shift_font::wire::values_from_layer(touched.layer.as_ref()),
         changed: GlyphChangedEntities::default(),
       })
       .collect();

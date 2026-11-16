@@ -6,7 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ir::glyph_category::{GlyphDataCategory, Ligature, OpenTypeCategories, RecordCategory};
-use crate::{Font, FontChangeSet, Glyph, GlyphId, GlyphLayer, GlyphName, LayerId, SourceId};
+use crate::{
+    Font, FontChangeSet, Glyph, GlyphId, GlyphLayer, GlyphName, LayerId, MarkColor, SourceId,
+};
 
 /// One glyph as the editor's directory lists it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,6 +30,8 @@ pub struct GlyphRecord {
     /// Whether anchor propagation treats the glyph as a ligature; `None`
     /// when it does not.
     pub ligature: Option<Ligature>,
+    /// The colour the glyph is tagged with, if any.
+    pub mark_color: Option<MarkColor>,
 }
 
 /// A glyph layer by id, and the source it belongs to.
@@ -181,13 +185,14 @@ impl Font {
             name: glyph.glyph_name().clone(),
             unicodes: glyph.unicodes().to_vec(),
             component_base_glyph_ids,
-            layers: self
-                .master_layers(glyph)
-                .map(|layer| GlyphLayerRecord::from(layer.as_ref()))
+            layers: glyph
+                .located_layers(self)
+                .map(|located| GlyphLayerRecord::from(located.layer.as_ref()))
                 .collect(),
             mark: category.mark,
             nonspacing_mark: category.nonspacing_mark,
             ligature: category.ligature,
+            mark_color: glyph.mark_color(),
         }
     }
 }
@@ -206,6 +211,7 @@ mod tests {
             mark: false,
             nonspacing_mark: false,
             ligature: None,
+            mark_color: None,
         }
     }
 

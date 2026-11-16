@@ -23,7 +23,7 @@ import {
   type ScreenPoint,
   type ScreenVector,
 } from "@shift/editor/spaces";
-import { Editor } from "@shift/editor";
+import { Editor, type GridSettings, type GridSettingsChange } from "@shift/editor";
 import { featureReadMessage } from "@shift/editor/text";
 import { externalAxisLocationFromRecord } from "@shift/editor/variation";
 import { effect } from "@shift/editor/signals";
@@ -59,6 +59,8 @@ import {
   type GlyphRecord,
   type KerningGroupId,
   type KerningPosition,
+  type MetricsKeySide,
+  type MarkColor,
   type PointId,
   type SelectableId,
   type NamedInstance,
@@ -69,6 +71,7 @@ import {
   asNodeId,
 } from "@shift/types";
 import { segmentIdFor, type Contour } from "@shift/glyph-state";
+import type { SideLink } from "@shift/wasm/protocol";
 import type { SystemClipboard } from "@shift/editor/clipboard";
 import { createWorkspaceStack, type WorkspaceStack } from "./workspaceStack";
 import type {
@@ -126,6 +129,7 @@ import type {
   ToolShortcut,
 } from "./surface";
 import { drawFixture } from "./drawFixture";
+import { buildFont, type FontFixture } from "./fonts";
 import { createStubContext } from "./stubCanvas";
 import { SurfaceActions } from "./SurfaceActions";
 import { WindowTabs } from "@/lib/tabs/WindowTabs";
@@ -200,13 +204,15 @@ export async function startTestEditor(
 
 /**
  * Opens a saved document with `glyphName` open, and returns it as the surface
- * behaviour tests use.
+ * behaviour tests use. `sessionMode` is what the editor may change, a
+ * workspace by default; a preview looks at the file's own glyphs read-only.
  */
 export async function openTestEditor(
   sourcePath: string,
   glyphName: string,
+  sessionMode: FontSessionMode = "workspace",
 ): Promise<EditorTestSurface> {
-  return new TestEditor().openSession(sourcePath, glyphName);
+  return new TestEditor(sessionMode).openSession(sourcePath, glyphName);
 }
 
 /**
@@ -219,11 +225,7 @@ export async function openTestEditor(
 export function authoredGlyphAtlas(editor: EditorTestSurface): AuthoredGlyphAtlasSource {
   if (!(editor instanceof TestEditor)) throw new Error("Expected an editor from startTestEditor");
   const font = editor.font;
-  return new AuthoredGlyphAtlasSource(
-    editor.workspaceEditCoordinator,
-    () => font.getAxes(),
-    () => font.getAxisMappingBases(),
-  );
+  return new AuthoredGlyphAtlasSource(editor.workspaceEditCoordinator, () => font.getAxes());
 }
 
 /**
@@ -275,6 +277,8 @@ export class TestEditor extends Editor implements EditorTestSurface {
   /** The overlay frames {@link recordCanvas} has recorded, each the lines it strokes. */
   /** The ids outlines go by in {@link latestCanvasFrame} and {@link drawnOutlineIds}. */
   readonly #outlineIds = new Map<Path2D, number>();
+  /** How many times a preview said it is read-only, for {@link readOnlyNotices}. */
+  #readOnlyNotices = 0;
   /** How many times the canvas text was laid out, once {@link textLayoutCount} first counts. */
   #textLayouts: { count: number } | null = null;
   /** The Kerning tool's uncommitted preview, discarded by {@link cancelGesture}. */
@@ -290,6 +294,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
     const clipboard = new InMemorySystemClipboard();
     super({ font: stack.font, fontStore: stack.store, clipboard, sessionMode });
     this.#stack = stack;
+    this.on("previewMutationAttempted", () => this.#readOnlyNotices++);
     this.#tabs = new WindowTabs(this);
     this.#clipboard = clipboard;
     this.#reads = {
@@ -737,7 +742,13 @@ export class TestEditor extends Editor implements EditorTestSurface {
     fixture: F,
     options: DrawOptions = {},
   ): Promise<Record<PointNames<F>, PointId>> {
-    return drawFixture(this, fixture, options);
+    // A test draws its fixture even into a preview's read-only font.
+    return this.font.whileEditable(() => drawFixture(this, fixture, options));
+  }
+
+  /** Builds `fixture` into the font, even a preview's read-only one. */
+  async build(fixture: FontFixture): Promise<void> {
+    await this.font.whileEditable(() => buildFont(this, fixture));
   }
 
   select(ids: readonly PointId[]): void {
@@ -802,6 +813,17 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   setAdvanceWidth(width: number): void {
     this.setXAdvance(width);
+  }
+
+  linkMetric(side: MetricsKeySide, key: string): string | null {
+    const links = this.activeMetricsLinks();
+    if (!links)
+      throw new Error("linking a metric needs one open glyph with a layer at the active source");
+    return links.link(side, key);
+  }
+
+  metricsLinks(): readonly SideLink[] {
+    return this.activeMetricsLinks()?.sides ?? [];
   }
   pressAt(position: Point2D, modifiers?: Modifiers): void {
     const screen = this.localToScreen(position);
@@ -1232,6 +1254,11 @@ export class TestEditor extends Editor implements EditorTestSurface {
     await this.settle();
   }
 
+  async tagGlyphs(names: readonly string[], color: MarkColor | null): Promise<void> {
+    this.#actions.tagGlyphs(names, color);
+    await this.settle();
+  }
+
   async renameSource(source: string, name: string): Promise<void> {
     await this.#actions.renameSource(source, name);
     await this.settle();
@@ -1627,6 +1654,19 @@ export class TestEditor extends Editor implements EditorTestSurface {
     };
   }
 
+  readOnlyNotices(): number {
+    return this.#readOnlyNotices;
+  }
+
+  drawnTextGlyphs(): (string | null)[] {
+    const run = this.textRun;
+    if (!run) return [];
+    const layout = this.text.drawnLayoutCell(run.runId).peek();
+    return (layout?.placedGlyphs ?? []).map(({ glyph }) =>
+      glyph.glyphId ? this.font.glyphName(glyph.glyphId) : null,
+    );
+  }
+
   drawnOutlineIds(glyph: string): DrawnOutlineIds {
     const model = this.glyphForId(this.#glyphNamed(glyph))?.renderModelAt(
       this.externalLocationCell,
@@ -1723,6 +1763,14 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   zoomLevel(): number {
     return this.zoom;
+  }
+
+  gridSettings(): GridSettings {
+    return this.grid.settings;
+  }
+
+  setGrid(change: GridSettingsChange): void {
+    this.grid.update(change);
   }
 
   canvasOffset(): ScreenVector {

@@ -18,6 +18,7 @@ import {
   type FontFeature,
   type GlyphIdentityChange,
   type PlacedText,
+  type SideLink,
   type RevisedNode,
   type SceneIntent,
   type TextRun,
@@ -370,10 +371,23 @@ export class SessionEngine implements FontEngine {
     return this.#require().glyphPrimaryCodepoint(glyphId, codepoint);
   }
 
+  linkedSides(glyphId: GlyphId, sourceId: SourceId): readonly SideLink[] {
+    return this.#session?.linkedSides(glyphId, sourceId) ?? [];
+  }
+
+  metricsKeyProblem(text: string): string | null {
+    return this.#require().metricsKeyProblem(text);
+  }
+
   nextGlyphName(name: string): GlyphName {
     return this.#require().nextGlyphName(name);
   }
 
+  /**
+   * `run` shaped and laid out at `place`.
+   *
+   * @returns null while no session is open.
+   */
   layoutText(run: TextRun, place: KerningPlace): PlacedText | null {
     return this.#session?.layoutText(run, place) ?? null;
   }
@@ -458,7 +472,7 @@ export class SessionEngine implements FontEngine {
    */
   protected async replace(store: EngineStore): Promise<void> {
     const { EngineSession } = await loadEngine();
-    const session = EngineSession.open(store.directory, store.request, store.scene);
+    const session = EngineSession.over(store);
     batch(() => {
       this.close();
       this.#session = session;

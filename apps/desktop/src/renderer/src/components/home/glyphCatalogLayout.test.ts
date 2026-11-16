@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GlyphId, GlyphName } from "@shift/types";
 import type { GlyphCatalogItem } from "@/types/glyphCatalog";
+import { Rect } from "@shift/geo";
 import { GlyphCatalogLayout } from "./glyphCatalogLayout";
 
 function catalog(count: number): GlyphCatalogItem[] {
@@ -9,6 +10,7 @@ function catalog(count: number): GlyphCatalogItem[] {
     name: `name-${index}` as GlyphName,
     displayName: `name-${index}`,
     unicode: index,
+    markColor: null,
   }));
 }
 
@@ -118,5 +120,52 @@ describe("revealing a glyph", () => {
 
   it("scrolls up to a cell above the viewport", () => {
     expect(layout.scrollTopToReveal(0, 5000)).toBe(0);
+  });
+});
+
+describe("sizing the catalog's tiles", () => {
+  it("fits more, shorter tiles at a smaller size and fewer, taller ones at a larger", () => {
+    const small = new GlyphCatalogLayout(500, 240, 40, 56);
+    const normal = new GlyphCatalogLayout(500, 240, 40);
+    const large = new GlyphCatalogLayout(500, 240, 40, 200);
+
+    expect([small.columns, normal.columns, large.columns]).toEqual([6, 4, 2]);
+    expect([small.previewHeight, normal.previewHeight, large.previewHeight]).toEqual([42, 75, 150]);
+    expect([small.rowPitch, normal.rowPitch, large.rowPitch]).toEqual([90, 123, 198]);
+    expect(large.frame(catalog(40), 0).cells[0]!.cellRect.height).toBe(186);
+  });
+
+  it("keeps a size outside its limits at the nearest one", () => {
+    expect(new GlyphCatalogLayout(500, 240, 40, 5).previewHeight).toBe(42);
+    expect(new GlyphCatalogLayout(500, 240, 40, 5000).previewHeight).toBe(165);
+  });
+});
+
+describe("hit-testing the catalog's scrolled content", () => {
+  it("finds the glyph whose preview or name holds a point in the scrolled content", () => {
+    // Four columns of 101 with an 8 gap from x 36; rows of 123 from y 20.
+    const result = new GlyphCatalogLayout(500, 240, 9);
+
+    expect(result.indexAt({ x: 40, y: 30 })).toBe(0);
+    expect(result.indexAt({ x: 36 + 109 + 5, y: 20 + 123 + 5 })).toBe(5);
+    expect(result.indexAt({ x: 40, y: 20 + 75 + 8 + 5 })).toBeNull();
+    expect(result.indexAt({ x: 40, y: 20 + 75 + 8 + 5 }, "name")).toBe(0);
+    expect(result.indexAt({ x: 36 + 103, y: 30 })).toBeNull();
+    expect(result.indexAt({ x: 10, y: 30 })).toBeNull();
+    // The last row holds one glyph; the rest of it is empty.
+    expect(result.indexAt({ x: 36 + 109 + 5, y: 20 + 2 * 123 + 5 })).toBeNull();
+  });
+
+  it("lists the glyphs a box touches in grid order, past the viewport too", () => {
+    const result = new GlyphCatalogLayout(500, 240, 9);
+    const box = (x: number, y: number, width: number, height: number) =>
+      result.indicesIn(Rect.fromXYWH(x, y, width, height));
+
+    expect(box(0, 0, 30, 400)).toEqual([]);
+    expect(box(40, 30, 1, 1)).toEqual([0]);
+    expect(box(100, 60, 60, 100)).toEqual([0, 1, 4, 5]);
+    expect(box(0, 0, 500, 400)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    // Starting in the gap between two columns touches neither until it reaches one.
+    expect(box(36 + 103, 30, 4, 4)).toEqual([]);
   });
 });

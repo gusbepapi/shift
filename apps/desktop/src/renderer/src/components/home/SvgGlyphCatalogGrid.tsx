@@ -1,12 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Button } from "@shift/ui";
+import { Button, cn } from "@shift/ui";
 import { GlyphContextMenu } from "./GlyphContextMenu";
 import { GlyphCatalogLayout } from "./glyphCatalogLayout";
 import { GlyphNameInput } from "./GlyphNameInput";
 import { GlyphPreviewLayout } from "./GlyphPreviewLayout";
+import { useCatalogSelection } from "./useCatalogSelection";
 import { useGlyphPreviewFrame } from "./useGlyphPreviewFrame";
+import { useRevealSelectedGlyph } from "./useRevealSelectedGlyph";
 import type { GlyphId } from "@shift/types";
+import { markColorCss, markColorKey } from "@/lib/glyph-grid/markColor";
 import type { SvgGlyphCatalogGridProps } from "@/types/glyphCatalog";
+
+const PLAIN_CLICK = { range: false, toggle: false };
 
 /** Renders the portable catalog as virtualized React cells with native DOM interaction. */
 export function SvgGlyphCatalogGrid({
@@ -18,8 +23,9 @@ export function SvgGlyphCatalogGrid({
   glyphPreviews,
   canAuthor,
   openGlyph,
-  selectedGlyphId,
-  selectGlyph,
+  selection,
+  selectGlyphs,
+  tileSize,
   onPendingGlyphName,
   onFirstFrame,
   onUnavailable,
@@ -33,10 +39,18 @@ export function SvgGlyphCatalogGrid({
   const [scrollTop, setScrollTop] = useState(0);
   const [editingGlyphId, setEditingGlyphId] = useState<GlyphId | null>(null);
   const layout = useMemo(
-    () => new GlyphCatalogLayout(viewportWidth, viewportHeight, glyphs.length),
-    [glyphs.length, viewportHeight, viewportWidth],
+    () => new GlyphCatalogLayout(viewportWidth, viewportHeight, glyphs.length, tileSize),
+    [glyphs.length, tileSize, viewportHeight, viewportWidth],
   );
   const targetFrame = useMemo(() => layout.frame(glyphs, scrollTop), [glyphs, layout, scrollTop]);
+  const selecting = useCatalogSelection({
+    containerRef,
+    layout,
+    glyphs,
+    selection,
+    selectGlyphs,
+    openGlyph,
+  });
   const [, previews, readiness, cacheBytes] = useGlyphPreviewFrame(
     targetFrame,
     location,
@@ -72,16 +86,13 @@ export function SvgGlyphCatalogGrid({
     }
   }, [editingGlyphId, targetFrame.cells]);
 
-  // Scrolls a newly selected glyph into view, such as one just created; one already visible stays put.
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (!container || selectedGlyphId === null) return;
-
-    const index = glyphs.findIndex((glyph) => glyph.id === selectedGlyphId);
-    const scrollTop = layout.scrollTopToReveal(index, container.scrollTop);
-    if (scrollTop !== null) container.scrollTop = scrollTop;
-    // Only a change of selection reveals; scrolling away from the selection is the user's.
-  }, [selectedGlyphId]);
+  useRevealSelectedGlyph({
+    containerRef,
+    layout,
+    glyphs,
+    selection,
+    dragging: selecting.box !== null,
+  });
 
   useLayoutEffect(() => {
     if (!editingGlyphId) return;
@@ -103,12 +114,9 @@ export function SvgGlyphCatalogGrid({
 
   return (
     <GlyphContextMenu
-      glyphAt={(event) => {
-        const cell = (event.target as Element).closest("[data-glyph-id]");
-        const glyphId = cell?.getAttribute("data-glyph-id");
-        return glyphs.find((glyph) => glyph.id === glyphId) ?? null;
-      }}
-      selectGlyph={selectGlyph}
+      glyphAt={(event) => selecting.glyphAt(event.clientX, event.clientY)}
+      selection={selection}
+      selectGlyphs={selectGlyphs}
       openGlyph={openGlyph}
       renameGlyph={canAuthor ? (glyph) => setEditingGlyphId(glyph.id) : undefined}
     >
@@ -120,8 +128,16 @@ export function SvgGlyphCatalogGrid({
         data-grid-readiness={readiness}
         data-preview-cache-bytes={cacheBytes}
         data-first-glyph-name={glyphs[0]?.displayName}
-        className="absolute inset-0 overflow-x-hidden overflow-y-auto"
+        className="absolute inset-0 overflow-x-hidden overflow-y-auto outline-none"
+        role="group"
+        tabIndex={0}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        onDoubleClick={(event) => {
+          // A press captures the pointer, so its clicks arrive here, not on the glyph.
+          const glyph = selecting.glyphAt(event.clientX, event.clientY);
+          if (glyph) void handleOpenGlyph(glyph.id);
+        }}
+        {...selecting.handlers}
       >
         <div className="relative" style={{ height: layout.totalHeight, width: "100%" }}>
           {targetFrame.cells.map((cell) => {
@@ -159,7 +175,12 @@ export function SvgGlyphCatalogGrid({
             }
 
             let nameCell = (
-              <div className="flex h-7 w-full items-center justify-center truncate bg-input px-2 text-xs text-muted">
+              <div
+                className={cn(
+                  "flex h-7 w-full items-center justify-center truncate px-2 text-xs",
+                  cell.glyph.markColor ? "text-primary" : "text-muted",
+                )}
+              >
                 {cell.glyph.displayName}
               </div>
             );
@@ -168,7 +189,10 @@ export function SvgGlyphCatalogGrid({
                 <Button
                   aria-label={`Rename ${cell.glyph.displayName}`}
                   variant="ghost"
-                  className="h-7 w-full truncate bg-input px-2 text-center font-ui text-xs font-normal text-muted hover:bg-hover"
+                  className={cn(
+                    "h-7 w-full truncate px-2 text-center font-ui text-xs font-normal",
+                    cell.glyph.markColor ? "text-primary" : "text-muted",
+                  )}
                   onClick={() => setEditingGlyphId(cell.glyph.id)}
                 >
                   {cell.glyph.displayName}
@@ -188,11 +212,18 @@ export function SvgGlyphCatalogGrid({
               );
             }
 
+            const selected = selection.has(cell.glyph.id);
+            // The preview fills the cell down to the band that holds the name.
+            const bandHeight = cell.cellRect.bottom - cell.nameRect.top;
             return (
               <div
                 key={cell.glyph.id}
                 data-glyph-id={cell.glyph.id}
-                className="absolute flex flex-col"
+                data-mark-color={markColorKey(cell.glyph.markColor)}
+                className={cn(
+                  "absolute flex flex-col overflow-hidden rounded-lg",
+                  selected ? "bg-hover" : "bg-tile",
+                )}
                 style={{
                   height: cell.cellRect.height,
                   left: cell.cellRect.left,
@@ -203,20 +234,50 @@ export function SvgGlyphCatalogGrid({
                 <Button
                   aria-label={glyphActionLabel?.(cell.glyph) ?? `Open ${cell.glyph.displayName}`}
                   variant="ghost"
-                  aria-pressed={cell.glyph.id === selectedGlyphId}
-                  isActive={cell.glyph.id === selectedGlyphId}
-                  className="flex w-full items-center justify-center overflow-hidden p-0 hover:bg-hover"
-                  style={{ height: cell.previewRect.height }}
-                  onClick={() => void selectGlyph(cell.glyph)}
-                  onDoubleClick={async () => handleOpenGlyph(cell.glyph.id)}
+                  aria-pressed={selected}
+                  className="flex w-full items-center justify-center overflow-hidden p-0"
+                  style={{ height: cell.cellRect.height - bandHeight }}
+                  // The pointer selects on press; this is the keyboard's Enter and Space.
+                  onClick={(event) => {
+                    if (event.detail === 0)
+                      selectGlyphs(selection.click(cell.glyph.id, PLAIN_CLICK));
+                  }}
                 >
                   {previewContent}
                 </Button>
-                <div style={{ height: targetFrame.layout.nameGap }} />
-                {nameCell}
+                {/* A tag colours the band that holds the name; the preview is never tinted. */}
+                <div
+                  className="flex items-center px-0.75"
+                  style={{
+                    background: cell.glyph.markColor
+                      ? markColorCss(cell.glyph.markColor)
+                      : undefined,
+                    height: bandHeight,
+                  }}
+                >
+                  {nameCell}
+                </div>
+                {selected ? (
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-inset ring-accent"
+                  />
+                ) : null}
               </div>
             );
           })}
+          {selecting.box ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute border border-accent bg-accent/10"
+              style={{
+                height: selecting.box.height,
+                left: selecting.box.left,
+                top: selecting.box.top,
+                width: selecting.box.width,
+              }}
+            />
+          ) : null}
         </div>
       </div>
     </GlyphContextMenu>

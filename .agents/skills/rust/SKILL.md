@@ -108,8 +108,11 @@ let recompiles = self.units_per_em.recompiles(&next.units_per_em)
     || self.feature_source.recompiles(&next.feature_source)
     || self.axes.recompiles(&next.axes);
 ```
+
 - **A method, not a free function**, when the first argument is the owner: `font.master_layers(glyph)`, not `master_layers(font, glyph)`. Extension traits are fine across crates.
 - **Entity kinds are an enum.** `EntityKind::Glyph` with `Display`, never `kind: "glyph"` or a `kind: &str` parameter, so kinds can't drift and callers can match them.
+- **Convert elements with `From` impls and collect directly into the field's type** (`Box<[T]>`, `Vec`, a map); destructure the source once instead of repeating `self.x.` per field. Reported by `pnpm scan:rust --kind field-copy-conversion`.
+- **Write `.collect()` and let the field, argument or return type pick the collection**; use a turbofish or a typed `let` only when nothing else fixes the type, and never collect just to iterate again (clippy's `needless_collect`). Reported by `pnpm scan:rust --kind collect-turbofish`.
 - **Repeated conversion shapes get one helper.** `.into_iter().map(Into::into).collect()` written ten times in a `From` impl becomes `convert_all(v)`; `changed.then(|| read()).transpose()?` becomes `if_changed(changed, read)?`.
 - **Let the type do the adapting.** When a call site needs `.to_string()`, `into_inner()`, `from_raw(…)` or a `.map(…)` to pass a value along, implement the trait instead: ids implement `ToSql`/`FromSql` (`params![glyph.id()]`, `row.get("glyph_id")?`), and conversions implement `From`/`Into`.
 - **Name the intent with a constructor.** `font.location_at(&coordinates)` and `font.default_location()` say what a value is; a `zip`/`map`/`collect` at the call site says how it's built.
@@ -142,7 +145,18 @@ An edit should cost what the edited thing costs, not what the font costs. A `Fon
 
 ## Rules the editor needs
 
+**One owner per rule.** Before writing a numeric or domain rule (normalization, interpolation, metrics, geometry), search shift-font and its libraries for it and call that; never write a second copy with different edge handling. Axis normalization once had five copies across shift-font, shift-backends and shift-slug, each clamping and comparing differently. Reported by `pnpm scan:rust --kind duplicate-body`.
+
 When the editor needs a shift-font rule synchronously, write it as a plain-data function in shift-font that native callers use, and export that function from `crates/shift-wasm`. Don't write a second Rust version for WebAssembly, and don't re-declare its types there: a `FontFeature` or `FeatureGroup` copied into `shift-wasm` beside `shift-text`'s is two enums to keep in sync. Derive the wire format on the original type, or convert with one `From`. The export only converts numbers to and from shift-font types; "Choosing a route" in `crates/shift-wasm/docs/DOCS.md` says what belongs there and what may stay in TypeScript.
+
+## The scan ratchet
+
+`pnpm scan:rust --check` (CI) holds every `shift-scan` kind's count per crate to `crates/shift-scan/baseline.json`: a branch may not add a hit, and a branch that fixes some runs `pnpm scan:rust --update` and commits the lower number. The kinds are listed in `crates/shift-scan/docs/DOCS.md`.
+
+## The lint ratchet
+
+Clippy lints that still have hits are listed in `clippy-ratchet.json` with their hits per crate (`src` for library and binary code, `tests` for the rest), and `pnpm lint:rust-ratchet`, CI's clippy step, fails when a count differs from the file.
+To lower one, fix hits and run `pnpm lint:rust-ratchet --update`; a lint at 0 everywhere moves to `[workspace.lints.clippy]` in `Cargo.toml`.
 
 ## Review checklist
 
@@ -158,6 +172,8 @@ When the editor needs a shift-font rule synchronously, write it as a plain-data 
 - [ ] No `unwrap_or_default()`, `unwrap_or(…)` or `.ok()` that turns an error into an empty answer.
 - [ ] No signature nesting three or more generic layers; no `filter_map` closure doing two `?`s into a tuple.
 - [ ] No `Option`/`bool` fields standing in for phases; no derived `PartialEq` deciding what a change costs; events and change kinds are enums or flag sets.
+- [ ] No rule (normalization, interpolation, geometry) written again beside the one shift-font owns; no `duplicate-body` hit the branch added.
+- [ ] Conversions collect straight into the field's type; no turbofish where the field, argument or return type fixes it.
 - [ ] No type re-declared in `shift-wasm` that `shift-font` or `shift-text` already defines.
 - [ ] No scan of the whole font for a query an edit repeats; indexes that must agree are declared on one type and updated through a copy; no `imbl` outside `ir/persistent.rs`.
 - [ ] `cargo fmt`, `cargo clippy` for the affected crates, and their tests pass.

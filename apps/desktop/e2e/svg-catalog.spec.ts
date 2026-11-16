@@ -2,6 +2,8 @@ import type { Locator, Page } from "@playwright/test";
 import { workspaceTest as test, expect } from "./fixtures/electronApp";
 import {
   clickFirstCatalogGlyph,
+  fontNavigation,
+  glyphProperties,
   glyphCatalogCanvas,
   glyphCatalogSvg,
   glyphCatalogSurface,
@@ -25,6 +27,118 @@ test.describe("SVG glyph catalog fallback", () => {
 
     await clickFirstCatalogGlyph(page);
     await waitForEditorReady(page, glyphId);
+  });
+
+  test("selects glyphs by click, Shift-click, ⌘-click, a dragged box and the keyboard", async ({
+    page,
+  }) => {
+    const svg = glyphCatalogSvg(page);
+    await expect(svg).toHaveAttribute("data-grid-readiness", "Complete");
+    const tiles = svg.getByRole("button", { name: /^Open / });
+    const selected = svg.getByRole("button", { name: /^Open /, pressed: true });
+    const names = (await tiles.evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label")),
+    )) as string[];
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    const selectedNames = async () =>
+      selected.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")));
+
+    await tiles.nth(0).click();
+    await expect.poll(selectedNames).toEqual(names.slice(0, 1));
+
+    await tiles.nth(2).click({ modifiers: ["Shift"] });
+    await expect.poll(selectedNames).toEqual(names.slice(0, 3));
+
+    await tiles.nth(1).click({ modifiers: ["ControlOrMeta"] });
+    await expect.poll(selectedNames).toEqual([names[0], names[2]]);
+
+    // A drag from the margin left of the first glyph to the middle of the second boxes both.
+    const first = (await tiles.nth(0).boundingBox())!;
+    const second = (await tiles.nth(1).boundingBox())!;
+    await page.mouse.move(first.x - 10, first.y + first.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(selectedNames).toEqual(names.slice(0, 2));
+
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(selectedNames).toEqual(names.slice(2, 3));
+
+    await page.keyboard.press("Escape");
+    await expect(selected).toHaveCount(0);
+  });
+
+  test("clears the selection from either sidebar's blank space", async ({ page }) => {
+    const svg = glyphCatalogSvg(page);
+    await expect(svg).toHaveAttribute("data-grid-readiness", "Complete");
+    const tiles = svg.getByRole("button", { name: /^Open / });
+    const selected = svg.getByRole("button", { name: /^Open /, pressed: true });
+    // A press on the sidebar element itself lands on no control: its blank space.
+    const pressBlankSpace = (sidebar: Locator) =>
+      sidebar.dispatchEvent("pointerdown", { bubbles: true, button: 0, isPrimary: true });
+
+    for (const sidebar of [fontNavigation(page), glyphProperties(page)]) {
+      await tiles.nth(0).click();
+      await expect(selected).toHaveCount(1);
+
+      await pressBlankSpace(sidebar);
+
+      await expect(selected).toHaveCount(0);
+    }
+  });
+
+  test("opens the glyph the arrow keys reached on Enter", async ({ page }) => {
+    const svg = glyphCatalogSvg(page);
+    await expect(svg).toHaveAttribute("data-grid-readiness", "Complete");
+    const glyphId = await glyphCatalogSurface(page).getAttribute("data-first-glyph-id");
+    if (!glyphId) throw new Error("Expected a visible catalog glyph");
+
+    await svg.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(svg.getByRole("button", { name: /^Open /, pressed: true })).toHaveCount(1);
+    await page.keyboard.press("Enter");
+
+    await waitForEditorReady(page, glyphId);
+  });
+
+  test("fills tagged glyphs' tiles and filters the grid to a colour from the footer", async ({
+    editor,
+    page,
+  }) => {
+    const svg = glyphCatalogSvg(page);
+    await expect(svg).toHaveAttribute("data-grid-readiness", "Complete");
+    const tagged = await editor.createGlyphsForUnicodes([0x3042, 0x3044]);
+    const tiles = svg.getByRole("button", { name: /^Open / });
+    const surface = glyphCatalogSurface(page);
+    const total = (await editor.glyphNames()).length;
+    await expect(surface).toHaveAttribute("data-filtered-glyph-count", `${total}`);
+    await expect(page.getByRole("button", { name: "Show yellow glyphs" })).toHaveCount(0);
+
+    await editor.tagGlyphs(tagged, { kind: "named", named: "yellow" });
+    await page.getByRole("button", { name: "Show yellow glyphs" }).click();
+    await expect(surface).toHaveAttribute("data-filtered-glyph-count", "2");
+    await expect(tiles).toHaveCount(2);
+    await expect(svg.locator('[data-mark-color="yellow"]')).toHaveCount(2);
+
+    await page.getByRole("button", { name: "Show untagged glyphs" }).click();
+    await expect(surface).toHaveAttribute("data-filtered-glyph-count", `${total - 2}`);
+    await expect(svg.locator('[data-mark-color="yellow"]')).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Show untagged glyphs" }).click();
+    await expect(surface).toHaveAttribute("data-filtered-glyph-count", `${total}`);
+  });
+
+  test("makes tiles as large as the footer's size slider allows", async ({ page }) => {
+    const svg = glyphCatalogSvg(page);
+    await expect(svg).toHaveAttribute("data-grid-readiness", "Complete");
+    const firstTile = svg.getByRole("button", { name: /^Open / }).first();
+    const width = async () => (await firstTile.boundingBox())?.width ?? 0;
+    expect(await width()).toBeLessThan(220);
+
+    await page.getByRole("slider", { name: "Tile size" }).focus();
+    await page.keyboard.press("End");
+
+    await expect.poll(width).toBeGreaterThanOrEqual(220);
   });
 
   test("shows the system character for an empty encoded glyph", async ({ editor, page }) => {

@@ -1,6 +1,5 @@
 use crate::errors::{FormatBackendError, FormatBackendResult};
 use crate::feature_includes::inline_feature_includes;
-use crate::font_source::AffineTransform;
 use crate::import::collect_streamed_font;
 use crate::traits::FontReader;
 use norad::{Font as NoradFont, Line};
@@ -10,6 +9,9 @@ use shift_font::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+
+use super::mark_color::take_mark_color;
+use super::metrics_keys::take_metrics_keys;
 
 pub struct UfoReader;
 
@@ -85,7 +87,7 @@ impl UfoReader {
     fn convert_component(component: &norad::Component) -> PendingComponent {
         PendingComponent {
             base_glyph_name: component.base.to_string(),
-            matrix: Transform::from_values(AffineTransform::from(&component.transform).to_values()),
+            matrix: kurbo::Affine::from(component.transform).into(),
         }
     }
 
@@ -202,25 +204,31 @@ impl UfoReader {
             glyph_layer.add_guideline(Self::convert_guideline(guideline));
         }
 
-        if !norad_glyph.lib.is_empty() {
-            *glyph_layer.lib_mut() = Self::convert_lib(&norad_glyph.lib);
+        let mut lib = norad_glyph.lib.clone();
+        take_metrics_keys(&mut lib);
+        if !lib.is_empty() {
+            *glyph_layer.lib_mut() = Self::convert_lib(&lib);
         }
 
         (glyph_layer, pending_components)
     }
 
-    /// Gives `glyph` the codepoints and lib of `first`, the GLIF of its first
-    /// layer: a UFO keeps them per layer, and import reads the default
-    /// layer's.
+    /// Gives `glyph` the codepoints, glyph-level metrics keys, mark colour,
+    /// and lib of `first`, the GLIF of its first layer: a UFO keeps them per
+    /// layer, and import reads the default layer's.
     pub(crate) fn set_glyph_identity(glyph: &mut Glyph, first: &norad::Glyph) {
         glyph.set_unicodes(first.codepoints.iter().map(u32::from).collect());
-        if !first.lib.is_empty() {
-            *glyph.lib_mut() = Self::convert_lib(&first.lib);
+        let mut lib = first.lib.clone();
+        *glyph.metrics_keys_mut() = take_metrics_keys(&mut lib).glyph;
+        glyph.set_mark_color(take_mark_color(&mut lib));
+        if !lib.is_empty() {
+            *glyph.lib_mut() = Self::convert_lib(&lib);
         }
     }
 
-    /// `norad_glyph`'s advance as a layer with no content: what a directory
-    /// holds for the layer before it is loaded. A GLIF height of 0 is no height.
+    /// `norad_glyph`'s advance and metrics keys as a layer with no content:
+    /// what a directory holds for the layer before it is loaded. A GLIF
+    /// height of 0 is no height.
     pub(crate) fn placeholder_layer(
         norad_glyph: &norad::Glyph,
         layer_id: LayerId,
@@ -230,6 +238,7 @@ impl UfoReader {
         if norad_glyph.height != 0.0 {
             layer.set_height(Some(norad_glyph.height));
         }
+        *layer.metrics_keys_mut() = take_metrics_keys(&mut norad_glyph.lib.clone()).layer;
         layer
     }
 
