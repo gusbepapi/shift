@@ -13,9 +13,8 @@ shift-font = { workspace = true }
 shift-slug = { workspace = true }
 shift-text = { workspace = true, features = ["shaper-font"] }
 
-norad = "0.18.4"
+norad = { version = "0.18.4", features = ["kurbo"] }
 skrifa = "0.32.0"
-brotli = "8"
 fea-rs = "1.0"
 flate2 = "1"
 fontbe = "1.0"
@@ -33,13 +32,16 @@ tempfile = "3"
 thiserror = "2.0.18"
 tiny-skia = "0.11"
 write-fonts = "0.52"
+ttf2woff2 = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 harfrust = "0.13.3"
 png = "0.17"
+proptest = "1"
 shift-text = { workspace = true, features = ["layout"] }
 shift-font = { workspace = true, features = ["test-support"] }
 shift-store = { workspace = true }
+wuff = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 shift-store = { workspace = true }

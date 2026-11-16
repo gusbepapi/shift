@@ -24,6 +24,7 @@ import {
 import { EditorDriver } from "./fixtures/EditorDriver";
 import { glyphClickTargets } from "./fixtures/editorInteractions";
 import { createAuthoredDocument } from "./fixtures/fontSource";
+import { exportedFiles, exportFromSidebar, exportSection } from "./fixtures/exportSection";
 import { exportedGlyphNames, savedGlyphNames } from "./fixtures/savedDocument";
 import {
   clickFirstCatalogGlyph,
@@ -53,11 +54,6 @@ const cancelSaveTest = test.extend({
     await use("");
   },
 });
-const cancelExportTest = workspaceTest.extend({
-  exportTtfPath: async ({}, use) => {
-    await use("");
-  },
-});
 const failedOpenTest = test.extend({
   openFontPath: async ({ testRoot }, use) => {
     await use(path.join(testRoot, "missing.ufo"));
@@ -78,10 +74,10 @@ const existingSaveTest = test.extend({
   },
 });
 const failedExportTest = workspaceTest.extend({
-  exportTtfPath: async ({ testRoot }, use) => {
+  exportDirectory: async ({ testRoot }, use) => {
     const nonDirectory = path.join(testRoot, "not-a-directory");
     fs.writeFileSync(nonDirectory, "blocked");
-    await use(path.join(nonDirectory, "exported.ttf"));
+    await use(path.join(nonDirectory, "exported"));
   },
 });
 const convertiblePreviewTest = test.extend({
@@ -269,7 +265,7 @@ test.describe("opening a font through the application shell", () => {
     await expect(notice).toBeHidden();
   });
 
-  test("preview canvas clicks explain restrictions while marquee stays selection-free", async ({
+  test("a preview selects as a document does and explains why a drag changes nothing", async ({
     electronApp,
     page,
   }) => {
@@ -281,6 +277,7 @@ test.describe("opening a font through the application shell", () => {
     await expect(canvas).toBeVisible();
     await expect.poll(async () => (await previewEditor.editorView()).glyph).not.toBeNull();
 
+    // A point, a segment's midpoint, and empty canvas below the glyph.
     const targets = await glyphClickTargets(workspacePage);
     const bounds = await previewEditor.canvasBounds();
     const notice = workspacePage.getByRole("dialog", {
@@ -295,29 +292,35 @@ test.describe("opening a font through the application shell", () => {
       expect(target.y, targetContext).toBeLessThanOrEqual(bounds.height);
     }
 
+    // Looking works as in a document: hovering and selecting say nothing.
     for (const point of targets.slice(0, 2)) {
       await workspacePage.mouse.move(bounds.x + point.x, bounds.y + point.y);
-      await expect.poll(() => previewEditor.hoverId()).toBeNull();
+      await expect.poll(() => previewEditor.hoverId()).not.toBeNull();
       await canvas.click({ position: point });
-      await expect(notice).toBeVisible();
-      await expect.poll(() => previewEditor.selectionIds()).toEqual([]);
-      await notice.getByRole("button", { name: "OK", exact: true }).click();
+      await expect.poll(() => previewEditor.selectionIds()).not.toEqual([]);
       await expect(notice).toBeHidden();
     }
 
-    await canvas.click({ position: targets[2]! });
-    await expect(notice).toBeHidden();
-
+    // Dragging a point would change the font: nothing moves, and the preview says why.
     const point = targets[0]!;
     await workspacePage.mouse.move(bounds.x + point.x, bounds.y + point.y);
     await workspacePage.mouse.down();
     await workspacePage.mouse.move(bounds.x + point.x + 30, bounds.y + point.y + 30, { steps: 5 });
-    await expect.poll(() => previewEditor.toolState()).toBe("brushing");
-    await expect.poll(() => previewEditor.selectionIds()).toEqual([]);
+    await workspacePage.mouse.up();
+    await expect(notice).toBeVisible();
+    await expect.poll(() => previewEditor.toolState()).toBe("ready");
+    await notice.getByRole("button", { name: "OK", exact: true }).click();
     await expect(notice).toBeHidden();
+
+    // A marquee from empty canvas selects, as in a document.
+    const corner = { x: bounds.x + bounds.width - 40, y: bounds.y + 40 };
+    await workspacePage.mouse.move(corner.x, corner.y);
+    await workspacePage.mouse.down();
+    await workspacePage.mouse.move(corner.x - 60, corner.y + 60, { steps: 5 });
+    await expect.poll(() => previewEditor.toolState()).toBe("brushing");
     await workspacePage.mouse.up();
     await expect.poll(() => previewEditor.toolState()).toBe("ready");
-    await expect.poll(() => previewEditor.selectionIds()).toEqual([]);
+    await expect(notice).toBeHidden();
   });
 });
 
@@ -709,49 +712,56 @@ saveOnCloseTest(
   },
 );
 
-cancelExportTest("canceling Export preserves document state", async ({ electronApp, page }) => {
-  const workspace = new EditorDriver(page, electronApp);
-  const before = await workspace.documentState();
-  await expect.poll(() => windowTitle(page, electronApp)).toContain("font.shift -");
-  const titleBefore = await windowTitle(page, electronApp);
-
-  await runCommand(page, "file.exportTtf");
-
-  expect(await workspace.documentState()).toEqual(before);
-  expect(await windowTitle(page, electronApp)).toBe(titleBefore);
-});
-
-failedExportTest(
-  "failed Export preserves document state",
-  async ({ electronApp, page, exportTtfPath }) => {
+workspaceTest(
+  "closing an Export row's options without exporting preserves document state",
+  async ({ electronApp, page }) => {
     const workspace = new EditorDriver(page, electronApp);
     const before = await workspace.documentState();
     await expect.poll(() => windowTitle(page, electronApp)).toContain("font.shift -");
     const titleBefore = await windowTitle(page, electronApp);
 
-    await runCommand(page, "file.exportTtf");
+    await exportSection(page).getByRole("button", { name: "Export options" }).first().click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toBeHidden();
 
     expect(await workspace.documentState()).toEqual(before);
     expect(await windowTitle(page, electronApp)).toBe(titleBefore);
-    expect(fs.existsSync(exportTtfPath)).toBe(false);
+  },
+);
+
+failedExportTest(
+  "failed Export preserves document state",
+  async ({ electronApp, page, exportDirectory }) => {
+    const workspace = new EditorDriver(page, electronApp);
+    const before = await workspace.documentState();
+    await expect.poll(() => windowTitle(page, electronApp)).toContain("font.shift -");
+    const titleBefore = await windowTitle(page, electronApp);
+
+    expect(await exportFromSidebar(page)).toBe("failed");
+
+    expect(await workspace.documentState()).toEqual(before);
+    expect(await windowTitle(page, electronApp)).toBe(titleBefore);
+    expect(exportedFiles(exportDirectory, ".ttf")).toEqual([]);
   },
 );
 
 workspaceTest(
   "Export writes TTF without changing document state",
   { tag: "@os" },
-  async ({ electronApp, page, exportTtfPath }) => {
+  async ({ electronApp, page, exportDirectory }) => {
     const workspace = new EditorDriver(page, electronApp);
     const before = await workspace.documentState();
     await expect.poll(() => windowTitle(page, electronApp)).toContain("font.shift -");
     const titleBefore = await windowTitle(page, electronApp);
 
-    await runCommand(page, "file.exportTtf");
+    expect(await exportFromSidebar(page)).toBe("done");
 
-    await expect.poll(() => fs.existsSync(exportTtfPath)).toBe(true);
+    const [exported] = exportedFiles(exportDirectory, ".ttf");
+    expect(exported).toBeDefined();
     const workspaceGlyphs = await workspace.glyphNames();
     expect(workspaceGlyphs).toContain("A");
-    expect(exportedGlyphNames(exportTtfPath)).toEqual(expect.arrayContaining([...workspaceGlyphs]));
+    expect(exportedGlyphNames(exported!)).toEqual(expect.arrayContaining([...workspaceGlyphs]));
     await expect.poll(() => workspace.documentState()).toEqual(before);
     expect(await windowTitle(page, electronApp)).toBe(titleBefore);
   },

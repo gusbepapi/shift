@@ -1,6 +1,6 @@
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, Font, FontChange, FontChangeSet, GlyphId, Paint,
-    PaintColor, Replacement, Rgba, test_support::sample_font,
+    PaintColor, Replacement, Rgba8, test_support::sample_font,
 };
 use shift_store::{SHIFT_DOCUMENT_SCHEMA_VERSION, SaveState, ShiftStore};
 
@@ -11,11 +11,11 @@ fn colour_data(font: &Font) -> ColorData {
         palettes: vec![
             ColorPalette {
                 name: Some("Light".to_string()),
-                colors: vec![Rgba::new(255, 64, 0, 255), Rgba::new(0, 0, 0, 128)],
+                colors: vec![Rgba8::new(255, 64, 0, 255), Rgba8::new(0, 0, 0, 128)],
             },
             ColorPalette {
                 name: None,
-                colors: vec![Rgba::new(0, 64, 255, 255), Rgba::new(255, 255, 255, 128)],
+                colors: vec![Rgba8::new(0, 64, 255, 255), Rgba8::new(255, 255, 255, 128)],
             },
         ],
         glyphs: vec![ColorGlyph {
@@ -77,7 +77,7 @@ fn colour_change_sets_apply_and_reverse() {
 }
 
 #[test]
-fn version_four_documents_gain_empty_colour_tables_on_open() {
+fn version_six_documents_gain_empty_colour_tables_on_open() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("Old.shift");
     let original = sample_font();
@@ -85,7 +85,7 @@ fn version_four_documents_gain_empty_colour_tables_on_open() {
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 4;",
+            "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 6;",
         )
         .unwrap();
     }

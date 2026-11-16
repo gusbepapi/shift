@@ -5,6 +5,7 @@ import type {
   FontMetadata,
   FontMetrics,
   GlyphRecord,
+  Grid,
   KerningSnapshot,
   GlyphState,
   MetricDefinition,
@@ -30,6 +31,8 @@ export interface WorkspaceSnapshot {
   namedInstances: readonly NamedInstance[];
   /** Tracked Hyperglot language ids; `null` when the font stores no list. */
   languageIds: readonly string[] | null;
+  /** The grid the font is drawn on; `null` when it stores none. */
+  grid: Grid | null;
   kerning: KerningSnapshot;
   /** Palettes and colour glyph paint graphs; absent in snapshots that predate colour. */
   color?: ColorData;

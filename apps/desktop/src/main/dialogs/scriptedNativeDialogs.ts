@@ -32,8 +32,8 @@ export const scriptedNativeDialogs: NativeDialogs = {
     return process.env.SHIFT_E2E_SAVE_SHIFT_PATH || null;
   },
 
-  async exportFont(_window, _state, format) {
-    return process.env[`SHIFT_E2E_EXPORT_${format.toUpperCase()}_PATH`] || null;
+  async chooseExportFolder() {
+    return process.env.SHIFT_E2E_EXPORT_DIRECTORY || null;
   },
 
   async confirmDirtyDocument() {
@@ -51,8 +51,6 @@ export const scriptedNativeDialogs: NativeDialogs = {
   },
 
   async showSaveFailure() {},
-
-  async showExportFailure() {},
 };
 
 function nextDirtyDocumentChoice(): DirtyDocumentChoice {

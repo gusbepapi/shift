@@ -1548,7 +1548,7 @@ fn sample_color(font: &shift_font::Font) -> shift_font::ColorData {
     shift_font::ColorData {
         palettes: vec![shift_font::ColorPalette {
             name: None,
-            colors: vec![shift_font::Rgba::new(9, 8, 7, 255)],
+            colors: vec![shift_font::Rgba8::new(9, 8, 7, 255)],
         }],
         glyphs: vec![shift_font::ColorGlyph {
             glyph: glyphs[0],

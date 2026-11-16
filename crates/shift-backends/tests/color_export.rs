@@ -3,7 +3,7 @@
 use shift_backends::{ColorTable, ColorTables, ExportFormat, FontExportRequest, FontExporter};
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Contour, Font, Glyph, GlyphId,
-    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba, test_support::sample_variable_font,
+    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba8, test_support::sample_variable_font,
 };
 use write_fonts::read::tables::colr::Paint as ReadPaint;
 use write_fonts::read::{FontRef, TableProvider};
@@ -54,11 +54,11 @@ fn palettes() -> Vec<ColorPalette> {
     vec![
         ColorPalette {
             name: None,
-            colors: vec![Rgba::new(10, 20, 30, 255), Rgba::new(10, 20, 30, 255)],
+            colors: vec![Rgba8::new(10, 20, 30, 255), Rgba8::new(10, 20, 30, 255)],
         },
         ColorPalette {
             name: None,
-            colors: vec![Rgba::new(200, 0, 0, 255), Rgba::new(0, 0, 200, 128)],
+            colors: vec![Rgba8::new(200, 0, 0, 255), Rgba8::new(0, 0, 200, 128)],
         },
     ]
 }

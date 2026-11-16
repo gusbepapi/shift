@@ -26,11 +26,14 @@ pub(super) struct FontIndex {
     by_unicode: PersistentListMultiMap<u32, GlyphId>,
     owners: UniqueIndex<LayerId, GlyphId>,
     /// One layer per glyph and source.
-    by_glyph_source: UniqueIndex<GlyphSource, LayerId>,
+    by_source: UniqueIndex<SourceLayerKey, LayerId>,
     /// Layers with a component of each base glyph, so an anchor edit finds
     /// the composites that follow it without scanning every layer. Derived
     /// anchored placement retires this.
     by_component_base: PersistentMultiMap<GlyphId, LayerId>,
+    /// Each glyph with metrics keys, and where its keys are, so an edit
+    /// finds the linked glyphs without scanning every glyph.
+    metrics_keyed: PersistentMultiMap<GlyphId, KeyHolder>,
     /// Every point, contour, component, anchor, and guideline id in the font.
     pub(super) entity_ids: PersistentSet<GlyphEntityId>,
 }
@@ -64,7 +67,7 @@ impl FontIndex {
     }
 
     pub(super) fn layer_at(&self, glyph_id: GlyphId, source_id: SourceId) -> Option<&LayerId> {
-        self.by_glyph_source.get(&GlyphSource {
+        self.by_source.get(&SourceLayerKey {
             glyph_id,
             source_id,
         })
@@ -93,17 +96,24 @@ impl FontIndex {
     /// [`CoreError::DuplicateGlyphLayer`], or a duplicate entity id error for
     /// the first key a unique index already holds. The index is then partly
     /// updated, so insert into a copy and keep it only on success.
+    /// Every glyph with a metrics key on itself or on one of its layers, in
+    /// id order.
+    pub(super) fn metrics_keyed_glyphs(&self) -> impl Iterator<Item = &GlyphId> {
+        self.metrics_keyed.keys()
+    }
+
     pub(super) fn try_insert(&mut self, entries: IndexEntries) -> CoreResult<()> {
         self.by_name.try_extend(entries.names).or_duplicate()?;
         self.owners.try_extend(entries.owners).or_duplicate()?;
-        self.by_glyph_source
-            .try_extend(entries.glyph_sources)
+        self.by_source
+            .try_extend(entries.source_layers)
             .or_duplicate()?;
         self.entity_ids
             .try_extend(entries.entity_ids)
             .or_duplicate()?;
         self.by_unicode.extend(entries.unicodes);
         self.by_component_base.extend(entries.component_bases);
+        self.metrics_keyed.extend(entries.metrics_keyed);
         Ok(())
     }
 
@@ -111,8 +121,9 @@ impl FontIndex {
         self.by_name.remove_all(&entries.names);
         self.by_unicode.remove_all(&entries.unicodes);
         self.owners.remove_all(&entries.owners);
-        self.by_glyph_source.remove_all(&entries.glyph_sources);
+        self.by_source.remove_all(&entries.source_layers);
         self.by_component_base.remove_all(&entries.component_bases);
+        self.metrics_keyed.remove_all(&entries.metrics_keyed);
         self.entity_ids.remove_all(&entries.entity_ids);
     }
 
@@ -179,8 +190,9 @@ pub(super) struct IndexEntries {
     names: Vec<(GlyphName, GlyphId)>,
     unicodes: Vec<(u32, GlyphId)>,
     owners: Vec<(LayerId, GlyphId)>,
-    glyph_sources: Vec<(GlyphSource, LayerId)>,
+    source_layers: Vec<(SourceLayerKey, LayerId)>,
     component_bases: Vec<(GlyphId, LayerId)>,
+    metrics_keyed: Vec<(GlyphId, KeyHolder)>,
     entity_ids: Vec<GlyphEntityId>,
 }
 
@@ -205,6 +217,9 @@ impl IndexEntries {
         for unicode in glyph.unicodes() {
             entries.unicodes.push((*unicode, glyph_id));
         }
+        if !glyph.metrics_keys().is_empty() {
+            entries.metrics_keyed.push((glyph_id, KeyHolder::Glyph));
+        }
         for layer in glyph.layers().values() {
             entries.add_layer_records(glyph_id, layer);
         }
@@ -222,23 +237,34 @@ impl IndexEntries {
     fn add_layer_records(&mut self, glyph_id: GlyphId, layer: &GlyphLayer) {
         let layer_id = layer.id();
         self.owners.push((layer_id, glyph_id));
-        self.glyph_sources
-            .push((GlyphSource::of(glyph_id, layer), layer_id));
+        self.source_layers
+            .push((SourceLayerKey::of(glyph_id, layer), layer_id));
         for component in layer.components_iter() {
             self.component_bases
                 .push((component.base_glyph_id(), layer_id));
         }
+        if !layer.metrics_keys().is_empty() {
+            self.metrics_keyed
+                .push((glyph_id, KeyHolder::Layer(layer_id)));
+        }
     }
 }
 
-/// The layer slot a glyph has for one source.
+/// Where a glyph's metrics keys are: on the glyph, or on one of its layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum KeyHolder {
+    Glyph,
+    Layer(LayerId),
+}
+
+/// The layer slot a glyph has on one source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(super) struct GlyphSource {
+pub(super) struct SourceLayerKey {
     glyph_id: GlyphId,
     source_id: SourceId,
 }
 
-impl GlyphSource {
+impl SourceLayerKey {
     fn of(glyph_id: GlyphId, layer: &GlyphLayer) -> Self {
         Self {
             glyph_id,
@@ -265,7 +291,7 @@ impl DuplicateKey for LayerId {
     }
 }
 
-impl DuplicateKey for GlyphSource {
+impl DuplicateKey for SourceLayerKey {
     fn duplicate_error(&self) -> CoreError {
         CoreError::DuplicateGlyphLayer {
             glyph_id: self.glyph_id,

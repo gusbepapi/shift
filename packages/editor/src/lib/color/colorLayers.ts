@@ -1,4 +1,4 @@
-import type { ColorData, GlyphId, Paint, PaintColor, Rgba } from "@shift/types";
+import type { ColorData, GlyphId, Paint, PaintColor, Rgba8 } from "@shift/types";
 
 /** The fill of one colour layer, with palette entries kept as indices. */
 export type LayerFill =
@@ -46,14 +46,14 @@ export function colorLayersOf(color: ColorData, glyph: GlyphId): ColorLayer[] {
  */
 export function resolvePaintColor(
   color: PaintColor,
-  palette: readonly Rgba[] | undefined,
-): Rgba | null {
+  palette: readonly Rgba8[] | undefined,
+): Rgba8 | null {
   if (color.kind === "foreground") return null;
   return palette?.[color.index] ?? null;
 }
 
 /** Formats a colour as a CSS `rgb()` function, or `rgba()` when it is not opaque. */
-export function cssColor(color: Rgba, alpha = 1): string {
+export function cssColor(color: Rgba8, alpha = 1): string {
   const opacity = (color.a / 255) * alpha;
   return opacity >= 1
     ? `rgb(${color.r} ${color.g} ${color.b})`

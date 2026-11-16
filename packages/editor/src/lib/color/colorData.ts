@@ -1,4 +1,4 @@
-import type { ColorData, ColorGlyph, GlyphId, Paint, PaintColor, Rgba } from "@shift/types";
+import type { ColorData, ColorGlyph, GlyphId, Paint, PaintColor, Rgba8 } from "@shift/types";
 
 /**
  * Pure edits of the font's colour data.
@@ -19,7 +19,7 @@ export function setPaletteColor(
   data: ColorData,
   paletteIndex: number,
   entryIndex: number,
-  color: Rgba,
+  color: Rgba8,
 ): ColorData | null {
   const palette = data.palettes[paletteIndex];
   if (!palette || entryIndex < 0 || entryIndex >= palette.colors.length) return null;
@@ -34,7 +34,7 @@ export function setPaletteColor(
 }
 
 /** Appends an entry to every palette, creating the first palette when the font has none. */
-export function addPaletteEntry(data: ColorData, color: Rgba): ColorData {
+export function addPaletteEntry(data: ColorData, color: Rgba8): ColorData {
   if (data.palettes.length === 0) {
     return { ...data, palettes: [{ name: null, colors: [color] }] };
   }

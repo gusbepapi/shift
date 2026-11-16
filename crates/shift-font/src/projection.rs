@@ -272,25 +272,25 @@ impl Font {
         let Some(fallback) = fallback else {
             return Ok(None);
         };
-        let exact_source_shapes = self
-            .masters()
-            .filter_map(|source| {
-                let layer = Arc::clone(glyph.shared_layer_for_source(source.id())?);
-                if layer.id() == fallback.id() {
+        let exact_source_shapes = glyph
+            .located_layers(self)
+            .filter_map(|located| {
+                let source_id = located.location.base_source_id()?;
+                if located.layer.id() == fallback.id() {
                     return None;
                 }
 
                 let represented_by_interpolation =
                     interpolation.as_ref().is_some_and(|interpolation| {
-                        interpolation.basis().source_ids().contains(&source.id())
+                        interpolation.basis().source_ids().contains(&source_id)
                     });
                 if represented_by_interpolation {
                     return None;
                 }
 
                 Some(GlyphSourceShape {
-                    source_id: source.id(),
-                    layer,
+                    source_id,
+                    layer: Arc::clone(located.layer),
                 })
             })
             .collect();
@@ -726,12 +726,7 @@ impl Font {
     /// resolvable shape, or an interpolation error for incompatible
     /// referenced geometry.
     pub fn resolve_layer(&self, layer_id: LayerId) -> CoreResult<ResolvedLayerGeometry> {
-        let glyph_id = self.require_layer_owner(layer_id)?;
-        let layer = self.require_layer(layer_id)?;
-        let location = self.require_source(layer.source_id())?.location().clone();
-        let mut projection = self.projection(&location);
-        projection.prepare_layer_tree_from(glyph_id, layer.clone())?;
-
+        let (glyph_id, projection) = self.layer_tree_projection(layer_id)?;
         resolved_layer_geometry_from_layers(glyph_id, &projection.layers)
     }
 
@@ -749,13 +744,27 @@ impl Font {
         layer_id: LayerId,
         component_ids: &HashSet<ComponentId>,
     ) -> CoreResult<Vec<ResolvedContour>> {
+        let (glyph_id, projection) = self.layer_tree_projection(layer_id)?;
+        flatten_selected_component_contours_from_layers(glyph_id, &projection.layers, component_ids)
+    }
+
+    /// A projection at one authored layer's source, with that layer as its
+    /// glyph's shape and its components resolved. Returns the layer's glyph
+    /// with it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve_layer`].
+    fn layer_tree_projection(
+        &self,
+        layer_id: LayerId,
+    ) -> CoreResult<(GlyphId, FontProjection<'_>)> {
         let glyph_id = self.require_layer_owner(layer_id)?;
         let layer = self.require_layer(layer_id)?;
         let location = self.require_source(layer.source_id())?.location().clone();
         let mut projection = self.projection(&location);
         projection.prepare_layer_tree_from(glyph_id, layer.clone())?;
-
-        flatten_selected_component_contours_from_layers(glyph_id, &projection.layers, component_ids)
+        Ok((glyph_id, projection))
     }
 }
 
@@ -1009,10 +1018,10 @@ mod tests {
             .unwrap()
             .clone();
         let reference_layer_id = font
-            .layer_id_for_glyph_source(glyph_id, reference_source_id)
+            .layer_id_for_source(glyph_id, reference_source_id)
             .unwrap();
         let bold_layer_id = font
-            .layer_id_for_glyph_source(glyph_id, bold_source.id())
+            .layer_id_for_source(glyph_id, bold_source.id())
             .unwrap();
         let c_id = GlyphId::from_raw("C");
         let caron_id = GlyphId::from_raw("caron.cap");

@@ -25,11 +25,14 @@ export function commandMenuItem(
   if (!command) throw new Error(`Unknown menu command: ${id}`);
 
   const shortcut = commandShortcut(id);
+  // A canvas key such as G stays with the renderer; a native accelerator would swallow typing.
+  const accelerator =
+    shortcut?.primaryModifier === true ? toElectronAccelerator(shortcut) : undefined;
 
   return {
     id,
     label: command.label,
-    accelerator: shortcut ? toElectronAccelerator(shortcut) : undefined,
+    accelerator,
     enabled: isCommandEnabled(id),
     click: () => runCommand(id),
   };
@@ -58,16 +61,7 @@ export function fileMenuItems(
     commandMenuItem("file.save", runCommand, isCommandEnabled),
     commandMenuItem("file.saveAs", runCommand, isCommandEnabled),
     { type: "separator" },
-    {
-      label: "Export",
-      submenu: [
-        commandMenuItem("file.exportTtf", runCommand, isCommandEnabled),
-        commandMenuItem("file.exportOtf", runCommand, isCommandEnabled),
-        commandMenuItem("file.exportWoff", runCommand, isCommandEnabled),
-        commandMenuItem("file.exportWoff2", runCommand, isCommandEnabled),
-        commandMenuItem("file.exportGlyphs", runCommand, isCommandEnabled),
-      ],
-    },
+    commandMenuItem("file.export", runCommand, isCommandEnabled),
   ];
 }
 
@@ -145,7 +139,7 @@ export function editMenuItems(
   return [...items, { type: "separator" }, item("app.showSettings")];
 }
 
-/** Builds the View menu's zoom and Interface Size items. */
+/** Builds the View menu's zoom, grid and Interface Size items. */
 export function viewMenuItems(
   runCommand: (id: CommandId) => void,
   isCommandEnabled: (id: CommandId) => boolean,
@@ -158,6 +152,9 @@ export function viewMenuItems(
   return [
     item("view.zoomIn"),
     item("view.zoomOut"),
+    { type: "separator" },
+    item("view.toggleGrid"),
+    item("view.toggleSnapToGrid"),
     { type: "separator" },
     {
       label: "Interface Size",

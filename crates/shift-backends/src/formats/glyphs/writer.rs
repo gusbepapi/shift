@@ -781,7 +781,7 @@ mod tests {
     fn a_colour_file_imports_without_new_glyphs_or_changed_outlines() {
         use shift_font::{
             ColorData, ColorGlyph, ColorPalette, Contour, Glyph, GlyphLayer, LayerId, Paint,
-            PaintColor, PointType, Rgba,
+            PaintColor, PointType, Rgba8,
         };
 
         let mut font = sample_variable_font();
@@ -803,7 +803,7 @@ mod tests {
         font.set_color(ColorData {
             palettes: vec![ColorPalette {
                 name: None,
-                colors: vec![Rgba::new(1, 2, 3, 255)],
+                colors: vec![Rgba8::new(1, 2, 3, 255)],
             }],
             glyphs: vec![ColorGlyph {
                 glyph: base,

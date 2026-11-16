@@ -3,7 +3,7 @@
 use miette::{Result, bail, miette};
 use shift_font::{
     ColorGlyph, ColorPalette, ColorPoint, ColorStop, FontIntent, FontIntentSet, Paint, PaintColor,
-    RemoveColorGlyph, Rgba, SetColorGlyph, SetColorPalettes,
+    RemoveColorGlyph, Rgba8, SetColorGlyph, SetColorPalettes,
 };
 
 use crate::cli::{RemoveColorGlyphArgs, SetColorGlyphArgs, SetPalettesArgs};
@@ -105,7 +105,7 @@ fn parse_palette(text: &str) -> Result<ColorPalette> {
     Ok(ColorPalette { name, colors })
 }
 
-fn parse_hex(text: &str) -> Result<Rgba> {
+fn parse_hex(text: &str) -> Result<Rgba8> {
     let digits = text
         .strip_prefix('#')
         .ok_or_else(|| miette!("colour {text:?} must start with #"))?;
@@ -117,7 +117,7 @@ fn parse_hex(text: &str) -> Result<Rgba> {
             .map_err(|_| miette!("colour {text:?} is not hexadecimal"))
     };
     let alpha = if digits.len() == 8 { channel(3)? } else { 255 };
-    Ok(Rgba::new(channel(0)?, channel(1)?, channel(2)?, alpha))
+    Ok(Rgba8::new(channel(0)?, channel(1)?, channel(2)?, alpha))
 }
 
 /// Parses a layer fill; the grammar is documented on `--layer`.
@@ -221,12 +221,12 @@ mod tests {
         assert_eq!(named.name.as_deref(), Some("Dark"));
         assert_eq!(
             named.colors,
-            vec![Rgba::new(16, 32, 48, 255), Rgba::new(255, 0, 0, 128)]
+            vec![Rgba8::new(16, 32, 48, 255), Rgba8::new(255, 0, 0, 128)]
         );
 
         let anonymous = parse_palette("#ffffff").unwrap();
         assert_eq!(anonymous.name, None);
-        assert_eq!(anonymous.colors, vec![Rgba::new(255, 255, 255, 255)]);
+        assert_eq!(anonymous.colors, vec![Rgba8::new(255, 255, 255, 255)]);
 
         assert!(parse_palette("#12345").is_err());
         assert!(parse_palette("red").is_err());

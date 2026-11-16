@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use shift_backends::{ExportFormat, FontExporter, ImportLossKind, font_loader::FontLoader};
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Contour, Font, Glyph, GlyphId,
-    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba, test_support::sample_variable_font,
+    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba8, test_support::sample_variable_font,
 };
 
 /// Numbers the scratch files, because tests of one process run in parallel and may share a name.
@@ -147,8 +147,8 @@ fn palettes_come_from_the_color_palettes_parameter() {
     let palettes = &font.color().palettes;
 
     assert_eq!(palettes.len(), 1);
-    assert_eq!(palettes[0].colors[0], Rgba::new(255, 0, 0, 255));
-    assert_eq!(palettes[0].colors[1], Rgba::new(0, 0, 255, 255));
+    assert_eq!(palettes[0].colors[0], Rgba8::new(255, 0, 0, 255));
+    assert_eq!(palettes[0].colors[1], Rgba8::new(0, 0, 255, 255));
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn colour_layer_shapes_become_layers_with_literal_colours_appended_to_the_palett
     assert_eq!(layers[0].0, "B.color1");
     assert_eq!(layers[0].1, solid(palette(2)));
     let colors = &font.color().palettes[0].colors;
-    assert_eq!(colors[2], Rgba::new(255, 128, 0, 255));
+    assert_eq!(colors[2], Rgba8::new(255, 128, 0, 255));
 
     let (name, Paint::LinearGradient { stops, p0, p1, p2 }) = &layers[1] else {
         panic!("second layer should be a linear gradient: {:?}", layers[1]);
@@ -197,8 +197,8 @@ fn colour_layer_shapes_become_layers_with_literal_colours_appended_to_the_palett
         PaintColor::Palette { index } => colors[usize::from(index)],
         PaintColor::Foreground => panic!("stops use palette entries"),
     };
-    assert_eq!(resolved(&stops[0]), Rgba::new(0, 0, 0, 255));
-    assert_eq!(resolved(&stops[1]), Rgba::new(255, 255, 255, 255));
+    assert_eq!(resolved(&stops[0]), Rgba8::new(0, 0, 0, 255));
+    assert_eq!(resolved(&stops[1]), Rgba8::new(255, 255, 255, 255));
 }
 
 #[test]
@@ -314,11 +314,11 @@ fn two_palettes() -> Vec<ColorPalette> {
     vec![
         ColorPalette {
             name: None,
-            colors: vec![Rgba::new(10, 20, 30, 255), Rgba::new(200, 100, 50, 255)],
+            colors: vec![Rgba8::new(10, 20, 30, 255), Rgba8::new(200, 100, 50, 255)],
         },
         ColorPalette {
             name: None,
-            colors: vec![Rgba::new(1, 2, 3, 255), Rgba::new(4, 5, 6, 128)],
+            colors: vec![Rgba8::new(1, 2, 3, 255), Rgba8::new(4, 5, 6, 128)],
         },
     ]
 }
@@ -383,8 +383,8 @@ fn gradient_geometry_survives_an_export_and_import() {
         PaintColor::Foreground => panic!("stops use palette entries"),
     };
     // Literal colours come from palette 0 of the exported font
-    assert_eq!(resolved(&stops[0]), Rgba::new(10, 20, 30, 255));
-    assert_eq!(resolved(&stops[1]), Rgba::new(200, 100, 50, 255));
+    assert_eq!(resolved(&stops[0]), Rgba8::new(10, 20, 30, 255));
+    assert_eq!(resolved(&stops[1]), Rgba8::new(200, 100, 50, 255));
 }
 
 #[test]

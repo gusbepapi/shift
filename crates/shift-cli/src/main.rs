@@ -3,13 +3,16 @@ mod check;
 mod cli;
 mod format;
 mod glyph_inspect;
+mod import;
 mod inspect;
 mod kerning;
+mod pack;
 mod proof;
 mod selector;
 mod skill;
 
 use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 use authoring::{
     AuthoringReport, ExportSources, add_axis, add_glyph, add_instance, add_layer, add_page,
@@ -21,9 +24,9 @@ use authoring::{
 };
 use clap::Parser;
 use cli::{
-    AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, FontCommand,
-    GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand, PageCommand,
-    PaletteCommand, SkillCommand, SourceCommand,
+    AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, ExportArgs,
+    FontCommand, GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand,
+    PageCommand, PaletteCommand, SkillCommand, SourceCommand,
 };
 use glyph_inspect::GlyphInspection;
 use inspect::{InspectReport, RenderMode};
@@ -31,7 +34,8 @@ use kerning::{get_kerning, kerning_groups, list_kerning};
 use miette::IntoDiagnostic;
 use serde::Serialize;
 use shift_backends::{
-    ColorTable, ColorTables, ExportFormat, FontExportRequest, FontExportResult, FontExporter,
+    BinaryEncoding, BinaryEncodings, ColorTable, ColorTables, ExportFormat, FontExportRequest,
+    FontExportResult, FontExporter,
 };
 use shift_store::ShiftStore;
 use skill::{install_skill, show_skill, skill_status};
@@ -48,9 +52,16 @@ fn main() -> miette::Result<()> {
             Ok(())
         }
         Command::Compile(args) => {
-            let result = compile(args)?;
+            for file in compile(args)?.iter().flat_map(|result| &result.files) {
+                write_stdout(&file.display().to_string())?;
+            }
+            Ok(())
+        }
+        Command::Export(args) => {
+            let result = export(args)?;
             write_stdout(&result.path.display().to_string())
         }
+        Command::Import(args) => write_report(&import::import(&args)?, args.json),
         Command::Proof(args) => {
             let summary = proof::proof(&args)?;
             write_report(&summary, args.json)
@@ -67,6 +78,10 @@ fn main() -> miette::Result<()> {
             FontCommand::Set(args) => {
                 let json = args.mutation.json;
                 write_authoring_result(set_font(&args), json)
+            }
+            FontCommand::Pack(args) => {
+                pack::pack_font(&args)?;
+                write_stdout(&args.output.display().to_string())
             }
         },
         Command::Axis { command } => match command {
@@ -261,19 +276,61 @@ fn write_authoring_result(
     }
 }
 
-fn compile(args: CompileArgs) -> miette::Result<FontExportResult> {
-    let font = ShiftStore::open_document(&args.path)
-        .and_then(|store| store.load_font_state())
-        .into_diagnostic()?;
+/// Compiles the document to one binary or source in the requested format, or
+/// with `--static` to one static binary per named instance; with `--woff2`,
+/// each TrueType binary is also written as WOFF2.
+fn compile(args: CompileArgs) -> miette::Result<Vec<FontExportResult>> {
     let format = compile_format(&args);
+    if args.woff2 && format != ExportFormat::Ttf {
+        return Err(miette::miette!(
+            "--woff2 writes beside a TrueType binary; use --format woff2 to write only WOFF2"
+        ));
+    }
     let color_tables = compile_color_tables(&args);
+    let encodings = if args.woff2 {
+        BinaryEncodings::new([BinaryEncoding::Ttf, BinaryEncoding::Woff2]).into_diagnostic()?
+    } else {
+        BinaryEncodings::ttf()
+    };
+    let font = load_document(&args.path)?;
+    let exporter = FontExporter::new();
+    if args.static_instances {
+        return exporter
+            .export_static_instances_with(&font, &args.output, &encodings, &color_tables)
+            .into_diagnostic();
+    }
+    let request = FontExportRequest {
+        path: args.output,
+        format,
+        color_tables,
+    };
+    Ok(vec![
+        exporter
+            .export_with(&font, request, &encodings)
+            .into_diagnostic()?,
+    ])
+}
+
+fn export(args: ExportArgs) -> miette::Result<FontExportResult> {
+    let format = ExportFormat::from_path(&args.output).into_diagnostic()?;
+    export_document(&args.path, args.output, format)
+}
+
+/// Writes the `.shift` document at `path` to `output` as `format`, leaving the
+/// document unchanged.
+fn export_document(
+    path: &Path,
+    output: PathBuf,
+    format: ExportFormat,
+) -> miette::Result<FontExportResult> {
+    let font = load_document(path)?;
     FontExporter::new()
         .export(
             &font,
             FontExportRequest {
-                path: args.output,
+                path: output,
                 format,
-                color_tables,
+                color_tables: ColorTables::default(),
             },
         )
         .into_diagnostic()
@@ -310,6 +367,16 @@ fn compile_format(args: &CompileArgs) -> ExportFormat {
         .extension()
         .and_then(|extension| extension.to_str())
         .and_then(|extension| ExportFormat::try_from(extension).ok())
+        .filter(|format| {
+            matches!(
+                format,
+                ExportFormat::Ttf
+                    | ExportFormat::Otf
+                    | ExportFormat::Woff
+                    | ExportFormat::Woff2
+                    | ExportFormat::Glyphs
+            )
+        })
         .unwrap_or(ExportFormat::Ttf)
 }
 
@@ -362,6 +429,12 @@ fn render_mode() -> RenderMode {
     }
 }
 
+fn load_document(path: &Path) -> miette::Result<shift_font::Font> {
+    ShiftStore::open_document(path)
+        .and_then(|store| store.load_font_state())
+        .into_diagnostic()
+}
+
 fn write_stdout(output: &str) -> miette::Result<()> {
     let mut stdout = io::stdout().lock();
     match writeln!(stdout, "{output}") {
@@ -377,6 +450,17 @@ mod tests {
 
     use super::*;
 
+    fn compile_args(path: PathBuf, output: PathBuf) -> CompileArgs {
+        CompileArgs {
+            path,
+            output,
+            format: None,
+            color_tables: None,
+            static_instances: false,
+            woff2: false,
+        }
+    }
+
     #[test]
     fn compile_command_writes_ttf_from_shift_document() {
         let temp = tempfile::tempdir().unwrap();
@@ -384,31 +468,24 @@ mod tests {
         let output_path = temp.path().join("Dogfood.ttf");
         drop(ShiftStore::create_document(&source_path, &sample_variable_font()).unwrap());
 
-        let result = compile(CompileArgs {
-            path: source_path,
-            output: output_path.clone(),
-            format: None,
-            color_tables: None,
-        })
-        .unwrap();
+        let results = compile(compile_args(source_path, output_path.clone())).unwrap();
 
         assert_eq!(
-            result,
-            FontExportResult {
-                path: output_path,
+            results,
+            [FontExportResult {
+                path: output_path.clone(),
                 format: ExportFormat::Ttf,
-            }
+                files: vec![output_path.clone()],
+            }]
         );
-        let bytes = std::fs::read(result.path).unwrap();
+        let bytes = std::fs::read(output_path).unwrap();
         assert_eq!(&bytes[..4], &[0x00, 0x01, 0x00, 0x00]);
     }
 
     fn args_with_color_tables(color_tables: Option<Vec<cli::CompileColorTable>>) -> CompileArgs {
         CompileArgs {
-            path: "Dogfood.shift".into(),
-            output: "Dogfood.ttf".into(),
-            format: None,
             color_tables,
+            ..compile_args("Dogfood.shift".into(), "Dogfood.ttf".into())
         }
     }
 
@@ -446,14 +523,8 @@ mod tests {
         drop(ShiftStore::create_document(&source_path, &sample_variable_font()).unwrap());
 
         let glyphs_path = temp.path().join("Dogfood.glyphs");
-        let result = compile(CompileArgs {
-            path: source_path.clone(),
-            output: glyphs_path.clone(),
-            format: None,
-            color_tables: None,
-        })
-        .unwrap();
-        assert_eq!(result.format, ExportFormat::Glyphs);
+        let results = compile(compile_args(source_path.clone(), glyphs_path.clone())).unwrap();
+        assert_eq!(results[0].format, ExportFormat::Glyphs);
         assert!(
             std::fs::read_to_string(glyphs_path)
                 .unwrap()
@@ -461,14 +532,26 @@ mod tests {
         );
 
         let woff2_path = temp.path().join("Dogfood.woff2");
-        let result = compile(CompileArgs {
-            path: source_path,
-            output: woff2_path.clone(),
+        let results = compile(CompileArgs {
             format: Some(cli::CompileFormat::Woff2),
-            color_tables: None,
+            ..compile_args(source_path, woff2_path.clone())
         })
         .unwrap();
-        assert_eq!(result.format, ExportFormat::Woff2);
+        assert_eq!(results[0].format, ExportFormat::Woff2);
         assert_eq!(&std::fs::read(woff2_path).unwrap()[..4], b"wOF2");
+    }
+
+    #[test]
+    fn compile_command_refuses_woff2_beside_a_non_ttf_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("Dogfood.shift");
+        drop(ShiftStore::create_document(&source_path, &sample_variable_font()).unwrap());
+
+        let result = compile(CompileArgs {
+            woff2: true,
+            ..compile_args(source_path, temp.path().join("Dogfood.glyphs"))
+        });
+
+        assert!(result.is_err());
     }
 }

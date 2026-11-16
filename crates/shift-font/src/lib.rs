@@ -26,18 +26,18 @@
 //! changesets, geometry helpers, component resolution, and variation helpers.
 //!
 //! Canonical document persistence belongs to `shift-store`; workspace and recovery
-//! orchestration belongs to `shift-workspace`. Transport belongs to `shift-bridge`
-//! and `shift-wire`. UI interaction belongs to the TypeScript editor.
+//! orchestration belongs to `shift-workspace`. Transport belongs to `shift-bridge`;
+//! the shapes it and the editor's WebAssembly carry are [`wire`]'s. UI
+//! interaction belongs to the TypeScript editor.
 //!
-// Library code returns errors instead of panicking: a panic kills the
-// WebAssembly engine. Tests may unwrap (clippy.toml).
-#![warn(clippy::unwrap_used, clippy::print_stdout)]
 
 pub mod anchor_attachment;
 pub mod anchor_name;
 pub mod anchor_propagation;
+pub mod axis_map;
 pub mod changes;
 pub mod check;
+pub mod compiled_header;
 pub mod composite;
 pub mod contour_edit;
 pub mod curve;
@@ -51,6 +51,7 @@ pub mod intents;
 pub mod interpolation;
 pub mod ir;
 pub mod layer_edit;
+pub mod linked_metrics;
 pub mod naming;
 pub mod placed_blend;
 pub mod point_arrange;
@@ -62,8 +63,11 @@ mod string_enum;
 pub mod svg_path;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod wire;
 
+pub use axis_map::piecewise_map;
 pub use changes::*;
+pub use compiled_header::CompiledHeader;
 pub use contour_edit::{
     ContourEditError, ContourEnd, ContourSide, DeleteMode, EditOption, JoinMode, UnknownEditOption,
 };

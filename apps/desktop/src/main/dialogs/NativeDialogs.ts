@@ -1,4 +1,4 @@
-import type { FontExportFormat, WorkspaceDocumentState } from "../../shared/workspace/lanes";
+import type { WorkspaceDocumentState } from "../../shared/workspace/lanes";
 import type { CloseReason, DirtyDocumentChoice, DocumentCrashChoice } from "../document/types";
 import type { Window } from "../windows/Window";
 
@@ -64,18 +64,13 @@ export interface NativeDialogs {
   saveShiftDocument(window: Window | null, suggestedPath: string | null): Promise<string | null>;
 
   /**
-   * Selects an export destination for one binary font format.
+   * Selects the folder an export writes into.
    *
    * @param window - native window that should own the choice.
-   * @param state - settled document state used to suggest an output path.
-   * @param format - format whose extension the destination must carry.
-   * @returns the selected path, or null when the user cancels.
+   * @param defaultPath - folder the chooser opens at, or null for the system default.
+   * @returns the selected folder, or null when the user cancels.
    */
-  exportFont(
-    window: Window | null,
-    state: WorkspaceDocumentState,
-    format: FontExportFormat,
-  ): Promise<string | null>;
+  chooseExportFolder(window: Window | null, defaultPath: string | null): Promise<string | null>;
 
   /**
    * Returns the explicit action chosen for a dirty close transition.
@@ -114,12 +109,4 @@ export interface NativeDialogs {
    * @param applicationName - product name shown by the native shell.
    */
   showSaveFailure(window: Window | null, applicationName: string): Promise<void>;
-
-  /**
-   * Shows a blocking, nontechnical failure after a font export fails.
-   *
-   * @param window - native window that should own the message.
-   * @param applicationName - product name shown by the native shell.
-   */
-  showExportFailure(window: Window | null, applicationName: string): Promise<void>;
 }

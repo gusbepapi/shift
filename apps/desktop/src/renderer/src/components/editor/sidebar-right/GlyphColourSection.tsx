@@ -15,13 +15,13 @@ import {
   setPaletteColor,
   type ColorLayer,
 } from "@shift/editor";
-import type { ColorData, GlyphId, PaintColor, Rgba } from "@shift/types";
+import type { ColorData, GlyphId, PaintColor, Rgba8 } from "@shift/types";
 import { Button, Input, Minus, Plus, Toggle, ToggleGroup, Tooltip, X } from "@shift/ui";
 import { useEditor } from "@/workspace/WorkspaceContext";
 import { SidebarNumberField } from "./SidebarNumberField";
 import { SidebarSection, SidebarSubsection } from "./SidebarSection";
 
-const FIRST_COLOUR: Rgba = { r: 214, g: 40, b: 57, a: 255 };
+const FIRST_COLOUR: Rgba8 = { r: 214, g: 40, b: 57, a: 255 };
 
 /**
  * The font's colour palettes and, for the shown glyph, its colour layers, with edits.
@@ -256,7 +256,7 @@ const LayerRow = ({
   onRemove,
 }: {
   readonly layer: ColorLayer;
-  readonly palette: readonly Rgba[];
+  readonly palette: readonly Rgba8[];
   readonly disabled: boolean;
   readonly onEntry: (entryIndex: number) => void;
   readonly onAlpha: (alpha: number) => void;
@@ -435,9 +435,9 @@ const ColourInput = ({
   onCommit,
 }: {
   readonly ariaLabel: string;
-  readonly value: Rgba;
+  readonly value: Rgba8;
   readonly disabled: boolean;
-  readonly onCommit: (rgb: Pick<Rgba, "r" | "g" | "b">) => void;
+  readonly onCommit: (rgb: Pick<Rgba8, "r" | "g" | "b">) => void;
 }) => {
   const ref = useRef<HTMLInputElement>(null);
   const commitRef = useRef(onCommit);
@@ -477,7 +477,7 @@ const StopSwatch = ({
 }: {
   readonly color: PaintColor;
   readonly alpha: number;
-  readonly palette: readonly Rgba[];
+  readonly palette: readonly Rgba8[];
 }) => {
   const resolved = resolvePaintColor(color, palette);
   if (!resolved) return <Swatch colour={null} />;
@@ -489,7 +489,7 @@ const Swatch = ({
   colour,
   alpha = 1,
 }: {
-  readonly colour: Rgba | null;
+  readonly colour: Rgba8 | null;
   readonly alpha?: number;
 }) => (
   <span
@@ -506,13 +506,13 @@ const Swatch = ({
   />
 );
 
-function hex(colour: Rgba): string {
+function hex(colour: Rgba8): string {
   const channel = (value: number) => value.toString(16).padStart(2, "0");
   const base = `#${channel(colour.r)}${channel(colour.g)}${channel(colour.b)}`;
   return colour.a === 255 ? base : `${base}${channel(colour.a)}`;
 }
 
-function parseHex(value: string): Pick<Rgba, "r" | "g" | "b"> | null {
+function parseHex(value: string): Pick<Rgba8, "r" | "g" | "b"> | null {
   const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
   if (!match) return null;
   return {

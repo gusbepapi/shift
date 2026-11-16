@@ -17,11 +17,11 @@ use crate::font_source::projection::{
     ProjectionLayer, empty_projection_layer, project_layers, resolve_projection_closure,
 };
 use crate::font_source::{
-    AffineTransform, FontDirectory, FontImporter, FontReadError, FontSource, GlyphAnchor,
-    GlyphIndex, GlyphMetrics, GlyphPointKind, PointProvenance, ProjectedGlyph, SourceIndex,
-    malformed,
+    FontDirectory, FontImporter, FontReadError, FontSource, GlyphAnchor, GlyphIndex, GlyphMetrics,
+    GlyphPointKind, PointProvenance, ProjectedGlyph, SourceIndex, malformed,
 };
 use crate::{BackendError, BackendResult, FontFormat, FontImport};
+use shift_font::AxisRange;
 
 /// One retained parsed Glyphs or Glyphspackage source.
 pub struct GlyphsFont {
@@ -55,9 +55,11 @@ impl GlyphsFont {
                 let design_default = source.default_design_value(index, &design_values);
                 InterpolationAxis {
                     tag: axis.tag.clone(),
-                    minimum: design_values.iter().copied().fold(design_default, f64::min),
-                    default: design_default,
-                    maximum: design_values.iter().copied().fold(design_default, f64::max),
+                    range: AxisRange {
+                        minimum: design_values.iter().copied().fold(design_default, f64::min),
+                        default: design_default,
+                        maximum: design_values.iter().copied().fold(design_default, f64::max),
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -92,7 +94,7 @@ impl GlyphsFont {
                 master
                     .location_values(source.axes.len())
                     .enumerate()
-                    .map(|(index, value)| value.unwrap_or(interpolation_axes[index].default))
+                    .map(|(index, value)| value.unwrap_or(interpolation_axes[index].range.default))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -233,7 +235,7 @@ fn convert_glyphs_layer(
                     })?;
                 components.push(SourceComponent {
                     glyph: base,
-                    transform: AffineTransform::from_values(component.transform.as_coeffs()),
+                    transform: component.transform.into(),
                 });
             }
         }

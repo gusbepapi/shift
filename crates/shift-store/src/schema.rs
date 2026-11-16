@@ -2,21 +2,21 @@ use rusqlite::Transaction;
 
 use crate::StoreError;
 
-const DEFER_IMPORT_INDEXES: &str = r#"
+const DEFER_IMPORT_INDEXES: &str = r"
 DROP INDEX IF EXISTS glyphs_name_idx;
 DROP INDEX IF EXISTS glyph_layers_glyph_id_idx;
 DROP INDEX IF EXISTS glyph_layers_source_id_idx;
 DROP INDEX IF EXISTS glyph_components_base_glyph_id_idx;
-"#;
+";
 
-const RESTORE_IMPORT_INDEXES: &str = r#"
+const RESTORE_IMPORT_INDEXES: &str = r"
 CREATE INDEX glyphs_name_idx ON glyphs(name);
 CREATE INDEX glyph_layers_glyph_id_idx ON glyph_layers(glyph_id);
 CREATE INDEX glyph_layers_source_id_idx ON glyph_layers(source_id);
 CREATE INDEX glyph_components_base_glyph_id_idx ON glyph_components(base_glyph_id);
-"#;
+";
 
-pub(crate) const DOCUMENT_SCHEMA: &str = r#"
+pub(crate) const DOCUMENT_SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS font_info (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     family_name TEXT,
@@ -108,7 +108,11 @@ CREATE TABLE IF NOT EXISTS glyphs (
     name TEXT,
     order_index INTEGER NOT NULL DEFAULT 0,
     category TEXT,
-    sub_category TEXT
+    sub_category TEXT,
+    left_metrics_key TEXT,
+    right_metrics_key TEXT,
+    width_metrics_key TEXT,
+    mark_color TEXT
 );
 
 CREATE INDEX IF NOT EXISTS glyphs_name_idx
@@ -128,6 +132,9 @@ CREATE TABLE IF NOT EXISTS glyph_layers (
     source_id TEXT NOT NULL,
     width REAL NOT NULL DEFAULT 0,
     height REAL,
+    left_metrics_key TEXT,
+    right_metrics_key TEXT,
+    width_metrics_key TEXT,
     FOREIGN KEY (glyph_id) REFERENCES glyphs(id) ON DELETE CASCADE,
     FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
 );
@@ -273,9 +280,9 @@ CREATE TABLE IF NOT EXISTS scene_nodes (
     kind TEXT NOT NULL,
     node BLOB NOT NULL
 );
-"#;
+";
 
-const WORKSPACE_SCHEMA_V1: &str = r#"
+const WORKSPACE_SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS workspace_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     document_id TEXT,
@@ -286,10 +293,10 @@ CREATE TABLE IF NOT EXISTS workspace_state (
     saved_revision INTEGER NOT NULL DEFAULT 0,
     updated_at_ms INTEGER NOT NULL
 );
-"#;
+";
 
 pub const SHIFT_APPLICATION_ID: i64 = 0x5348_4654;
-pub const SHIFT_DOCUMENT_SCHEMA_VERSION: i64 = 5;
+pub const SHIFT_DOCUMENT_SCHEMA_VERSION: i64 = 7;
 
 /// The oldest schema version [`migrate`] can upgrade.
 pub(crate) const OLDEST_MIGRATABLE_SCHEMA_VERSION: i64 = 1;
@@ -303,7 +310,7 @@ pub(crate) const OLDEST_MIGRATABLE_SCHEMA_VERSION: i64 = 1;
 /// glyph or group that is not in the store are dropped, and a glyph listed in
 /// two groups for one position keeps its first group. This SQL is frozen:
 /// later schema changes add new steps.
-const MIGRATE_V1_TO_V2: &str = r#"
+const MIGRATE_V1_TO_V2: &str = r"
 ALTER TABLE kerning_pairs RENAME TO kerning_pairs_v1;
 ALTER TABLE kerning_group_members RENAME TO kerning_group_members_v1;
 ALTER TABLE kerning_groups RENAME TO kerning_groups_v1;
@@ -406,20 +413,20 @@ ORDER BY order_index;
 DROP TABLE kerning_group_members_v1;
 DROP TABLE kerning_groups_v1;
 DROP TABLE kerning_pairs_v1;
-"#;
+";
 
 /// Version 2 to 3: glyphs gain an optional category and subcategory, set
 /// only where they override glyph data. This SQL is frozen.
-const MIGRATE_V2_TO_V3: &str = r#"
+const MIGRATE_V2_TO_V3: &str = r"
 ALTER TABLE glyphs ADD COLUMN category TEXT;
 ALTER TABLE glyphs ADD COLUMN sub_category TEXT;
-"#;
+";
 
 /// Version 3 to 4: documents gain their scene, the canvas the font is shown
 /// on, one row per node. Each row holds the node as named MessagePack, with
 /// its parent, sibling index and kind beside it for queries. A document from
 /// before has no scene, and opens with an empty one. This SQL is frozen.
-const MIGRATE_V3_TO_V4: &str = r#"
+const MIGRATE_V3_TO_V4: &str = r"
 CREATE TABLE scene_nodes (
     id TEXT PRIMARY KEY,
     parent_id TEXT,
@@ -427,7 +434,29 @@ CREATE TABLE scene_nodes (
     kind TEXT NOT NULL,
     node BLOB NOT NULL
 );
-"#;
+";
+
+/// Version 4 to 5: glyphs and layers gain optional metrics keys, the text
+/// that links their sidebearings and width to other glyphs' metrics. A
+/// glyph's keys apply in every source and a layer's in its own. Layer keys
+/// are also in the layer payload; the columns let a directory read them
+/// without loading payloads. This SQL is frozen.
+const MIGRATE_V4_TO_V5: &str = r"
+ALTER TABLE glyphs ADD COLUMN left_metrics_key TEXT;
+ALTER TABLE glyphs ADD COLUMN right_metrics_key TEXT;
+ALTER TABLE glyphs ADD COLUMN width_metrics_key TEXT;
+ALTER TABLE glyph_layers ADD COLUMN left_metrics_key TEXT;
+ALTER TABLE glyph_layers ADD COLUMN right_metrics_key TEXT;
+ALTER TABLE glyph_layers ADD COLUMN width_metrics_key TEXT;
+";
+
+/// Version 5 to 6: glyphs gain an optional mark colour, the tag a designer
+/// organises glyphs by: a named colour's name, or a custom colour's four
+/// channels as `red,green,blue,alpha`. A glyph from before has none. This
+/// SQL is frozen.
+const MIGRATE_V5_TO_V6: &str = r"
+ALTER TABLE glyphs ADD COLUMN mark_color TEXT;
+";
 
 /// The version that added the scene.
 const SCENE_SCHEMA_VERSION: i64 = 4;
@@ -442,9 +471,9 @@ pub(crate) enum SceneUpgrade {
     TableOnly,
 }
 
-/// Version 4 to 5: fonts gain colour palettes and colour glyph paint graphs.
+/// Version 6 to 7: fonts gain colour palettes and colour glyph paint graphs.
 /// This SQL is frozen.
-const MIGRATE_V4_TO_V5: &str = r#"
+const MIGRATE_V6_TO_V7: &str = r"
 CREATE TABLE IF NOT EXISTS color_palettes (
     id TEXT PRIMARY KEY,
     palette_json TEXT NOT NULL,
@@ -456,15 +485,17 @@ CREATE TABLE IF NOT EXISTS color_glyphs (
     paint_json TEXT NOT NULL,
     order_index INTEGER NOT NULL
 );
-"#;
+";
 
 /// Steps that bring authored tables from one schema version to the next, as
 /// `(version reached, SQL)`, in ascending order.
-const MIGRATIONS: [(i64, &str); 4] = [
+const MIGRATIONS: [(i64, &str); 6] = [
     (2, MIGRATE_V1_TO_V2),
     (3, MIGRATE_V2_TO_V3),
     (4, MIGRATE_V3_TO_V4),
     (5, MIGRATE_V4_TO_V5),
+    (6, MIGRATE_V5_TO_V6),
+    (7, MIGRATE_V6_TO_V7),
 ];
 
 /// Upgrades the authored tables of a store at `version` to

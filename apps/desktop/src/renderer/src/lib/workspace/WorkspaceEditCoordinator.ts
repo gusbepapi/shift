@@ -17,7 +17,7 @@ import type {
 } from "@shift/types";
 import type {
   WorkspaceDocumentState,
-  FontExportFormat,
+  WorkspaceExportRequest,
   WorkspaceExportResult,
   SlugAtlasOrigin,
   WorkspaceGlyphSnapshotRequest,
@@ -590,15 +590,16 @@ export class WorkspaceEditCoordinator {
   }
 
   /**
-   * Captures an export after pending edits, then releases the edit lane while compilation runs.
+   * Captures an export after pending edits, then releases the edit lane while
+   * compilation runs. Export never changes the document's save target or
+   * dirty state.
    *
-   * @param path - destination selected by the user; must end in the extension of `format`.
-   * @param format - binary font format to compile.
-   * @returns the compiled output identity after its atomic write completes.
-   * @throws {Error} when a transaction is open or compilation fails.
+   * @param request - folder, format, and whether to write or only plan.
+   * @returns the files written, or that would be written when planned.
+   * @throws {Error} when a transaction is open or the export fails.
    */
-  async export(path: string, format: FontExportFormat): Promise<WorkspaceExportResult> {
-    const { completion } = await this.#withFlush(() => this.#session.startExport(path, format));
+  async export(request: WorkspaceExportRequest): Promise<WorkspaceExportResult> {
+    const { completion } = await this.#withFlush(() => this.#session.startExport(request));
     return completion;
   }
 

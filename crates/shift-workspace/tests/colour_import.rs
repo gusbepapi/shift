@@ -1,6 +1,6 @@
 //! A `.glyphs` source with colour imports into a workspace that keeps the colour.
 
-use shift_font::{Paint, PaintColor, Rgba};
+use shift_font::{Paint, PaintColor, Rgba8};
 use shift_workspace::FontWorkspace;
 use tempfile::TempDir;
 
@@ -79,7 +79,7 @@ fn imported_colour_is_kept_by_the_workspace_and_its_saved_document() {
 
     let color = workspace.font().color().clone();
     assert_eq!(color.palettes.len(), 1);
-    assert_eq!(color.palettes[0].colors[1], Rgba::new(30, 40, 50, 255));
+    assert_eq!(color.palettes[0].colors[1], Rgba8::new(30, 40, 50, 255));
     let base = workspace.font().glyph_by_name("A").unwrap().id();
     let Paint::Layers { layers } = &color.glyph(base).unwrap().paint else {
         panic!("A should be a layer stack");

@@ -52,17 +52,18 @@ impl ColorJson {
     }
 }
 
-/// An eight-bit RGBA colour in the sRGB colour space.
+/// An eight-bit RGBA colour in the sRGB colour space, as a palette stores it;
+/// not the floating-point [`Rgba`](super::mark_color::Rgba) of a glyph mark colour.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Rgba {
+pub struct Rgba8 {
     pub r: u8,
     pub g: u8,
     pub b: u8,
     pub a: u8,
 }
 
-impl Rgba {
+impl Rgba8 {
     /// Creates a colour from its four channels.
     pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
@@ -78,7 +79,7 @@ impl Rgba {
 #[serde(rename_all = "camelCase")]
 pub struct ColorPalette {
     pub name: Option<String>,
-    pub colors: Vec<Rgba>,
+    pub colors: Vec<Rgba8>,
 }
 
 /// A paint colour that is either a palette entry or the text foreground.
@@ -384,7 +385,7 @@ mod tests {
         ColorPalette {
             name: None,
             colors: (0..count)
-                .map(|index| Rgba::new(u8::try_from(index).unwrap(), 0, 0, 255))
+                .map(|index| Rgba8::new(u8::try_from(index).unwrap(), 0, 0, 255))
                 .collect(),
         }
     }

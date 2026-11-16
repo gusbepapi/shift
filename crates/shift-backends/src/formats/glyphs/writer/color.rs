@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use shift_font::{
-    ColorData, ColorPoint, ColorStop, Glyph, GlyphId, GlyphLayer, Paint, PaintColor, Rgba,
+    ColorData, ColorPoint, ColorStop, Glyph, GlyphId, GlyphLayer, Paint, PaintColor, Rgba8,
     SourceId,
     composite::{resolved_contours_bbox, resolved_contours_from_layers},
 };
@@ -297,9 +297,9 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
     }
 
     /// Returns the colour of palette 0 with `alpha` multiplied in.
-    fn literal_colour(&self, color: PaintColor, alpha: f64) -> Rgba {
+    fn literal_colour(&self, color: PaintColor, alpha: f64) -> Rgba8 {
         let base = match color {
-            PaintColor::Foreground => Rgba::new(0, 0, 0, 255),
+            PaintColor::Foreground => Rgba8::new(0, 0, 0, 255),
             PaintColor::Palette { index } => self
                 .font
                 .color()
@@ -307,10 +307,10 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
                 .first()
                 .and_then(|palette| palette.colors.get(usize::from(index)))
                 .copied()
-                .unwrap_or(Rgba::new(0, 0, 0, 255)),
+                .unwrap_or(Rgba8::new(0, 0, 0, 255)),
         };
         let opacity = f64::from(base.a) * alpha.clamp(0.0, 1.0);
-        Rgba::new(
+        Rgba8::new(
             base.r,
             base.g,
             base.b,
@@ -359,7 +359,7 @@ fn paint_layers(paint: &Paint) -> Vec<(&GlyphId, &Paint)> {
         .collect()
 }
 
-fn rgba_text(color: Rgba) -> String {
+fn rgba_text(color: Rgba8) -> String {
     format!("({},{},{},{})", color.r, color.g, color.b, color.a)
 }
 
@@ -406,6 +406,6 @@ mod tests {
 
     #[test]
     fn colours_are_written_as_integer_tuples() {
-        assert_eq!(rgba_text(Rgba::new(255, 0, 10, 128)), "(255,0,10,128)");
+        assert_eq!(rgba_text(Rgba8::new(255, 0, 10, 128)), "(255,0,10,128)");
     }
 }

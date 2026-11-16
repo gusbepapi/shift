@@ -1,4 +1,4 @@
-import type { ColorData, GlyphId, Rgba } from "@shift/types";
+import type { ColorData, GlyphId, Rgba8 } from "@shift/types";
 import { describe, expect, it } from "vitest";
 import {
   addColorLayer,
@@ -18,8 +18,8 @@ import {
 const base = "base" as GlyphId;
 const other = "other" as GlyphId;
 const fill = "fill" as GlyphId;
-const red: Rgba = { r: 255, g: 0, b: 0, a: 255 };
-const blue: Rgba = { r: 0, g: 0, b: 255, a: 255 };
+const red: Rgba8 = { r: 255, g: 0, b: 0, a: 255 };
+const blue: Rgba8 = { r: 0, g: 0, b: 255, a: 255 };
 
 const empty: ColorData = { palettes: [], glyphs: [] };
 

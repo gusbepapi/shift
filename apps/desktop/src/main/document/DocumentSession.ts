@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { FontExportFormat, WorkspaceDocumentState } from "../../shared/workspace/lanes";
+import type { WorkspaceDocumentState } from "../../shared/workspace/lanes";
 import { AsyncOnce } from "../AsyncOnce";
 import type { NativeDialogs } from "../dialogs/NativeDialogs";
 import type { Window } from "../windows/Window";
@@ -235,41 +235,6 @@ export class DocumentSession {
     } catch (error) {
       this.#log.warn("save as failed", error);
       await this.#nativeDialogs.showSaveFailure(this.#dialogWindow(), this.#applicationName());
-    }
-  }
-
-  /**
-   * Shows a native destination dialog and exports the latest committed document.
-   *
-   * @remarks
-   * The request travels through the renderer document lane so pending edits settle before
-   * the utility process captures an immutable native export snapshot. Export never changes
-   * the document's save target or dirty state.
-   *
-   * @param format - binary font format to compile.
-   * @throws {Error} when document state cannot be read.
-   */
-  async exportFont(format: FontExportFormat): Promise<void> {
-    const label = format.toUpperCase();
-    this.#log.info(`${label} export requested`);
-    const state = await this.#requestState();
-    if (!state) {
-      this.#log.info(`${label} export skipped: no document state`);
-      return;
-    }
-
-    const outputPath = await this.#nativeDialogs.exportFont(this.#dialogWindow(), state, format);
-    if (!outputPath) {
-      this.#log.info(`${label} export canceled`);
-      return;
-    }
-
-    try {
-      await this.#document.export(outputPath, format);
-      this.#log.info(`${label} export completed`, { path: outputPath });
-    } catch (error) {
-      this.#log.warn(`${label} export failed`, error);
-      await this.#nativeDialogs.showExportFailure(this.#dialogWindow(), this.#applicationName());
     }
   }
 

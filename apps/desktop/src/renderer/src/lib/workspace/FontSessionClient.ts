@@ -7,7 +7,7 @@ import type {
   FontStoreLocation,
   SlugAtlasOrigin,
   WorkspaceDocumentState,
-  FontExportFormat,
+  WorkspaceExportRequest,
   WorkspaceExportResult,
   WorkspaceGlyphSnapshotRequest,
   WorkspaceSlugAtlas,
@@ -133,6 +133,23 @@ export class FontSessionClient {
   }
 
   /**
+   * Reads a compiled font's preview as its engine opens it: its font without
+   * glyphs and each glyph's id in glyph order, as named MessagePack.
+   */
+  async sourceHeader(): Promise<Uint8Array> {
+    await this.connect();
+
+    return this.#workspace().sourceHeader();
+  }
+
+  /** Reads a compiled font's preview file as read, which its engine shapes text with. */
+  async sourceBinary(): Promise<Uint8Array> {
+    await this.connect();
+
+    return this.#workspace().sourceBinary();
+  }
+
+  /**
    * Reads one retained location-independent glyph of a compiled font's preview
    * and its component closure; other previews read glyphs from their engine.
    */
@@ -218,20 +235,19 @@ export class FontSessionClient {
   }
 
   /**
-   * Starts compilation after the export request enters the workspace FIFO.
+   * Starts an export, or its plan, after the request enters the workspace FIFO.
    *
-   * @param path - destination selected by the user; its extension is the format's.
+   * @param request - folder, format, and whether to write or only plan.
    * @returns a completion handle so the edit lane can resume after export starts.
-   * @throws {Error} when the workspace is disconnected or compilation fails.
+   * @throws {Error} when the workspace is disconnected or the export fails.
    */
   async startExport(
-    path: string,
-    format: FontExportFormat,
+    request: WorkspaceExportRequest,
   ): Promise<{ completion: Promise<WorkspaceExportResult> }> {
     await this.connect();
 
     return {
-      completion: this.#workspace().export(path, format),
+      completion: this.#workspace().export(request),
     };
   }
 

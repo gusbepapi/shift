@@ -5,9 +5,9 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::{CommitId, DocumentId, StoreError, connection::configure_common, schema};
 
 const RECOVERY_APPLICATION_ID: i64 = 0x5348_4652;
-const RECOVERY_SCHEMA_VERSION: i64 = 5;
+const RECOVERY_SCHEMA_VERSION: i64 = 7;
 
-const RECOVERY_SCHEMA: &str = r#"
+const RECOVERY_SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS recovery_metadata (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     document_id TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS recovery_tombstones (
     entity_id TEXT NOT NULL,
     PRIMARY KEY (entity_kind, entity_id)
 );
-"#;
+";
 
 shift_font::string_enum! {
     /// Persisted lifecycle state of one sparse recovery overlay.

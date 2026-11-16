@@ -4,7 +4,7 @@ use glyphs_reader::{Color, Font as ParsedFont, Glyph as ParsedGlyph, Shape};
 use shift_backends::{ExportFormat, FontExporter};
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, Contour, Font, Glyph, GlyphId,
-    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba, test_support::sample_variable_font,
+    GlyphLayer, LayerId, Paint, PaintColor, PointType, Rgba8, test_support::sample_variable_font,
 };
 use write_fonts::read::tables::colr::Paint as ReadPaint;
 use write_fonts::read::{FontRef, TableProvider};
@@ -56,11 +56,11 @@ fn palettes() -> Vec<ColorPalette> {
     vec![
         ColorPalette {
             name: Some("Light".to_string()),
-            colors: vec![Rgba::new(10, 20, 30, 255), Rgba::new(200, 100, 50, 255)],
+            colors: vec![Rgba8::new(10, 20, 30, 255), Rgba8::new(200, 100, 50, 255)],
         },
         ColorPalette {
             name: Some("Dark".to_string()),
-            colors: vec![Rgba::new(1, 2, 3, 255), Rgba::new(4, 5, 6, 128)],
+            colors: vec![Rgba8::new(1, 2, 3, 255), Rgba8::new(4, 5, 6, 128)],
         },
     ]
 }

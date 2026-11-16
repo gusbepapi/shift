@@ -1,4 +1,4 @@
-export { createMemoryFontSession } from "./createMemoryFontSession";
+export { createMemoryFontSession, newMemoryFontSource } from "./createMemoryFontSession";
 export { Editor } from "./lib/editor/Editor";
 export { EditorHistory } from "./lib/editor/history/EditorHistory";
 export { HistoryCapture } from "./lib/editor/history/HistoryCapture";
@@ -65,11 +65,16 @@ export type {
   WorkspaceEffect,
 } from "./types/history";
 export type { ListSelectionMode } from "./types/listSelection";
+export { DEFAULT_GRID_SETTINGS, Grid, MAX_GRID_SUBDIVISIONS } from "./lib/editor/Grid";
+export { MIN_GRID_LINE_GAP_PX } from "./lib/model/positions";
+export type { GridSettings, GridSettingsChange } from "./types/grid";
 export type {
+  MemoryEditorOptions,
   MemoryFontSession,
   MemoryFontSessionOptions,
   MemoryFontSource,
   MemoryToolName,
+  NewMemoryFont,
 } from "./types/fontSession";
 export type {
   DeleteMode,

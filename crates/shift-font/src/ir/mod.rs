@@ -12,10 +12,14 @@ pub mod font;
 pub mod glyph;
 pub mod glyph_category;
 pub mod glyph_name;
+pub mod grid;
 pub mod guideline;
 pub mod kerning;
 pub mod lib_data;
+pub mod located_layer;
+pub mod mark_color;
 pub mod metrics;
+pub mod metrics_keys;
 pub mod named_instance;
 pub(crate) mod persistent;
 pub mod point;
@@ -31,7 +35,7 @@ pub use axis::{
 pub use binary_data::BinaryData;
 pub use boolean::{BooleanOp, boolean};
 pub use color::{
-    ColorData, ColorGlyph, ColorJson, ColorPalette, ColorPoint, ColorStop, Paint, PaintColor, Rgba,
+    ColorData, ColorGlyph, ColorJson, ColorPalette, ColorPoint, ColorStop, Paint, PaintColor, Rgba8,
 };
 pub use component::{Component, ComponentAlignment, DecomposedTransform, Transform};
 pub use contour::{Contour, Contours};
@@ -48,18 +52,22 @@ pub use glyph_category::{
     OpenTypeCategories, OpenTypeCategory, RecordCategory, UnknownGlyphCategory,
 };
 pub use glyph_name::{GlyphName, GlyphNameError};
+pub use grid::{GRID_LIB_KEY, Grid, MAX_GRID_SUBDIVISIONS};
 pub use guideline::{Guideline, GuidelineOrientation};
 pub use kerning::{
     Kerning, KerningGroup, KerningPair, KerningPosition, KerningSide, ResolvedKerning,
     SourceKerning,
 };
 pub use lib_data::{LibData, LibValue};
+pub use located_layer::{LayerLocation, LocatedLayer};
+pub use mark_color::{InvalidMarkColor, MarkColor, NamedMarkColor, Rgba};
 pub use metrics::{
     FontMetrics, MetricDefinition, MetricDefinitionList, MetricKind, MetricValue, StandardMetrics,
 };
+pub use metrics_keys::{MetricsKey, MetricsKeySide, MetricsKeys};
 pub use named_instance::NamedInstance;
 pub use persistent::PersistentMap;
 pub use point::{Point, PointType};
 pub use segment::{CurveSegment, CurveSegmentIter, PointKinds, SegmentIndexIter, SegmentIndices};
 pub use source::{Source, SourceList, SourceRole};
-pub use variation::{AxisMappingBasis, DesignNormalization};
+pub use variation::{AxisMappingBasis, AxisRange, DesignNormalization};

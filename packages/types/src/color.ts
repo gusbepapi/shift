@@ -1,7 +1,7 @@
 import type { GlyphId } from "./ids";
 
 /** An eight-bit sRGB colour with straight alpha. */
-export interface Rgba {
+export interface Rgba8 {
   r: number;
   g: number;
   b: number;
@@ -11,7 +11,7 @@ export interface Rgba {
 /** One named palette; entry `n` of every palette plays the same role. */
 export interface ColorPalette {
   name: string | null;
-  colors: Rgba[];
+  colors: Rgba8[];
 }
 
 /** A paint colour: the text foreground, or an entry of the active palette. */

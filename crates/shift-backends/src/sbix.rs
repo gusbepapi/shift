@@ -7,7 +7,7 @@
 //! inner radius is not reproduced.
 
 use crate::numeric::{lossy_f32, rounded_i32};
-use shift_font::{ColorData, GlyphId, Paint, PaintColor, Rgba};
+use shift_font::{ColorData, GlyphId, Paint, PaintColor, Rgba8};
 use skrifa::{
     FontRef as SkrifaFont, MetadataProvider,
     outline::{DrawSettings, OutlinePen},
@@ -192,7 +192,7 @@ struct Renderer<'a, 'f> {
     /// Pixels per font unit.
     scale: f64,
     /// Colours of palette 0.
-    palette: &'a [Rgba],
+    palette: &'a [Rgba8],
     compiled: &'a CompiledGlyphs<'f>,
     outlines: &'a skrifa::outline::OutlineGlyphCollection<'a>,
 }
@@ -316,12 +316,12 @@ impl Renderer<'_, '_> {
     /// Returns a paint colour from palette 0, with `alpha` multiplied into it.
     fn colour(&self, color: PaintColor, alpha: f64) -> Option<Color> {
         let rgba = match color {
-            PaintColor::Foreground => Rgba::new(0, 0, 0, 255),
+            PaintColor::Foreground => Rgba8::new(0, 0, 0, 255),
             PaintColor::Palette { index } => self
                 .palette
                 .get(usize::from(index))
                 .copied()
-                .unwrap_or(Rgba::new(0, 0, 0, 255)),
+                .unwrap_or(Rgba8::new(0, 0, 0, 255)),
         };
         let opacity = f64::from(rgba.a) / 255.0 * alpha.clamp(0.0, 1.0);
         Color::from_rgba(

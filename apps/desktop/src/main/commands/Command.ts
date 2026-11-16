@@ -1,6 +1,5 @@
 import { EntityMap } from "@shift/types";
 import type { CommandId, RendererCommandId } from "../../shared/commands";
-import type { FontExportFormat } from "../../shared/workspace/lanes";
 import type { Window } from "../windows/Window";
 
 /**
@@ -132,8 +131,6 @@ export type CommandContext = {
     save: () => Promise<void>;
     /** Runs main's native Save As workflow. */
     saveAs: () => Promise<void>;
-    /** Runs main's native export workflow for one binary font format. */
-    exportFont: (format: FontExportFormat) => Promise<void>;
   };
   windows: {
     /**

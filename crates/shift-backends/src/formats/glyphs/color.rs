@@ -30,7 +30,7 @@ use glyphs_reader::{
 use ordered_float::OrderedFloat;
 use shift_font::{
     ColorData, ColorGlyph, ColorPalette, ColorPoint, ColorStop, GlyphId, GlyphLayer, LayerId,
-    Paint, PaintColor, Rgba, SourceId,
+    Paint, PaintColor, Rgba8, SourceId,
     composite::{resolved_contours_bbox, resolved_contours_from_layers},
 };
 
@@ -174,7 +174,7 @@ struct Planner<'a> {
     palettes: Vec<ColorPalette>,
     /// Entries the file declares; palette layers may address only these.
     declared_len: usize,
-    literals: HashMap<Rgba, u16>,
+    literals: HashMap<Rgba8, u16>,
     /// Names of the glyphs that have colour layers.
     colour_bases: HashSet<&'a str>,
     synthesized: Vec<SynthesizedGlyph>,
@@ -547,9 +547,9 @@ fn declared_palettes(source: &GlyphsFont) -> (Vec<ColorPalette>, bool) {
     (palettes, trimmed)
 }
 
-fn rgba(color: Color) -> Rgba {
+fn rgba(color: Color) -> Rgba8 {
     let channel = |value: i64| u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX);
-    Rgba::new(
+    Rgba8::new(
         channel(color.r),
         channel(color.g),
         channel(color.b),

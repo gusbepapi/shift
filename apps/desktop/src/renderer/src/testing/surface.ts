@@ -18,7 +18,7 @@
  * `Editor`.
  */
 import type { ControlOperation } from "@/agent/AgentControl";
-import type { DeleteMode, Editor } from "@shift/editor";
+import type { DeleteMode, Editor, GridSettings, GridSettingsChange } from "@shift/editor";
 import type {
   GlyphOutlineTarget,
   NewGlyph,
@@ -37,6 +37,8 @@ import type {
   GlyphName,
   GlyphRecord,
   KerningPosition,
+  MetricsKeySide,
+  MarkColor,
   PointId,
   SelectableId,
   Axis,
@@ -45,6 +47,7 @@ import type {
   SourceMetrics,
   Unicode,
 } from "@shift/types";
+import type { SideLink } from "@shift/wasm/protocol";
 import type { CommandId, EditorCommandId } from "@shared/commands";
 import type { WorkspaceDocumentState } from "@shared/workspace/lanes";
 import type { DrawOptions, GlyphFixture, PointNames } from "./fixtures";
@@ -291,6 +294,13 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   setLeftSidebearing(value: number): void;
   /** Sets the open glyph's right sidebearing by changing its advance, as the sidebar's RSB field does. */
   setRightSidebearing(value: number): void;
+  /**
+   * Links one side of the open glyph with a metrics key, as typing `=…` into
+   * its sidebar field does.
+   *
+   * @returns Why the key was refused, such as a name no glyph has; null when it was set.
+   */
+  linkMetric(side: MetricsKeySide, key: string): string | null;
   /** Adds an anchor at a glyph-local position in every source being edited, and selects it. */
   addAnchorAt(position: Point2D): boolean;
   /** Renames an anchor in every source being edited, as the sidebar's anchor name field does. */
@@ -320,6 +330,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   resizeCanvas(width: number, height: number): void;
   /** Sets the zoom level around the viewport centre, as the zoom controls do. */
   setZoom(zoom: number): void;
+  /** Changes the canvas grid's spacing, subdivisions, visibility or snapping, as the grid panel does. */
+  setGrid(change: GridSettingsChange): void;
   /** Pans the canvas by a distance in screen pixels, as dragging with the hand does. */
   panBy(by: ScreenVector): void;
   /** Frames all content, as View › Zoom to Fit does. */
@@ -455,6 +467,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   /** Sets a source's metric named `metric` to `position`, as the source settings panel's metric field does. */
   /** Deletes the axis tagged `tag`, as Settings › Axes does. */
   deleteAxis(tag: string): Promise<void>;
+  /** Tags the glyphs named `names` with `color`, or clears their colour with null, as the grid's Colour menu does. */
+  tagGlyphs(names: readonly string[], color: MarkColor | null): Promise<void>;
   /** Renames the source `source` to `name`, as Settings › Sources does. */
   renameSource(source: string, name: string): Promise<void>;
   /** Moves the source `source` along the axis tagged `tag` to `value`, as Settings › Sources does. */
@@ -540,6 +554,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   textLayoutFailure(): TextLayoutFailureRead | null;
   /** What the Spacing tool shows; null when it is not active. */
   spacingTool(): SpacingToolState | null;
+  /** The open glyph's linked sides at the active source, as its sidebar fields show them. */
+  metricsLinks(): readonly SideLink[];
   /** What the Kerning tool shows; null when it is not active. */
   kerningTool(): KerningToolState | null;
   /** The open glyph's outline as the canvas draws it now, a gesture's uncommitted preview included. */
@@ -584,6 +600,17 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   latestCanvasFrame(): CanvasFrame;
   /** The ids of the outlines the canvas draws for the glyph named `glyph` now. Test-only. */
   drawnOutlineIds(glyph: string): DrawnOutlineIds;
+  /**
+   * The names of the glyphs the canvas text's run is drawn with now, in
+   * layout order: what {@link canvasText} places, or the last glyphs that
+   * could all be drawn while one it places is still loading. Test-only.
+   */
+  drawnTextGlyphs(): (string | null)[];
+  /**
+   * How many times a preview has said it is read-only (the notice shown when
+   * a gesture would change the font) since the editor opened. Test-only.
+   */
+  readOnlyNotices(): number;
   /** Whether the glyph named `name` has loaded, so the canvas can draw it. Test-only: not agent data. */
   glyphLoaded(name: string): boolean;
   /**
@@ -627,6 +654,8 @@ export interface EditorTestSurface extends EditorReads, EditorActions, FontBuild
   pixelSize(): number;
   /** The zoom level. Test-only: not agent data. */
   zoomLevel(): number;
+  /** The canvas grid's settings, as the grid panel shows them. Test-only: session state, not agent data. */
+  gridSettings(): GridSettings;
   /** How far the canvas is panned, in screen pixels. Test-only: not agent data. */
   canvasOffset(): ScreenVector;
   /** Where a glyph-local position shows in the viewport, in screen pixels. Test-only: not agent data. */

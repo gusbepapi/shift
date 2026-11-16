@@ -20,6 +20,7 @@ import type {
   ReadonlyEntityMap,
   SlugWeightSet,
   SourceId,
+  VariationBasis,
 } from "@shift/types";
 import type { FontStore } from "../lib/model/FontStore";
 import type { LayerUpdate } from "../lib/model/GlyphLayerState";
@@ -38,6 +39,7 @@ import type {
   FontChangeFlag,
   FontFeature,
   GlyphIdentityChange,
+  SideLink,
   TextRun,
   PlacedText,
 } from "@shift/wasm/protocol";
@@ -45,8 +47,8 @@ import type { PendingEditId } from "./editing";
 import type { WorkspaceEditListener } from "./history";
 import type { GlyphReader } from "./glyph";
 
-/** `FontStore` lookup key for the layer a glyph authors in one source. */
-export type GlyphSourceKey = string & { readonly __glyphSourceKey: unique symbol };
+/** `FontStore` lookup key for the layer a glyph authors on one source. */
+export type SourceLayerKey = string & { readonly __sourceLayerKey: unique symbol };
 
 /**
  * Every committed glyph relation, derived once by `FontStore` from one workspace or font snapshot.
@@ -72,7 +74,7 @@ export interface FontRecordIndex {
   /** Glyphs that reference each base glyph as a component. */
   readonly dependentsById: ReadonlyMap<GlyphId, ReadonlySet<GlyphId>>;
   /** At most one layer per glyph and source, as Rust enforces. */
-  readonly layerByGlyphSource: ReadonlyEntityMap<GlyphSourceKey, LayerId>;
+  readonly layerBySource: ReadonlyEntityMap<SourceLayerKey, LayerId>;
   readonly glyphByLayer: ReadonlyEntityMap<LayerId, GlyphId>;
 }
 
@@ -81,8 +83,8 @@ export interface FontStoreOptions {
   // oxlint-disable-next-line shift/no-optional-collection-field -- an options bag; absent starts with no glyph records
   readonly records?: readonly GlyphRecord[];
   readonly workspace?: WorkspaceSnapshot | null;
-  /** The window's editing engine, which answers kerning and metric reads; absent, nothing kerns. */
-  readonly engine?: FontEngine | null;
+  /** The font's engine, which answers its variation, kerning, metric and text reads. */
+  readonly engine: FontEngine;
 }
 
 /**
@@ -166,6 +168,19 @@ export interface FontEngine {
    * for a glyph the engine's font lacks.
    */
   glyphPrimaryCodepoint(glyphId: GlyphId, codepoint: number | null): GlyphIdentityChange | null;
+
+  /**
+   * The linked sides of a glyph in a source, left, right, then width, each
+   * with its key, where it is set and why it cannot be applied, as shift-font
+   * decides (`Font::linked_sides`). Empty for a glyph with no keys there.
+   */
+  linkedSides(glyphId: GlyphId, sourceId: SourceId): readonly SideLink[];
+
+  /**
+   * Why `text` is not a metrics key the engine's font can read, or null when
+   * it is (`Font::metrics_key_problem`).
+   */
+  metricsKeyProblem(text: string): string | null;
 
   /**
    * Interpolates the masters' source metrics at a design location.
@@ -305,6 +320,17 @@ export interface EngineVariation {
   designLocation(external: readonly number[]): readonly number[];
   /** The external location a design location's mapping came from; NaN on internal axes. */
   externalLocation(design: readonly number[]): readonly number[];
+  /**
+   * The number the session interned the compiled variation `basis` as, a
+   * compiled font's glyph deltas; intern each basis once, when its glyph loads.
+   */
+  variationNumber(basis: VariationBasis): number;
+  /**
+   * The values of the compiled basis interned as `variation` at a design location.
+   *
+   * @throws For a number the session never gave, or a basis it cannot evaluate.
+   */
+  variationAt(variation: number, location: readonly number[]): readonly number[];
 }
 
 /**

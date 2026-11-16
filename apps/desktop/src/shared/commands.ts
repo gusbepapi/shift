@@ -21,11 +21,7 @@ export type CommandId =
   | "file.openFolder"
   | "file.save"
   | "file.saveAs"
-  | "file.exportTtf"
-  | "file.exportOtf"
-  | "file.exportWoff"
-  | "file.exportWoff2"
-  | "file.exportGlyphs"
+  | "file.export"
   | "edit.undo"
   | "edit.redo"
   | "edit.cut"
@@ -47,6 +43,8 @@ export type CommandId =
   | "window.maximise"
   | "view.zoomIn"
   | "view.zoomOut"
+  | "view.toggleGrid"
+  | "view.toggleSnapToGrid"
   | "ui.increaseSize"
   | "ui.decreaseSize"
   | "ui.resetSize";
@@ -70,7 +68,14 @@ export const helpCommandGroups: readonly (readonly HelpCommandId[])[] = [
   ["help.reportIssue", "help.showLogs", "help.emailFeedback"],
 ];
 
-/** Platform-neutral keyboard chord assigned to an application command. */
+/**
+ * Platform-neutral keyboard chord assigned to an application command.
+ *
+ * @remarks
+ * A chord without the primary modifier is a canvas key, such as G: the
+ * renderer routes it only while no text field has focus, and native menus
+ * leave it unregistered so it never swallows typing.
+ */
 export interface CommandShortcut {
   readonly key: string;
   readonly primaryModifier: boolean;
@@ -94,6 +99,7 @@ export const commandShortcuts = {
   "file.openFolder": shortcut("o", true),
   "file.save": shortcut("s"),
   "file.saveAs": shortcut("s", true),
+  "file.export": shortcut("e", true),
   "edit.undo": shortcut("z"),
   "edit.redo": shortcut("z", true),
   "edit.cut": shortcut("x"),
@@ -101,6 +107,8 @@ export const commandShortcuts = {
   "edit.paste": shortcut("v"),
   "edit.selectAll": shortcut("a"),
   "glyph.addComponent": shortcut("c", true),
+  "view.toggleGrid": canvasKey("g"),
+  "view.toggleSnapToGrid": canvasKey("g", true),
 } satisfies Partial<Record<CommandId, CommandShortcut>>;
 
 const shortcutsById: Partial<Record<CommandId, CommandShortcut>> = commandShortcuts;
@@ -127,6 +135,11 @@ function shortcut(key: string, shiftKey = false, altKey = false): CommandShortcu
   return { key, primaryModifier: true, shiftKey, altKey };
 }
 
+/** A single key, with Shift at most, that acts on the canvas. */
+function canvasKey(key: string, shiftKey = false): CommandShortcut {
+  return { key, primaryModifier: false, shiftKey, altKey: false };
+}
+
 /**
  * Identifies a command implemented by the active font renderer.
  *
@@ -136,6 +149,7 @@ function shortcut(key: string, shiftKey = false, altKey = false): CommandShortcu
 export type RendererCommandId =
   | EditorCommandId
   | "app.showSettings"
+  | "file.export"
   | "glyph.addComponent"
   | "tab.close";
 
@@ -152,6 +166,8 @@ export type EditorCommandId =
   | "edit.deselect"
   | "view.zoomIn"
   | "view.zoomOut"
+  | "view.toggleGrid"
+  | "view.toggleSnapToGrid"
   | "glyph.addAnchor"
   | "glyph.decomposeComponents"
   | "glyph.reverseSelectedContour"

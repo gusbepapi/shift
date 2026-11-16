@@ -5,6 +5,7 @@ pub(crate) mod geometry;
 pub(crate) mod inputs;
 pub(crate) mod interpolation;
 pub(crate) mod projection;
+pub(crate) mod segments;
 mod types;
 
 pub use crate::formats::designspace::DesignspaceFont;
@@ -17,16 +18,15 @@ pub use error::FontReadError;
 pub(crate) use error::malformed;
 pub(crate) use geometry::inferred_smooth_point_indices;
 pub use inputs::variable_glyph_inputs;
-pub(crate) use interpolation::piecewise_map;
+pub use segments::ContourError;
 pub(crate) use types::DirectoryGlyphInput;
 pub use types::{
-    AffineTransform, AxisIndex, DirectoryGlyph, DirectoryInstance, DirectoryMapping,
-    DirectoryMappingPoint, DirectorySource, FontDirectory, FontMetrics, GlyphAnchor,
-    GlyphComponent, GlyphDelta, GlyphIndex, GlyphMetrics, GlyphPoint, GlyphPointKind,
-    GlyphProjection, GlyphShape, GlyphShapeContour, GlyphShapePoint, GlyphSourceShape,
-    GlyphVariation, PointProvenance, ProjectedGlyph, SourceIndex, TrueTypePointIndex,
-    VariationAxis, VariationAxisKind, VariationCoordinate, VariationLocation, VariationRegion,
-    VariationSupport,
+    AxisIndex, DirectoryGlyph, DirectoryInstance, DirectoryMapping, DirectoryMappingPoint,
+    DirectorySource, FontDirectory, FontMetrics, GlyphAnchor, GlyphComponent, GlyphDelta,
+    GlyphIndex, GlyphMetrics, GlyphPoint, GlyphPointKind, GlyphProjection, GlyphShape,
+    GlyphShapeContour, GlyphShapePoint, GlyphSourceShape, GlyphVariation, PointProvenance,
+    ProjectedGlyph, SourceIndex, TrueTypePointIndex, VariationAxis, VariationAxisKind,
+    VariationCoordinate, VariationLocation, VariationRegion, VariationSupport,
 };
 
 use crate::{BackendResult, FontImport};
@@ -74,6 +74,15 @@ impl OpenedFont {
             Self::Ufo(font) => Some(font),
             Self::Designspace(font) => Some(font),
             Self::Glyphs(font) => Some(font),
+        }
+    }
+
+    /// The compiled font's bytes, as read from its file, for a TrueType or
+    /// OpenType source; `None` for an authored one.
+    pub fn binary(&self) -> Option<&[u8]> {
+        match self {
+            Self::OpenType(font) => Some(font.bytes()),
+            Self::Ufo(_) | Self::Designspace(_) | Self::Glyphs(_) => None,
         }
     }
 }

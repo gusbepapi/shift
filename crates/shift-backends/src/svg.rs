@@ -10,7 +10,7 @@
 
 use std::fmt::Write as _;
 
-use shift_font::{ColorData, ColorPoint, ColorStop, GlyphId, Paint, PaintColor, Rgba};
+use shift_font::{ColorData, ColorPoint, ColorStop, GlyphId, Paint, PaintColor, Rgba8};
 use skrifa::{
     FontRef as SkrifaFont, MetadataProvider,
     outline::{DrawSettings, OutlinePen},
@@ -224,7 +224,7 @@ impl Document<'_, '_> {
                     .first()
                     .and_then(|palette| palette.colors.get(usize::from(index)))
                     .copied()
-                    .unwrap_or(Rgba::new(0, 0, 0, 255));
+                    .unwrap_or(Rgba8::new(0, 0, 0, 255));
                 format!("var(--color{index},{})", hex(fallback))
             }
         }
@@ -251,7 +251,7 @@ pub(crate) fn linear_end(p0: ColorPoint, p1: ColorPoint, p2: Option<ColorPoint>)
     ColorPoint::new(p0.x + along * nx, p0.y + along * ny)
 }
 
-fn hex(color: Rgba) -> String {
+fn hex(color: Rgba8) -> String {
     if color.a == 255 {
         return format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b);
     }
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn hex_includes_alpha_only_when_translucent() {
-        assert_eq!(hex(Rgba::new(10, 20, 30, 255)), "#0a141e");
-        assert_eq!(hex(Rgba::new(10, 20, 30, 128)), "#0a141e80");
+        assert_eq!(hex(Rgba8::new(10, 20, 30, 255)), "#0a141e");
+        assert_eq!(hex(Rgba8::new(10, 20, 30, 128)), "#0a141e80");
     }
 }

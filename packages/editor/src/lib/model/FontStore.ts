@@ -42,7 +42,7 @@ import type {
   FontEngine,
   FontRecordIndex,
   FontStoreOptions,
-  GlyphSourceKey,
+  SourceLayerKey,
 } from "../../types/font";
 import type { GlyphObjectIndex, GlyphObjectSegment } from "../../types/glyph";
 import { GlyphLayerState, type LayerUpdate } from "./GlyphLayerState";
@@ -69,9 +69,10 @@ export interface GlyphInvalidation {
 export class FontStore {
   readonly #font: WritableSignal<FontSnapshot | null>;
   readonly #workspace: WritableSignal<WorkspaceSnapshot | null>;
-  readonly #engine: FontEngine | null;
+  readonly #engine: FontEngine;
   readonly #kerning: Signal<Kerning>;
   readonly #committedRevision: WritableSignal<number>;
+  readonly #gridRevision: WritableSignal<number>;
   readonly #invalidGlyphs: WritableSignal<GlyphInvalidation>;
 
   /**
@@ -105,18 +106,14 @@ export class FontStore {
   // non-reactive: interning table that dedupes projection bases; only read while interning
   readonly #interpolationBases = new Map<string, InterpolationBasis>();
 
-  constructor({
-    font = null,
-    records = [],
-    workspace = null,
-    engine = null,
-  }: FontStoreOptions = {}) {
+  constructor({ font = null, records = [], workspace = null, engine }: FontStoreOptions) {
     this.#engine = engine;
     this.#font = signal(font ?? (workspace ? fontSnapshotFromWorkspace(workspace) : null), {
       name: "fontStore.font",
     });
     this.#workspace = signal(workspace, { name: "fontStore.workspace" });
     this.#committedRevision = signal(0, { name: "fontStore.committedRevision" });
+    this.#gridRevision = signal(0, { name: "fontStore.gridRevision" });
     this.#invalidGlyphs = signal<GlyphInvalidation>(
       { glyphIds: null },
       { name: "fontStore.invalidGlyphs" },
@@ -137,7 +134,7 @@ export class FontStore {
     });
     this.#kerning = computed(
       () => {
-        if (engine) track(engine.revision("kerning"));
+        track(engine.revision("kerning"));
         return new Kerning(kerningRecords.value, engine);
       },
       { name: "fontStore.kerning" },
@@ -153,8 +150,8 @@ export class FontStore {
     return this.#kerning;
   }
 
-  /** The window's editing engine, which answers kerning and metric reads; null without one. */
-  get engine(): FontEngine | null {
+  /** The font's engine, which answers its variation, kerning, metric and text reads. */
+  get engine(): FontEngine {
     return this.#engine;
   }
 
@@ -171,6 +168,15 @@ export class FontStore {
     return this.#committedRevision;
   }
 
+  /**
+   * Counts changes to the font's grid: each echo that carries it, and each
+   * replaced font. It moves even when the grid returns to an earlier value,
+   * as an undo does.
+   */
+  get gridRevisionCell(): Signal<number> {
+    return this.#gridRevision;
+  }
+
   /** Glyph roots whose resident atlas entries no longer match the committed font. */
   get invalidGlyphsCell(): Signal<GlyphInvalidation> {
     return this.#invalidGlyphs;
@@ -182,8 +188,8 @@ export class FontStore {
   }
 
   /** The layer `glyphId` authors in `sourceId`, or `null` when it has none. */
-  layerIdForGlyphSource(glyphId: GlyphId, sourceId: SourceId): LayerId | null {
-    return this.#indexCell.peek().layerByGlyphSource.get(glyphSourceKey(glyphId, sourceId));
+  layerIdForSource(glyphId: GlyphId, sourceId: SourceId): LayerId | null {
+    return this.#indexCell.peek().layerBySource.get(sourceLayerKey(glyphId, sourceId));
   }
 
   layerIdForPoint(pointId: PointId): LayerId | null {
@@ -219,6 +225,7 @@ export class FontStore {
       this.#indexCell.set(workspaceRecordIndex(snapshot));
       this.#font.set(snapshot ? fontSnapshotFromWorkspace(snapshot) : null);
       this.#workspace.set(snapshot);
+      this.#gridRevision.update((revision) => revision + 1);
       this.#clearLayerStates();
       this.#clearProjections();
       this.#interpolationBases.clear();
@@ -233,6 +240,7 @@ export class FontStore {
       this.#indexCell.set(fontRecordIndex(snapshot));
       this.#font.set(snapshot);
       this.#workspace.set(null);
+      this.#gridRevision.update((revision) => revision + 1);
       this.#clearLayerStates();
       this.#clearProjections();
       this.#interpolationBases.clear();
@@ -412,6 +420,7 @@ export class FontStore {
     if (!current) return;
     const interpolation = next.sourceMetricsInterpolation;
     const languages = next.languages;
+    const grid = next.grid;
     const glyphChanges = next.glyphChanges;
     const nextWorkspace: WorkspaceSnapshot = {
       ...current,
@@ -426,6 +435,7 @@ export class FontStore {
         : current.sourceMetricsInterpolation,
       namedInstances: next.namedInstances ?? current.namedInstances,
       languageIds: languages ? (languages.languageIds ?? null) : current.languageIds,
+      grid: grid ? (grid.grid ?? null) : current.grid,
       sources: next.sources ?? current.sources,
       kerning: next.kerning ?? current.kerning,
       color: next.color ? parseColorData(next.color) : current.color,
@@ -433,6 +443,7 @@ export class FontStore {
     this.#indexCell.set(workspaceRecordIndex(nextWorkspace));
     this.#font.set(fontSnapshotFromWorkspace(nextWorkspace));
     this.#workspace.set(nextWorkspace);
+    if (grid) this.#gridRevision.update((revision) => revision + 1);
 
     const index = this.#indexCell.peek();
     for (const [glyphId, cell] of this.#glyphCells) {
@@ -564,7 +575,7 @@ export class FontStore {
   #applyLayerSnapshot(snapshot: WorkspaceGlyphLayerSnapshot): boolean {
     const layerId = this.#indexCell
       .peek()
-      .layerByGlyphSource.get(glyphSourceKey(snapshot.glyphId, snapshot.sourceId));
+      .layerBySource.get(sourceLayerKey(snapshot.glyphId, snapshot.sourceId));
     if (layerId !== snapshot.state.layerId) return false;
 
     this.#replaceLayerState(snapshot.state);
@@ -755,7 +766,7 @@ function recordIndex(
   const recordsById = new EntityMap<GlyphId, GlyphRecord>("glyph record");
   const recordByName = new EntityMap<GlyphName, GlyphRecord>("glyph record name");
   const dependentsById = new Map<GlyphId, Set<GlyphId>>();
-  const layerByGlyphSource = new EntityMap<GlyphSourceKey, LayerId>("glyph source layer");
+  const layerBySource = new EntityMap<SourceLayerKey, LayerId>("source layer");
   const glyphByLayer = new EntityMap<LayerId, GlyphId>("layer glyph");
   for (const record of knownRecords) {
     recordsById.set(record.id, record);
@@ -769,7 +780,7 @@ function recordIndex(
       dependents.add(record.id);
     }
     for (const layer of record.layers) {
-      layerByGlyphSource.set(glyphSourceKey(record.id, layer.sourceId), layer.id);
+      layerBySource.set(sourceLayerKey(record.id, layer.sourceId), layer.id);
       glyphByLayer.set(layer.id, record.id);
     }
   }
@@ -784,13 +795,13 @@ function recordIndex(
     recordByName,
     nameByUnicode,
     dependentsById,
-    layerByGlyphSource,
+    layerBySource,
     glyphByLayer,
   };
 }
 
-function glyphSourceKey(glyphId: GlyphId, sourceId: SourceId): GlyphSourceKey {
-  return `${glyphId}:${sourceId}` as GlyphSourceKey;
+function sourceLayerKey(glyphId: GlyphId, sourceId: SourceId): SourceLayerKey {
+  return `${glyphId}:${sourceId}` as SourceLayerKey;
 }
 
 /** The glyphs `changes` gave new or different layers, or removed. */
@@ -917,6 +928,7 @@ function fontSnapshotFromWorkspace(workspace: WorkspaceSnapshot): FontSnapshot {
     namedInstances: workspace.namedInstances,
     // oxlint-disable-next-line shift/no-conditional-spread -- FontSnapshot is a stored snapshot; a font without language ids has no key
     ...(workspace.languageIds ? { languageIds: workspace.languageIds } : {}),
+    grid: workspace.grid,
     kerning: workspace.kerning,
   };
 }

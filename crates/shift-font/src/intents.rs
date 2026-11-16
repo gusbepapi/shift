@@ -15,13 +15,17 @@ use crate::interpolation::GlyphInterpolationValues;
 use crate::ir::{
     Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, Component, ComponentAlignment,
     ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font, FontMetadata,
-    Glyph, GlyphId, GlyphLayer, GlyphName, LANGUAGES_LIB_KEY, LayerId, LibValue, MetricDefinition,
-    MetricId, MetricValue, NamedInstance, NamedInstanceId, PointId, PointType, Source, SourceId,
-    Transform,
+    GRID_LIB_KEY, Glyph, GlyphId, GlyphLayer, GlyphName, Grid, LANGUAGES_LIB_KEY, LayerId,
+    LibValue, MarkColor, MetricDefinition, MetricId, MetricValue, NamedInstance, NamedInstanceId,
+    PointId, PointType, Source, SourceId, Transform,
 };
 use crate::layer_edit::BulkNodePositionUpdates;
+use crate::linked_metrics::ChangedGlyphs;
 use crate::point_arrange::{DistributeAxis, PointAlignment, Sidebearing};
-use crate::{KerningGroup, KerningGroupId, KerningPair, KerningPosition, KerningSide};
+use crate::{
+    KerningGroup, KerningGroupId, KerningPair, KerningPosition, KerningSide, MetricsKey,
+    MetricsKeySide, linked_metrics::KeyScope,
+};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -151,6 +155,7 @@ font_intents! {
         AlignPoints,
         DistributePoints,
         ShiftSidebearing,
+        SetLayerMetricsKey,
         ReplaceGlyphLayerContent,
     }
     font {
@@ -158,6 +163,7 @@ font_intents! {
         UpdateGlyph,
         UpdateFontMetadata,
         SetLanguages,
+        SetGrid,
         CreateAxis,
         UpdateAxis,
         DeleteAxis,
@@ -181,6 +187,10 @@ font_intents! {
         RenameKerningGroup,
         DeleteKerningGroup,
         MaterializeGlyphLayer,
+        SetGlyphMetricsKey,
+        LinkMetricsSide,
+        UnlinkMetricsSide,
+        SetMarkColor,
     }
 }
 
@@ -273,9 +283,9 @@ trait FontLevelIntent {
         false
     }
 
-    /// Applies it, returning the layers it touched and the glyph it created
+    /// Applies it, returning the layers it touched and the glyphs it created
     /// or changed.
-    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Option<GlyphId>)>;
+    fn apply(&self, font: &mut Font) -> CoreResult<(Vec<LayerId>, Vec<GlyphId>)>;
 }
 
 enum IntentKind<'a> {
@@ -447,6 +457,32 @@ impl EditScopes {
         self.layers.iter().map(|(layer_id, _)| layer_id)
     }
 
+    /// The glyphs these scopes changed in `font`, by source: each touched
+    /// layer's glyph in its source, and each touched glyph in all of its.
+    fn changed_glyphs(&self, font: &Font) -> ChangedGlyphs {
+        let mut changed = ChangedGlyphs::new();
+        for layer_id in self.layer_ids() {
+            let (Some(glyph_id), Some(layer)) =
+                (font.glyph_id_by_layer(*layer_id), font.layer(*layer_id))
+            else {
+                continue;
+            };
+            changed
+                .entry(layer.source_id())
+                .or_default()
+                .insert(glyph_id);
+        }
+        for glyph in self.glyph_ids.iter().filter_map(|id| font.glyph(*id)) {
+            for layer in glyph.layers().values() {
+                changed
+                    .entry(layer.source_id())
+                    .or_default()
+                    .insert(glyph.id());
+            }
+        }
+        changed
+    }
+
     /// The change set taking `before` to `after` within these scopes.
     fn diff(self, before: &Font, after: &Font) -> CoreResult<AppliedIntents> {
         let diff = FontDiff { before, after };
@@ -574,11 +610,11 @@ impl Font {
                     scopes.touch_layer(*intent.layer_id(), intent.structural());
                 }
                 IntentKind::Font(intent) => {
-                    let (layer_ids, glyph_id) = intent.apply(&mut after)?;
+                    let (layer_ids, glyph_ids) = intent.apply(&mut after)?;
                     for layer_id in layer_ids {
                         scopes.touch_layer(layer_id, true);
                     }
-                    if let Some(glyph_id) = glyph_id {
+                    for glyph_id in glyph_ids {
                         scopes.touch_glyph(glyph_id);
                     }
                 }
@@ -589,6 +625,17 @@ impl Font {
         for (layer_id, structural) in
             realign_attached_components(&before, &mut after, scopes.layer_ids())
         {
+            scopes.touch_layer(layer_id, structural);
+        }
+
+        // Linked glyphs follow the glyphs their keys read, and a moved left
+        // sidebearing carries anchors that attached components follow again.
+        let changed = scopes.changed_glyphs(&after);
+        let linked = after.follow_linked_metrics(changed)?;
+        for layer_id in &linked {
+            scopes.touch_layer(*layer_id, false);
+        }
+        for (layer_id, structural) in realign_attached_components(&before, &mut after, &linked) {
             scopes.touch_layer(layer_id, structural);
         }
 
@@ -726,6 +773,19 @@ impl Font {
         self.lib_mut().set(LANGUAGES_LIB_KEY.to_string(), value);
     }
 
+    fn apply_set_grid(&mut self, grid: Option<Grid>) -> CoreResult<()> {
+        match grid {
+            Some(grid) => {
+                let grid = grid.validate()?;
+                self.lib_mut().set(GRID_LIB_KEY.to_string(), grid.to_lib());
+            }
+            None => {
+                self.lib_mut().remove(GRID_LIB_KEY);
+            }
+        }
+        Ok(())
+    }
+
     fn apply_create_axis(&mut self, axis: &Axis) -> CoreResult<()> {
         self.add_axis(axis.clone())
     }
@@ -824,10 +884,7 @@ impl Font {
         if self.glyph_id_by_layer(layer_id).is_some() {
             return Err(CoreError::DuplicateLayerId(layer_id));
         }
-        if self
-            .layer_id_for_glyph_source(glyph_id, source_id)
-            .is_some()
-        {
+        if self.layer_id_for_source(glyph_id, source_id).is_some() {
             return Err(CoreError::DuplicateGlyphLayer {
                 glyph_id,
                 source_id,
@@ -877,10 +934,7 @@ impl Font {
         if self.glyph_id_by_layer(layer_id).is_some() {
             return Err(CoreError::DuplicateLayerId(layer_id));
         }
-        if self
-            .layer_id_for_glyph_source(glyph_id, source_id)
-            .is_some()
-        {
+        if self.layer_id_for_source(glyph_id, source_id).is_some() {
             return Err(CoreError::DuplicateGlyphLayer {
                 glyph_id,
                 source_id,
@@ -1141,6 +1195,9 @@ mod replacement_tests;
 mod kerning_tests;
 
 #[cfg(test)]
+mod mark_color_tests;
+
+#[cfg(test)]
 mod consistency_tests;
 
 /// A kerning group name trimmed of surrounding space.
@@ -1218,7 +1275,7 @@ mod tests {
 
     #[test]
     fn colour_intents_edit_validate_and_undo_as_one_step() {
-        use crate::ir::{ColorGlyph, ColorPalette, Paint, PaintColor, Rgba};
+        use crate::ir::{ColorGlyph, ColorPalette, Paint, PaintColor, Rgba8};
 
         let mut font = Font::new();
         let mut ids = Vec::new();
@@ -1261,7 +1318,7 @@ mod tests {
                     FontIntent::SetColorPalettes(
                         SetColorPalettes::new(&[ColorPalette {
                             name: Some("Light".to_string()),
-                            colors: vec![Rgba::new(255, 0, 0, 255)],
+                            colors: vec![Rgba8::new(255, 0, 0, 255)],
                         }])
                         .unwrap(),
                     ),
@@ -1309,7 +1366,7 @@ mod tests {
 
     #[test]
     fn set_color_replaces_the_document_atomically_and_undoes_as_one_step() {
-        use crate::ir::{ColorData, ColorGlyph, ColorPalette, Paint, PaintColor, Rgba};
+        use crate::ir::{ColorData, ColorGlyph, ColorPalette, Paint, PaintColor, Rgba8};
 
         let mut font = Font::new();
         let id = GlyphId::new();
@@ -1328,7 +1385,7 @@ mod tests {
         let color = ColorData {
             palettes: vec![ColorPalette {
                 name: None,
-                colors: vec![Rgba::new(0, 0, 255, 255)],
+                colors: vec![Rgba8::new(0, 0, 255, 255)],
             }],
             glyphs: vec![ColorGlyph {
                 glyph: id,

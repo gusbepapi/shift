@@ -19,8 +19,9 @@ export function GlyphCatalogBackendGate({
   glyphPreviews,
   canAuthor,
   openGlyph,
-  selectedGlyphId,
-  selectGlyph,
+  selection,
+  selectGlyphs,
+  tileSize,
   onFirstFrame,
   onUnavailable,
 }: GlyphCatalogBackendGateProps) {
@@ -103,8 +104,9 @@ export function GlyphCatalogBackendGate({
         glyphPreviews={glyphPreviews}
         canAuthor={canAuthor}
         openGlyph={openGlyph}
-        selectedGlyphId={selectedGlyphId}
-        selectGlyph={selectGlyph}
+        selection={selection}
+        selectGlyphs={selectGlyphs}
+        tileSize={tileSize}
         onPendingGlyphName={handlePendingGlyphName}
         onFirstFrame={onFirstFrame}
         onUnavailable={onUnavailable}
@@ -123,8 +125,9 @@ export function GlyphCatalogBackendGate({
       observeAtlasInvalidation={observeAtlasInvalidation}
       canAuthor={canAuthor}
       openGlyph={openGlyph}
-      selectedGlyphId={selectedGlyphId}
-      selectGlyph={selectGlyph}
+      selection={selection}
+      selectGlyphs={selectGlyphs}
+      tileSize={tileSize}
       onPendingGlyphName={handlePendingGlyphName}
       onSelected={handleSlugSelected}
       onFallback={handleSlugFallback}
