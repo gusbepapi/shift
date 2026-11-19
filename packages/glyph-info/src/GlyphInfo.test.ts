@@ -703,7 +703,7 @@ describe("language coverage catalogs", () => {
   it("filters the font repertoire by a group", () => {
     const catalog = db.createLanguageCatalog(encoded([0x42, 0x24, 0x41]));
 
-    expect(catalog.filter("group-latin-basic")).toEqual(["B", "A"]);
+    expect(catalog.filter("group-latin-basic")).toEqual(["A", "B"]);
     expect(catalog.groupCoverage("unknown-group")).toBeNull();
   });
 

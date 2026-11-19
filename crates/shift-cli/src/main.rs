@@ -134,78 +134,14 @@ fn main() -> miette::Result<()> {
                 write_authoring_result(remove_page(&args), json)
             }
         },
-        Command::Color { command } => match command {
-            ColorCommand::Palette { command } => match command {
-                PaletteCommand::Set(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(set_palettes(&args), json)
-                }
-            },
-            ColorCommand::Glyph { command } => match command {
-                ColorGlyphCommand::Set(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(set_color_glyph(&args), json)
-                }
-                ColorGlyphCommand::Remove(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(remove_color_glyph(&args), json)
-                }
-            },
-        },
+        Command::Color { command } => color_command(command),
         Command::Source { command } => match command {
             SourceCommand::Add(args) => {
                 let json = args.mutation.json;
                 write_authoring_result(add_source(args), json)
             }
         },
-        Command::Glyph { command } => match command {
-            GlyphCommand::Add(args) => {
-                let json = args.mutation.json;
-                write_authoring_result(add_glyph(args), json)
-            }
-            GlyphCommand::Set(args) => {
-                let json = args.mutation.json;
-                write_authoring_result(set_glyphs(&args), json)
-            }
-            GlyphCommand::Inspect(args) => inspect_glyph(&args),
-            GlyphCommand::Export(args) => export_glyph_batch(args),
-            GlyphCommand::Color(args) => {
-                let json = args.mutation.json;
-                write_authoring_result(set_mark_color(&args), json)
-            }
-            GlyphCommand::Axis { command } => match command {
-                GlyphAxisCommand::Add(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(add_glyph_axis(args), json)
-                }
-                GlyphAxisCommand::Edit(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(edit_glyph_axis(args), json)
-                }
-                GlyphAxisCommand::Remove(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(remove_glyph_axis(&args), json)
-                }
-            },
-            GlyphCommand::Alternate { command } => match command {
-                GlyphAlternateCommand::Add(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(add_alternate(&args), json)
-                }
-                GlyphAlternateCommand::Remove(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(remove_alternate(&args), json)
-                }
-                GlyphAlternateCommand::Reorder(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(move_alternate(&args), json)
-                }
-                GlyphAlternateCommand::Set(args) => {
-                    let json = args.mutation.json;
-                    write_authoring_result(set_alternate(&args), json)
-                }
-            },
-        },
+        Command::Glyph { command } => glyph_command(command),
         Command::Component {
             command:
                 ComponentCommand::Condition {
@@ -242,6 +178,78 @@ fn main() -> miette::Result<()> {
             SkillCommand::Show(args) => write_stdout(show_skill(&args)?.trim_end()),
             SkillCommand::Install(args) => write_report(&install_skill(&args)?, args.json),
             SkillCommand::Status(args) => write_report(&skill_status(&args)?, args.json),
+        },
+    }
+}
+
+fn color_command(command: ColorCommand) -> miette::Result<()> {
+    match command {
+        ColorCommand::Palette { command } => match command {
+            PaletteCommand::Set(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(set_palettes(&args), json)
+            }
+        },
+        ColorCommand::Glyph { command } => match command {
+            ColorGlyphCommand::Set(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(set_color_glyph(&args), json)
+            }
+            ColorGlyphCommand::Remove(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(remove_color_glyph(&args), json)
+            }
+        },
+    }
+}
+
+fn glyph_command(command: GlyphCommand) -> miette::Result<()> {
+    match command {
+        GlyphCommand::Add(args) => {
+            let json = args.mutation.json;
+            write_authoring_result(add_glyph(args), json)
+        }
+        GlyphCommand::Set(args) => {
+            let json = args.mutation.json;
+            write_authoring_result(set_glyphs(&args), json)
+        }
+        GlyphCommand::Inspect(args) => inspect_glyph(&args),
+        GlyphCommand::Export(args) => export_glyph_batch(args),
+        GlyphCommand::Color(args) => {
+            let json = args.mutation.json;
+            write_authoring_result(set_mark_color(&args), json)
+        }
+        GlyphCommand::Axis { command } => match command {
+            GlyphAxisCommand::Add(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(add_glyph_axis(args), json)
+            }
+            GlyphAxisCommand::Edit(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(edit_glyph_axis(args), json)
+            }
+            GlyphAxisCommand::Remove(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(remove_glyph_axis(&args), json)
+            }
+        },
+        GlyphCommand::Alternate { command } => match command {
+            GlyphAlternateCommand::Add(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(add_alternate(&args), json)
+            }
+            GlyphAlternateCommand::Remove(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(remove_alternate(&args), json)
+            }
+            GlyphAlternateCommand::Reorder(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(move_alternate(&args), json)
+            }
+            GlyphAlternateCommand::Set(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(set_alternate(&args), json)
+            }
         },
     }
 }

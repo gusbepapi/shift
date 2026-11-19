@@ -21,6 +21,51 @@ use crate::{
 };
 use shift_engine::scene::SceneChangeSet;
 
+/// Records the id of every axis, source, glyph and layer the change set creates, updates or deletes.
+fn collect_entity_ids(
+    change_set: &font::FontChangeSet,
+    axis_ids: &mut BTreeSet<font::AxisId>,
+    source_ids: &mut BTreeSet<font::SourceId>,
+    glyph_ids: &mut BTreeSet<font::GlyphId>,
+    layer_ids: &mut BTreeSet<font::LayerId>,
+) {
+    for entity in change_set.entity_changes() {
+        match entity {
+            font::FontEntityChange::Axis(change) => match change {
+                font::EntityChange::Created(axis)
+                | font::EntityChange::Updated { after: axis, .. }
+                | font::EntityChange::Deleted(axis) => {
+                    axis_ids.insert(axis.id());
+                }
+            },
+            font::FontEntityChange::Source(change) => match change {
+                font::EntityChange::Created(source)
+                | font::EntityChange::Updated { after: source, .. }
+                | font::EntityChange::Deleted(source) => {
+                    source_ids.insert(source.id());
+                }
+            },
+            font::FontEntityChange::Glyph(change) => match change {
+                font::EntityChange::Created(glyph)
+                | font::EntityChange::Updated { after: glyph, .. }
+                | font::EntityChange::Deleted(glyph) => {
+                    glyph_ids.insert(glyph.id());
+                }
+            },
+            font::FontEntityChange::Layer { change, .. } => match change {
+                font::EntityChange::Created(layer)
+                | font::EntityChange::Updated { after: layer, .. }
+                | font::EntityChange::Deleted(layer) => {
+                    layer_ids.insert(layer.id());
+                }
+            },
+            font::FontEntityChange::AxisMapping(_)
+            | font::FontEntityChange::MetricDefinition(_)
+            | font::FontEntityChange::NamedInstance(_) => {}
+        }
+    }
+}
+
 const GLOBAL_OWNER: &str = "";
 
 impl RecoveryOverlay {
@@ -79,41 +124,13 @@ impl RecoveryOverlay {
             }
         }
 
-        for entity in change_set.entity_changes() {
-            match entity {
-                font::FontEntityChange::Axis(change) => match change {
-                    font::EntityChange::Created(axis)
-                    | font::EntityChange::Updated { after: axis, .. }
-                    | font::EntityChange::Deleted(axis) => {
-                        axis_ids.insert(axis.id());
-                    }
-                },
-                font::FontEntityChange::Source(change) => match change {
-                    font::EntityChange::Created(source)
-                    | font::EntityChange::Updated { after: source, .. }
-                    | font::EntityChange::Deleted(source) => {
-                        source_ids.insert(source.id());
-                    }
-                },
-                font::FontEntityChange::Glyph(change) => match change {
-                    font::EntityChange::Created(glyph)
-                    | font::EntityChange::Updated { after: glyph, .. }
-                    | font::EntityChange::Deleted(glyph) => {
-                        glyph_ids.insert(glyph.id());
-                    }
-                },
-                font::FontEntityChange::Layer { change, .. } => match change {
-                    font::EntityChange::Created(layer)
-                    | font::EntityChange::Updated { after: layer, .. }
-                    | font::EntityChange::Deleted(layer) => {
-                        layer_ids.insert(layer.id());
-                    }
-                },
-                font::FontEntityChange::AxisMapping(_)
-                | font::FontEntityChange::MetricDefinition(_)
-                | font::FontEntityChange::NamedInstance(_) => {}
-            }
-        }
+        collect_entity_ids(
+            change_set,
+            &mut axis_ids,
+            &mut source_ids,
+            &mut glyph_ids,
+            &mut layer_ids,
+        );
 
         let tx = self.conn.transaction()?;
         let writer = StoreWriter::new(&tx);

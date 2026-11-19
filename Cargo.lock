@@ -2530,7 +2530,6 @@ dependencies = [
  "napi-derive",
  "pack",
  "rmp-serde",
- "serde_json",
  "shift-backends",
  "shift-config",
  "shift-engine",

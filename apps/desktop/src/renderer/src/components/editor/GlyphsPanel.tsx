@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import type { GlyphCategory } from "@shift/glyph-info";
 import { useSignalState } from "@shift/editor/signals";
 import {
   Button,
@@ -54,7 +53,7 @@ export const GlyphsPanel = () => {
   const tileSize = useSignalState(view.tileSizeCell);
   const colorFilter = useSignalState(view.colorFilterCell);
   const [search, setSearch] = useState(NO_SEARCH);
-  const [chosenCategories, setChosenCategories] = useState<readonly GlyphCategory[]>([]);
+  const [chosenCategories, setChosenCategories] = useState<readonly string[]>([]);
   const [languageId, setLanguageId] = useState<string | null>(null);
   const languages = languageScripts.flatMap((script) =>
     script.languages.map((coverage) => coverage.language),
@@ -74,7 +73,7 @@ export const GlyphsPanel = () => {
   const shown = useMemo(() => filterByColor(filtered, colorFilter), [colorFilter, filtered]);
   const colors = useMemo(() => colorsInUse(filtered, colorFilter), [colorFilter, filtered]);
 
-  const toggleCategory = (category: GlyphCategory) =>
+  const toggleCategory = (category: string) =>
     setChosenCategories((chosen) =>
       chosen.includes(category)
         ? chosen.filter((candidate) => candidate !== category)
