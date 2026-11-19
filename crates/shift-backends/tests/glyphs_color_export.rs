@@ -239,7 +239,7 @@ fn fonts_without_colour_glyphs_write_no_colour_data() {
 /// Compiles Glyphs text with fontc, as Glyphs-based pipelines do.
 fn compile_with_fontc(text: &str) -> Vec<u8> {
     let source = fontc::Input::from_glyphs(text.to_string())
-        .create_source()
+        .create_source(&fontc::SourceOptions::default())
         .unwrap();
     fontc::generate_font(source, fontc::Options::default()).unwrap()
 }

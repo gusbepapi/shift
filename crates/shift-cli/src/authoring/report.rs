@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use shift_font::{
-    EntityChange, Font, FontChange, FontChangeImpact, FontChangeSet, FontEntityChange,
-    FontMetadata, GlyphLayer, KerningGroup, KerningGroupId, KerningPair, SourceId,
+    AlternateId, AxisId, AxisNaming, EntityChange, Font, FontChange, FontChangeImpact,
+    FontChangeSet, FontEntityChange, FontMetadata, Glyph, GlyphAxis, GlyphLayer, KerningGroup,
+    KerningGroupId, KerningPair, NeverUsedReason, SourceId,
 };
 
 use super::font_info::report::SourceMetrics;
@@ -84,11 +85,15 @@ pub(crate) enum AuthoringChange {
         glyph_id: String,
         name: String,
         unicodes: Vec<String>,
+        /// The glyph's mark colour as `glyph set` reads it, `None` without one.
+        mark_color: Option<String>,
     },
     GlyphUpdated {
         glyph_id: String,
         name: String,
         unicodes: Vec<String>,
+        /// The glyph's mark colour as `glyph set` reads it, `None` without one.
+        mark_color: Option<String>,
     },
     GlyphLayerUpdated {
         #[serde(flatten)]
@@ -97,6 +102,28 @@ pub(crate) enum AuthoringChange {
     GlyphLayerCreated {
         #[serde(flatten)]
         layer: LayerReport,
+    },
+    GlyphLayerDeleted {
+        layer_id: String,
+        glyph_id: String,
+    },
+    GlyphAxisCreated {
+        #[serde(flatten)]
+        axis: GlyphAxisReport,
+    },
+    GlyphAxisUpdated {
+        #[serde(flatten)]
+        axis: GlyphAxisReport,
+    },
+    GlyphAxisDeleted {
+        #[serde(flatten)]
+        axis: GlyphAxisReport,
+    },
+    GlyphAlternatesSet {
+        glyph_id: String,
+        glyph_name: String,
+        /// Every alternate after the change, in the order they are tried.
+        alternates: Vec<AlternateReport>,
     },
     NamedInstancesUpdated {
         count: usize,
@@ -137,12 +164,185 @@ pub(crate) enum AuthoringChange {
     },
 }
 
+/// One of a glyph's own axes, in its own units, with the glyph it belongs to.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GlyphAxisReport {
+    glyph_id: String,
+    glyph_name: String,
+    #[serde(flatten)]
+    axis: GlyphAxis,
+}
+
+impl GlyphAxisReport {
+    fn from_axis(glyph: &Glyph, axis: &GlyphAxis) -> Self {
+        Self {
+            glyph_id: glyph.id().to_string(),
+            glyph_name: glyph.name().to_string(),
+            axis: axis.clone(),
+        }
+    }
+
+    fn render(&self, marker: char) -> String {
+        let Self {
+            glyph_name, axis, ..
+        } = self;
+        format!(
+            "{marker} glyph axis  {glyph_name}: {} ({})  {}  {} · {} · {}",
+            axis.name(),
+            axis.tag(),
+            axis.id(),
+            axis.minimum(),
+            axis.as_axis().default(),
+            axis.maximum()
+        )
+    }
+}
+
+/// How each of a glyph's own axes changed between `before` and `after`.
+fn glyph_axis_changes(before: Option<&Glyph>, after: Option<&Glyph>) -> Vec<AuthoringChange> {
+    let mut changes = Vec::new();
+    if let Some(glyph) = after {
+        for axis in glyph.axes() {
+            let report = GlyphAxisReport::from_axis(glyph, axis);
+            match before.and_then(|before| before.axis(axis.id())) {
+                None => changes.push(AuthoringChange::GlyphAxisCreated { axis: report }),
+                Some(old) if old != axis => {
+                    changes.push(AuthoringChange::GlyphAxisUpdated { axis: report });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if let Some(glyph) = before {
+        for axis in glyph.axes() {
+            if after.and_then(|after| after.axis(axis.id())).is_none() {
+                changes.push(AuthoringChange::GlyphAxisDeleted {
+                    axis: GlyphAxisReport::from_axis(glyph, axis),
+                });
+            }
+        }
+    }
+    changes
+}
+
+/// One alternate as a report lists it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AlternateReport {
+    pub alternate_id: String,
+    /// Counting from 1.
+    pub position: usize,
+    pub glyph: String,
+    /// One range per text, by axis name, in user units on font axes;
+    /// empty when it always applies.
+    pub when: Vec<String>,
+    /// Why no location draws it, when none does.
+    pub never_used: Option<String>,
+}
+
+impl AlternateReport {
+    /// Each of `glyph`'s alternates in `font`, with never-used warnings.
+    pub(crate) fn of_glyph(font: &Font, glyph: &Glyph) -> Vec<Self> {
+        // Both fail only when an axis mapping doesn't compile; the report then
+        // lists the alternates without condition text or warnings, and
+        // `check` reports the mapping.
+        let space = font.condition_space(Some(glyph.id())).ok();
+        let unused: BTreeMap<AlternateId, NeverUsedReason> = font
+            .never_used_alternates(glyph.id())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|unused| (unused.alternate_id, unused.reason))
+            .collect();
+        let described: BTreeMap<AlternateId, String> = glyph
+            .alternates()
+            .iter()
+            .enumerate()
+            .map(|(index, alternate)| {
+                let name = glyph_name(font, alternate.glyph());
+                (alternate.id(), format!("{name} (alternate {})", index + 1))
+            })
+            .collect();
+        let name_at =
+            |alternate_id: AlternateId| described.get(&alternate_id).cloned().unwrap_or_default();
+        glyph
+            .alternates()
+            .iter()
+            .enumerate()
+            .map(|(index, alternate)| {
+                let never_used = unused.get(&alternate.id()).map(|reason| match reason {
+                    NeverUsedReason::OutsideAxes => {
+                        "its condition holds nowhere in the axes' ranges".to_string()
+                    }
+                    NeverUsedReason::Covered { by } => {
+                        let earlier: Vec<String> = by.iter().map(|id| name_at(*id)).collect();
+                        format!("{} always applies first", earlier.join(" and "))
+                    }
+                });
+                Self {
+                    alternate_id: alternate.id().to_string(),
+                    position: index + 1,
+                    glyph: glyph_name(font, alternate.glyph()),
+                    when: space.as_ref().map_or_else(Vec::new, |space| {
+                        space.format(alternate.condition(), AxisNaming::Name)
+                    }),
+                    never_used,
+                }
+            })
+            .collect()
+    }
+
+    /// One line: `2. dollar.bled  when Bleed ≥ 70`, with a warning when it
+    /// is never used.
+    pub(crate) fn render(&self) -> String {
+        let when = if self.when.is_empty() {
+            "always".to_string()
+        } else {
+            format!("when {}", self.when.join(", "))
+        };
+        let line = format!("{}. {}  {when}", self.position, self.glyph);
+        match &self.never_used {
+            Some(why) => format!("{line}\n     warning: never used, because {why}"),
+            None => line,
+        }
+    }
+}
+
+fn glyph_name(font: &Font, glyph_id: shift_font::GlyphId) -> String {
+    font.glyph(glyph_id)
+        .map_or_else(|| glyph_id.to_string(), |glyph| glyph.name().to_string())
+}
+
+/// The alternates of `after` when they differ from those of `before`.
+fn alternate_changes(
+    font: &Font,
+    before: Option<&Glyph>,
+    after: &Glyph,
+) -> Option<AuthoringChange> {
+    let unchanged = match before {
+        Some(before) => before.alternates() == after.alternates(),
+        None => after.alternates().is_empty(),
+    };
+    if unchanged {
+        return None;
+    }
+    Some(AuthoringChange::GlyphAlternatesSet {
+        glyph_id: after.id().to_string(),
+        glyph_name: after.name().to_string(),
+        alternates: AlternateReport::of_glyph(font, after),
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LayerReport {
     layer_id: String,
     glyph_id: String,
-    source_id: String,
+    /// `None` for a layer placed by coordinates alone.
+    source_id: Option<String>,
+    /// Coordinates that place the layer off its source, by axis tag; empty
+    /// for a layer exactly on its source.
+    location: BTreeMap<String, f64>,
     advance: f64,
     contour_count: usize,
     point_count: usize,
@@ -155,7 +355,13 @@ impl LayerReport {
         Some(Self {
             layer_id: layer.id().to_string(),
             glyph_id: font.glyph_id_by_layer(layer.id())?.to_string(),
-            source_id: layer.source_id().to_string(),
+            source_id: layer.source_id().map(|source_id| source_id.to_string()),
+            location: layer
+                .location()
+                .coordinates()
+                .iter()
+                .map(|(axis_id, value)| (axis_tag(font, *axis_id), *value))
+                .collect(),
             advance: layer.width(),
             contour_count: layer.contours().len(),
             point_count: layer
@@ -168,11 +374,22 @@ impl LayerReport {
     }
 
     fn render(&self, marker: char) -> String {
+        let source = self.source_id.as_deref().unwrap_or("no source");
+        let place = if self.location.is_empty() {
+            source.to_string()
+        } else {
+            let coordinates: Vec<String> = self
+                .location
+                .iter()
+                .map(|(tag, value)| format!("{tag}={value}"))
+                .collect();
+            format!("{source} + {}", coordinates.join(","))
+        };
         format!(
             "{marker} layer   {}  {} @ {}  advance {}; {} contours, {} points, {} anchors, {} components",
             self.layer_id,
             self.glyph_id,
-            self.source_id,
+            place,
             self.advance,
             self.contour_count,
             self.point_count,
@@ -258,6 +475,7 @@ impl Report for AuthoringReport {
                     glyph_id,
                     name,
                     unicodes,
+                    mark_color,
                 } => {
                     let unicodes = unicodes.join(", ");
                     let suffix = if unicodes.is_empty() {
@@ -265,20 +483,46 @@ impl Report for AuthoringReport {
                     } else {
                         format!("  {unicodes}")
                     };
-                    lines.push(format!("+ glyph   {name}  {glyph_id}{suffix}"));
+                    lines.push(format!(
+                        "+ glyph   {name}  {glyph_id}{suffix}{}",
+                        mark_color_suffix(mark_color.as_deref())
+                    ));
                 }
                 AuthoringChange::GlyphUpdated {
                     glyph_id,
                     name,
                     unicodes,
+                    mark_color,
                 } => {
                     lines.push(format!(
-                        "~ glyph   {name}  {glyph_id}  [{}]",
-                        unicodes.join(", ")
+                        "~ glyph   {name}  {glyph_id}  [{}]{}",
+                        unicodes.join(", "),
+                        mark_color_suffix(mark_color.as_deref())
                     ));
                 }
                 AuthoringChange::GlyphLayerCreated { layer } => lines.push(layer.render('+')),
                 AuthoringChange::GlyphLayerUpdated { layer } => lines.push(layer.render('~')),
+                AuthoringChange::GlyphLayerDeleted { layer_id, glyph_id } => {
+                    lines.push(format!("- layer   {layer_id}  {glyph_id}"));
+                }
+                AuthoringChange::GlyphAxisCreated { axis } => lines.push(axis.render('+')),
+                AuthoringChange::GlyphAxisUpdated { axis } => lines.push(axis.render('~')),
+                AuthoringChange::GlyphAxisDeleted { axis } => lines.push(axis.render('-')),
+                AuthoringChange::GlyphAlternatesSet {
+                    glyph_name,
+                    alternates,
+                    ..
+                } => {
+                    lines.push(format!("~ alternates  {glyph_name}"));
+                    if alternates.is_empty() {
+                        lines.push("    none".to_string());
+                    }
+                    lines.extend(
+                        alternates
+                            .iter()
+                            .map(|alternate| format!("    {}", alternate.render())),
+                    );
+                }
                 AuthoringChange::NamedInstancesUpdated { count, instances } => {
                     lines.push(format!("~ instances  {count} product presets"));
                     lines.extend(instances.iter().map(InstanceReport::render));
@@ -358,76 +602,36 @@ pub(super) fn report_changes(font: &Font, changes: &FontChangeSet) -> Vec<Author
         });
     }
 
-    report.extend(changes.entity_changes().into_iter().filter_map(|change| {
-        match change {
-            FontEntityChange::Axis(EntityChange::Created(axis)) => {
-                Some(AuthoringChange::AxisCreated {
-                    axis_id: axis.id().to_string(),
-                    tag: axis.tag().to_string(),
-                    name: axis.name().to_string(),
-                    minimum: axis.minimum(),
-                    default: axis.default(),
-                    maximum: axis.maximum(),
-                })
-            }
-            FontEntityChange::Axis(EntityChange::Updated { after: axis, .. }) => {
-                Some(AuthoringChange::AxisUpdated {
-                    axis_id: axis.id().to_string(),
-                    tag: axis.tag().to_string(),
-                    name: axis.name().to_string(),
-                    minimum: axis.minimum(),
-                    default: axis.default(),
-                    maximum: axis.maximum(),
-                })
-            }
-            FontEntityChange::Source(EntityChange::Created(source)) => {
-                Some(AuthoringChange::SourceCreated {
-                    source_id: source.id().to_string(),
-                    name: source.name().to_string(),
-                    location: source
-                        .location()
-                        .iter()
-                        .filter_map(|(axis_id, value)| {
-                            let axis = font.axis(*axis_id)?;
-                            Some((axis.tag().to_string(), *value))
-                        })
-                        .collect(),
-                })
-            }
-            FontEntityChange::Source(EntityChange::Updated { after: source, .. }) => {
-                Some(AuthoringChange::SourceUpdated {
-                    metrics: SourceMetrics::from_source(font, source),
-                })
-            }
-            FontEntityChange::Glyph(EntityChange::Created(glyph)) => {
-                Some(AuthoringChange::GlyphCreated {
-                    glyph_id: glyph.id().to_string(),
-                    name: glyph.glyph_name().to_string(),
-                    unicodes: format_unicodes(glyph.unicodes()),
-                })
-            }
-            FontEntityChange::Glyph(EntityChange::Updated { after: glyph, .. }) => {
-                Some(AuthoringChange::GlyphUpdated {
-                    glyph_id: glyph.id().to_string(),
-                    name: glyph.glyph_name().to_string(),
-                    unicodes: format_unicodes(glyph.unicodes()),
-                })
-            }
-            FontEntityChange::Layer {
-                change: EntityChange::Created(layer),
-                ..
-            } => Some(AuthoringChange::GlyphLayerCreated {
-                layer: LayerReport::from_layer(font, layer)?,
+    report.extend(
+        changes
+            .entity_changes()
+            .into_iter()
+            .flat_map(|change| match change {
+                FontEntityChange::Glyph(EntityChange::Created(glyph)) => {
+                    let mut reported = vec![AuthoringChange::GlyphCreated {
+                        glyph_id: glyph.id().to_string(),
+                        name: glyph.glyph_name().to_string(),
+                        unicodes: format_unicodes(glyph.unicodes()),
+                        mark_color: glyph.mark_color().map(|color| color.to_string()),
+                    }];
+                    reported.extend(glyph_axis_changes(None, Some(glyph)));
+                    reported.extend(alternate_changes(font, None, glyph));
+                    reported
+                }
+                FontEntityChange::Glyph(EntityChange::Updated { before, after }) => {
+                    let mut reported = vec![AuthoringChange::GlyphUpdated {
+                        glyph_id: after.id().to_string(),
+                        name: after.glyph_name().to_string(),
+                        unicodes: format_unicodes(after.unicodes()),
+                        mark_color: after.mark_color().map(|color| color.to_string()),
+                    }];
+                    reported.extend(glyph_axis_changes(Some(before), Some(after)));
+                    reported.extend(alternate_changes(font, Some(before), after));
+                    reported
+                }
+                other => entity_report(font, &other).into_iter().collect(),
             }),
-            FontEntityChange::Layer {
-                change: EntityChange::Updated { after: layer, .. },
-                ..
-            } => Some(AuthoringChange::GlyphLayerUpdated {
-                layer: LayerReport::from_layer(font, layer)?,
-            }),
-            _ => None,
-        }
-    }));
+    );
 
     // Groups first, so a report reads in the order a batch applies.
     report.extend(changes.changes.iter().filter_map(|change| match change {
@@ -472,6 +676,69 @@ pub(super) fn report_changes(font: &Font, changes: &FontChangeSet) -> Vec<Author
     }
 
     report
+}
+
+/// The report of one entity change other than a glyph's.
+fn entity_report(font: &Font, change: &FontEntityChange<'_>) -> Option<AuthoringChange> {
+    match change {
+        FontEntityChange::Axis(EntityChange::Created(axis)) => Some(AuthoringChange::AxisCreated {
+            axis_id: axis.id().to_string(),
+            tag: axis.tag().to_string(),
+            name: axis.name().to_string(),
+            minimum: axis.minimum(),
+            default: axis.default(),
+            maximum: axis.maximum(),
+        }),
+        FontEntityChange::Axis(EntityChange::Updated { after: axis, .. }) => {
+            Some(AuthoringChange::AxisUpdated {
+                axis_id: axis.id().to_string(),
+                tag: axis.tag().to_string(),
+                name: axis.name().to_string(),
+                minimum: axis.minimum(),
+                default: axis.default(),
+                maximum: axis.maximum(),
+            })
+        }
+        FontEntityChange::Source(EntityChange::Created(source)) => {
+            Some(AuthoringChange::SourceCreated {
+                source_id: source.id().to_string(),
+                name: source.name().to_string(),
+                location: source
+                    .location()
+                    .iter()
+                    .filter_map(|(axis_id, value)| {
+                        let axis = font.axis(*axis_id)?;
+                        Some((axis.tag().to_string(), *value))
+                    })
+                    .collect(),
+            })
+        }
+        FontEntityChange::Source(EntityChange::Updated { after: source, .. }) => {
+            Some(AuthoringChange::SourceUpdated {
+                metrics: SourceMetrics::from_source(font, source),
+            })
+        }
+        FontEntityChange::Layer {
+            glyph_id,
+            change: EntityChange::Deleted(layer),
+        } => Some(AuthoringChange::GlyphLayerDeleted {
+            layer_id: layer.id().to_string(),
+            glyph_id: glyph_id.to_string(),
+        }),
+        FontEntityChange::Layer {
+            change: EntityChange::Created(layer),
+            ..
+        } => Some(AuthoringChange::GlyphLayerCreated {
+            layer: LayerReport::from_layer(font, layer)?,
+        }),
+        FontEntityChange::Layer {
+            change: EntityChange::Updated { after: layer, .. },
+            ..
+        } => Some(AuthoringChange::GlyphLayerUpdated {
+            layer: LayerReport::from_layer(font, layer)?,
+        }),
+        _ => None,
+    }
 }
 
 fn kerning_group_change(
@@ -525,6 +792,19 @@ fn kerning_value_change(
         }),
         (None, None) => None,
     }
+}
+
+/// An axis's tag, a font axis or a glyph's own, else its id.
+fn axis_tag(font: &Font, axis_id: AxisId) -> String {
+    font.axis(axis_id)
+        .map(|axis| axis.tag().to_string())
+        .or_else(|| font.glyph_axis(axis_id).map(|axis| axis.tag().to_string()))
+        .unwrap_or_else(|| axis_id.to_string())
+}
+
+/// A glyph line's mark colour, or nothing for a glyph without one.
+fn mark_color_suffix(mark_color: Option<&str>) -> String {
+    mark_color.map_or_else(String::new, |color| format!("  mark {color}"))
 }
 
 fn format_unicodes(unicodes: &[u32]) -> Vec<String> {

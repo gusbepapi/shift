@@ -140,7 +140,7 @@ export class GlyphNodeDefinition extends NodeDefinition<GlyphNode> {
     const glyph = this.editor.glyphForId(node.glyphId);
     if (!glyph) return [];
 
-    const geometry = glyph.geometryAt(this.editor.externalLocation);
+    const geometry = glyph.geometryAt(this.editor.editLocation);
     const localRect = Bounds.toRect(rect);
     const ids: SelectableId[] = [];
     for (const point of geometry.allPoints) {
@@ -301,7 +301,7 @@ export class GlyphNodeDefinition extends NodeDefinition<GlyphNode> {
     return (
       this.editor
         .glyphForId(node.glyphId)
-        ?.renderModelAt(this.editor.externalLocationCell, this.editor.activeSourceIdCell) ?? null
+        ?.renderModelAt(this.editor.editLocationCell, this.editor.activeSourceIdCell) ?? null
     );
   }
 
@@ -448,17 +448,26 @@ export class GlyphNodeDefinition extends NodeDefinition<GlyphNode> {
 
     this.#drawEditGhost(node, ctx);
 
-    this.#outline.draw(ctx.canvas, view, {
-      stroke: {
-        color: ctx.canvas.theme.glyph.stroke,
-        widthPx: ctx.canvas.theme.glyph.widthPx,
-      },
-    });
+    // Open corners as Glyphs draws them: the authored path in grey, the erased outline over it,
+    // so what stays grey is what export erases.
+    track(view.openCornerContoursPathCell);
+    const openCorner = ctx.canvas.theme.openCorner;
+    ctx.canvas.strokePath(
+      view.openCornerContoursPathCell.peek(),
+      openCorner.color,
+      openCorner.widthPx,
+    );
+    track(view.outlinePathCell);
+    ctx.canvas.strokePath(
+      view.outlinePathCell.peek(),
+      ctx.canvas.theme.glyph.stroke,
+      ctx.canvas.theme.glyph.widthPx,
+    );
 
     for (const component of view.components) {
       for (const contour of component.contours) {
         ctx.canvas.strokePath(
-          contour.path,
+          contour.fillPath,
           ctx.canvas.theme.glyph.stroke,
           ctx.canvas.theme.component.widthPx,
         );
@@ -489,10 +498,7 @@ export class GlyphNodeDefinition extends NodeDefinition<GlyphNode> {
     if (this.editor.toolIdCell.peek() !== "select") return;
 
     track(this.editor.activeSourceIdCell);
-    const sourceId = this.editor.activeSourceIdCell.peek();
-    if (!sourceId) return;
-
-    const layer = this.editor.layerForGlyph(node.glyphId, sourceId);
+    const layer = this.editor.editableLayer(node);
     if (!layer) return;
 
     track(layer.editBaseOutlineCell);
@@ -542,8 +548,10 @@ export class GlyphNodeDefinition extends NodeDefinition<GlyphNode> {
     track(this.editor.font.committedRevisionCell);
     track(this.editor.activeSourceIdCell);
     track(this.editor.externalLocationCell);
+    track(this.editor.activeDrawingCell);
     const interpolated =
       this.editor.activeSourceId === null &&
+      this.editor.activeDrawing === null &&
       this.editor.font.sourceAt(this.editor.externalLocation) === null;
 
     track(view.rootContoursCell);

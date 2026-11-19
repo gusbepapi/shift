@@ -6,8 +6,8 @@ use napi_derive::napi;
 use std::collections::HashMap;
 
 use shift_font::{
-  AxisId, ComponentAlignment, GlyphId, Location as FontLocation, PointType as IrPointType,
-  Transform,
+  AxisId, ComponentAlignment, ComponentInheritance, GlyphId, Location as FontLocation,
+  PointType as IrPointType, Transform,
   composite::{
     ResolvedComponentGeometry, ResolvedContour, ResolvedLayerGeometry, resolved_contours_bbox,
     resolved_contours_to_svg_path,
@@ -63,15 +63,27 @@ pub struct NapiGlyphLayerSnapshot {
   pub glyph_id: String,
   #[napi(ts_type = "SourceId")]
   pub source_id: String,
+  #[napi(ts_type = "SourceId")]
+  pub base_source_id: Option<String>,
+  pub coordinates: Option<Location>,
   pub state: NapiGlyphState,
 }
 
 impl From<GlyphLayerSnapshot> for NapiGlyphLayerSnapshot {
   fn from(snapshot: GlyphLayerSnapshot) -> Self {
+    let GlyphLayerSnapshot {
+      glyph_id,
+      source_id,
+      base_source_id,
+      coordinates,
+      state,
+    } = snapshot;
     Self {
-      glyph_id: snapshot.glyph_id.to_string(),
-      source_id: snapshot.source_id.to_string(),
-      state: snapshot.state.into(),
+      glyph_id: glyph_id.to_string(),
+      source_id: source_id.to_string(),
+      base_source_id: base_source_id.map(|id| id.to_string()),
+      coordinates: coordinates.map(Into::into),
+      state: state.into(),
     }
   }
 }
@@ -223,14 +235,17 @@ impl From<InterpolationBasis> for NapiInterpolationBasis {
 #[napi(object)]
 pub struct NapiGlyphSourceValues {
   #[napi(ts_type = "SourceId")]
-  pub source_id: String,
+  pub source_id: Option<String>,
+  #[napi(ts_type = "LayerId")]
+  pub layer_id: Option<String>,
   pub values: Float64Array,
 }
 
 impl From<GlyphSourceValues> for NapiGlyphSourceValues {
   fn from(source: GlyphSourceValues) -> Self {
     Self {
-      source_id: source.source_id.to_string(),
+      source_id: source.source_id.map(|id| id.to_string()),
+      layer_id: source.layer_id.map(|id| id.to_string()),
       values: source.values.into(),
     }
   }
@@ -492,16 +507,43 @@ pub struct NapiComponentData {
   /// as anchored while the component sits exactly on its anchors.
   #[napi(ts_type = "\"anchored\" | \"free\" | \"unset\"")]
   pub alignment: String,
+  /// The axes the component sets for its base glyph, in axis order. Their
+  /// values follow every component transform in the layer's values,
+  /// component by component.
+  #[napi(ts_type = "Array<AxisId>")]
+  pub location_axes: Vec<String>,
+  /// Where the base glyph takes the axes the component doesn't set: the
+  /// glyph it sits in (`parent`) or the font's default location (`font`).
+  #[napi(ts_type = "\"parent\" | \"font\"")]
+  pub inheritance: String,
 }
 
 impl From<ComponentData> for NapiComponentData {
   fn from(component: ComponentData) -> Self {
+    let ComponentData {
+      id,
+      base_glyph_id,
+      base_glyph_name,
+      alignment,
+      location_axes,
+      inheritance,
+    } = component;
     Self {
-      id: component.id,
-      base_glyph_id: component.base_glyph_id.to_string(),
-      base_glyph_name: component.base_glyph_name.to_string(),
-      alignment: alignment_name(component.alignment).to_string(),
+      id,
+      base_glyph_id: base_glyph_id.to_string(),
+      base_glyph_name: base_glyph_name.to_string(),
+      alignment: alignment_name(alignment).to_string(),
+      location_axes: location_axes.iter().map(ToString::to_string).collect(),
+      inheritance: inheritance_name(inheritance).to_string(),
     }
+  }
+}
+
+/// The wire name of where a component takes the axes it doesn't set.
+pub(crate) fn inheritance_name(inheritance: ComponentInheritance) -> &'static str {
+  match inheritance {
+    ComponentInheritance::Parent => "parent",
+    ComponentInheritance::Font => "font",
   }
 }
 
@@ -534,18 +576,14 @@ impl From<NapiComponentData> for ComponentData {
       base_glyph_id: GlyphId::from_raw(component.base_glyph_id),
       base_glyph_name: component.base_glyph_name.into(),
       alignment: values::parse_alignment(Some(&component.alignment)),
+      location_axes: component
+        .location_axes
+        .into_iter()
+        .map(AxisId::from_raw)
+        .collect(),
+      inheritance: values::parse_inheritance(&component.inheritance),
     }
   }
-}
-
-/// Location-resolved drawable preview: one svg path and advance per glyph,
-/// with no editable structure crossing the boundary.
-#[napi(object)]
-pub struct NapiGlyphPreview {
-  #[napi(ts_type = "GlyphId")]
-  pub glyph_id: String,
-  pub svg_path: String,
-  pub x_advance: f64,
 }
 
 /// One corner of outline bounds in font units.

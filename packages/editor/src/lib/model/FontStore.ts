@@ -27,6 +27,7 @@ import type {
   WorkspaceGlyphLayerSnapshot,
   WorkspaceSnapshot,
 } from "@shift/types";
+import { layerPlacementOf, layerPlacementsEqual } from "../variation/location";
 import { segmentIdFor } from "@shift/glyph-state";
 import { parseColorData } from "../color/colorData";
 import { Validate } from "@shift/validation";
@@ -573,10 +574,9 @@ export class FontStore {
   }
 
   #applyLayerSnapshot(snapshot: WorkspaceGlyphLayerSnapshot): boolean {
-    const layerId = this.#indexCell
-      .peek()
-      .layerBySource.get(sourceLayerKey(snapshot.glyphId, snapshot.sourceId));
-    if (layerId !== snapshot.state.layerId) return false;
+    // By layer, so a drawing located off the sources applies as one on a source does.
+    const glyphId = this.#indexCell.peek().glyphByLayer.get(snapshot.state.layerId);
+    if (glyphId !== snapshot.glyphId) return false;
 
     this.#replaceLayerState(snapshot.state);
     return true;
@@ -663,6 +663,9 @@ export class FontStore {
   #internProjection(projection: GlyphProjection): GlyphProjection {
     const interpolation = projection.interpolation;
     if (!interpolation) return projection;
+
+    // A basis with drawings located off the sources (no source ids) is the glyph's own.
+    if (interpolation.basis.sourceIds.length === 0) return projection;
 
     const key = interpolation.basis.sourceIds.join("\u0000");
     const basis = this.#interpolationBases.get(key);
@@ -780,7 +783,9 @@ function recordIndex(
       dependents.add(record.id);
     }
     for (const layer of record.layers) {
-      layerBySource.set(sourceLayerKey(record.id, layer.sourceId), layer.id);
+      // Only a drawing exactly on its source is that source's layer.
+      if (!layer.coordinates)
+        layerBySource.set(sourceLayerKey(record.id, layer.sourceId), layer.id);
       glyphByLayer.set(layer.id, record.id);
     }
   }
@@ -823,7 +828,11 @@ function sameGlyphLayers(left: GlyphRecord, right: GlyphRecord): boolean {
 
   return left.layers.every((layer, index) => {
     const other = right.layers[index];
-    return other?.id === layer.id && other.sourceId === layer.sourceId;
+    return (
+      other?.id === layer.id &&
+      other.sourceId === layer.sourceId &&
+      layerPlacementsEqual(layerPlacementOf(other), layerPlacementOf(layer))
+    );
   });
 }
 

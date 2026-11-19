@@ -74,7 +74,7 @@ fn coloured(mut font: Font, glyphs: Vec<ColorGlyph>) -> Font {
 
 fn gid(bytes: &[u8], name: &str) -> u16 {
     use skrifa::MetadataProvider;
-    let font = skrifa::FontRef::new(bytes).unwrap();
+    let font = FontRef::new(bytes).unwrap();
     font.glyph_names()
         .iter()
         .find(|(_, glyph)| glyph.as_str() == name)
@@ -353,9 +353,7 @@ fn palette_names_leave_the_existing_name_records_intact() {
 fn svg_document(bytes: &[u8], glyph: u16) -> Option<String> {
     let parsed = FontRef::new(bytes).unwrap();
     let svg = parsed.svg().ok()?;
-    let data = svg
-        .glyph_data(write_fonts::types::GlyphId::new(u32::from(glyph)))
-        .unwrap()?;
+    let data = svg.glyph_data(write_fonts::types::GlyphId::new(u32::from(glyph)))?;
     Some(String::from_utf8(data.to_vec()).unwrap())
 }
 

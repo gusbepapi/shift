@@ -1,16 +1,23 @@
 //! Batch planning over directory facts; geometry is acquired by the workspace only when needed.
 
-use shift_font::{CreateGlyph, CreateGlyphLayer, UpdateGlyph};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use shift_font::{
+    AlternateId, CreateGlyph, Glyph, GlyphAlternate, LayerLocation, SetGlyphAlternates,
+    SetMarkColor, UpdateGlyph,
+};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use miette::{IntoDiagnostic, Result, WrapErr, bail, miette};
-use shift_font::{FontIntentSet, GlyphId, GlyphName, LayerId};
+use shift_font::{FontIntentSet, GlyphId, GlyphName};
 
 use crate::cli::SetGlyphsArgs;
 
+use super::alternate::parse_when;
 use super::glyph::{load_font, parse_unicodes};
-use super::input::{GlyphBatchInput, GlyphEntryInput, MetricsKeysInput};
+use super::input::{
+    AlternateInput, GlyphBatchInput, GlyphEntryInput, MarkColorEdit, MetricsKeysInput,
+};
 use super::layer_payload::read_json_input;
+use super::layer_place::{create_layer, layer_at, layer_location_from_values};
 use super::metrics_keys::check_written_keys;
 use super::{AuthoringReport, apply_checked_mutation};
 use crate::selector::FontSelectors;
@@ -18,18 +25,44 @@ use crate::selector::FontSelectors;
 /// The glyph batch format `glyph export` writes and `glyph set` reads.
 pub(crate) const GLYPH_BATCH_FORMAT: u32 = 1;
 
+/// Records one glyph's value for a field the batch sets once per glyph.
+///
+/// # Errors
+///
+/// Returns an error when an earlier entry for the same glyph gave a different value.
+fn record_once<T: PartialEq>(
+    map: &mut BTreeMap<String, T>,
+    name: &str,
+    value: T,
+    what: &str,
+) -> Result<()> {
+    if let Some(previous) = map.get(name)
+        && *previous != value
+    {
+        bail!("conflicting {what} for this glyph");
+    }
+    map.insert(name.to_string(), value);
+    Ok(())
+}
+
 /// Creates or updates glyph identities and drawings with one atomic workspace application.
 ///
-/// Omitted Unicode assignments remain unchanged; an empty list clears them. Repeated
-/// glyph names may target distinct sources but must agree on any supplied Unicode list
-/// and glyph metrics keys. Metrics keys are applied as the app applies them: the sides
+/// Omitted Unicode assignments remain unchanged; an empty list clears them. An omitted
+/// mark colour remains unchanged; `null` clears it. Repeated glyph names may target
+/// distinct sources but must agree on any supplied Unicode list, mark colour and glyph
+/// metrics keys. Metrics keys are applied as the app applies them: the sides
 /// they link follow in the same edit.
 /// Input errors name the glyph and one-based entry; syntax errors retain JSON locations.
 ///
 /// # Errors
 ///
-/// Rejects invalid payloads, selectors, repeated glyph/source pairs, conflicting
-/// Unicode assignments or glyph keys, and metrics keys that cannot be evaluated,
+/// An entry's `location` places its drawing anywhere in the glyph's design space,
+/// laid over `source` or, without one, over no source.
+///
+/// # Errors
+///
+/// Rejects invalid payloads, selectors, repeated glyph/place pairs, conflicting
+/// Unicode assignments, mark colours or glyph keys, and metrics keys that cannot be evaluated,
 /// without writing. Also reports document and persistence failures.
 pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
     let font = load_font(&args.path)?;
@@ -46,9 +79,11 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
     }
 
     let mut glyphs = HashMap::<String, (GlyphId, Vec<u32>)>::new();
-    let mut unicodes = HashMap::<String, Vec<u32>>::new();
+    let mut unicodes = BTreeMap::<String, Vec<u32>>::new();
     let mut glyph_keys = BTreeMap::<String, MetricsKeysInput>::new();
-    let mut seen = HashSet::new();
+    let mut glyph_alternates = BTreeMap::<String, Vec<AlternateInput>>::new();
+    let mut mark_colors = BTreeMap::<String, MarkColorEdit>::new();
+    let mut seen: Vec<(String, LayerLocation)> = Vec::new();
     let mut intents = Vec::new();
     let mut layers = Vec::new();
     for (index, input) in batch.glyphs.into_iter().enumerate() {
@@ -64,15 +99,34 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
         let glyph_name = GlyphName::new(entry.name.trim())
             .into_diagnostic()
             .wrap_err_with(context)?;
-        let source_id = match entry.source.as_deref() {
-            Some(selector) => font.source_id_for(selector).wrap_err_with(context)?,
-            None => font
-                .default_source_id()
-                .ok_or_else(|| miette!("{}: the font has no default source", context()))?,
+        let base = entry
+            .source
+            .as_deref()
+            .map(|selector| font.source_id_for(selector))
+            .transpose()
+            .wrap_err_with(context)?;
+        let location = match &entry.location {
+            Some(values) => {
+                let existing = font.glyph_by_name(&name).map(Glyph::id);
+                layer_location_from_values(&font, existing, base, values).wrap_err_with(context)?
+            }
+            None => {
+                let source_id = match base {
+                    Some(source_id) => source_id,
+                    None => font
+                        .default_source_id()
+                        .ok_or_else(|| miette!("{}: the font has no default source", context()))?,
+                };
+                LayerLocation::at_source(source_id)
+            }
         };
-        if !seen.insert((name.clone(), source_id)) {
-            bail!("{}: glyph/source pair appears more than once", context());
+        if seen
+            .iter()
+            .any(|(seen_name, seen_location)| *seen_name == name && *seen_location == location)
+        {
+            bail!("{}: glyph/place pair appears more than once", context());
         }
+        seen.push((name.clone(), location.clone()));
 
         let requested_unicodes = entry
             .unicodes
@@ -81,27 +135,20 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
             .transpose()
             .wrap_err_with(context)?;
         if let Some(values) = &requested_unicodes {
-            if let Some(previous) = unicodes.get(&name)
-                && previous != values
-            {
-                bail!(
-                    "{}: conflicting Unicode assignments for this glyph",
-                    context()
-                );
-            }
-            unicodes.insert(name.clone(), values.clone());
+            record_once(&mut unicodes, &name, values.clone(), "Unicode assignments")
+                .wrap_err_with(context)?;
         }
-
         if let Some(keys) = entry.metrics_keys {
-            if let Some(previous) = glyph_keys.get(&name)
-                && *previous != keys
-            {
-                bail!(
-                    "{}: conflicting glyph metrics keys for this glyph",
-                    context()
-                );
-            }
-            glyph_keys.insert(name.clone(), keys);
+            record_once(&mut glyph_keys, &name, keys, "glyph metrics keys")
+                .wrap_err_with(context)?;
+        }
+        if let Some(alternates) = entry.alternates {
+            record_once(&mut glyph_alternates, &name, alternates, "alternates")
+                .wrap_err_with(context)?;
+        }
+        if entry.mark_color != MarkColorEdit::Keep {
+            record_once(&mut mark_colors, &name, entry.mark_color, "mark colours")
+                .wrap_err_with(context)?;
         }
 
         if !glyphs.contains_key(&name) {
@@ -139,8 +186,26 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
         }
 
         if let Some(input) = entry.layer {
-            layers.push((*glyph_id, source_id, input, context()));
+            layers.push((*glyph_id, location, input, context()));
         }
+    }
+
+    for (name, edit) in mark_colors {
+        let color = match edit {
+            MarkColorEdit::Keep => continue,
+            MarkColorEdit::Set(color) => Some(color),
+            MarkColorEdit::Clear => None,
+        };
+        let Some(&(glyph_id, _)) = glyphs.get(&name) else {
+            bail!("a mark colour names glyph `{name}`, which the batch did not plan");
+        };
+        intents.push(
+            SetMarkColor {
+                glyph_ids: vec![glyph_id],
+                color,
+            }
+            .into(),
+        );
     }
 
     // Layers come after every glyph is planned, so a component may name a glyph
@@ -150,23 +215,33 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
         None => font.glyph_id_for(name),
     };
     let mut written = BTreeSet::new();
-    for (glyph_id, source_id, input, context) in layers {
-        let existing = font.layer_id_for_source(glyph_id, source_id);
-        let layer_id = existing.unwrap_or_else(LayerId::new);
+    for (glyph_id, location, input, context) in layers {
+        let existing = layer_at(&font, glyph_id, &location);
+        let layer_id = existing.unwrap_or_default();
         if existing.is_none() {
-            intents.push(
-                CreateGlyphLayer {
-                    layer_id,
-                    glyph_id,
-                    source_id,
-                }
-                .into(),
-            );
+            intents.push(create_layer(layer_id, glyph_id, &location));
         }
         intents.extend(
             input
-                .into_intents(glyph_id, layer_id, &base_glyph, &mut written)
+                .into_intents(glyph_id, layer_id, &base_glyph, &font, &mut written)
                 .wrap_err_with(|| context)?,
+        );
+    }
+
+    // Alternates follow the glyphs, so an alternate glyph the batch creates
+    // exists.
+    for (name, inputs) in &glyph_alternates {
+        let Some(&(glyph_id, _)) = glyphs.get(name) else {
+            bail!("alternates name glyph `{name}`, which the batch did not create");
+        };
+        let alternates = planned_alternates(&font, glyph_id, inputs, &base_glyph)
+            .wrap_err_with(|| format!("glyph {name:?} alternates"))?;
+        intents.push(
+            SetGlyphAlternates {
+                glyph_id,
+                alternates,
+            }
+            .into(),
         );
     }
 
@@ -184,4 +259,38 @@ pub(crate) fn set_glyphs(args: &SetGlyphsArgs) -> Result<AuthoringReport> {
         &FontIntentSet { intents },
         |font| check_written_keys(font, &written),
     )
+}
+
+/// The alternates `inputs` give `glyph_id`, in order. Each keeps the id of
+/// an existing alternate with the same glyph and condition, so a batch that
+/// writes the list back unchanged changes nothing.
+///
+/// # Errors
+///
+/// Rejects an alternate glyph `base_glyph` can't find and condition text the
+/// font can't read.
+fn planned_alternates(
+    font: &shift_font::Font,
+    glyph_id: GlyphId,
+    inputs: &[AlternateInput],
+    base_glyph: &dyn Fn(&str) -> Result<GlyphId>,
+) -> Result<Vec<GlyphAlternate>> {
+    let existing = font
+        .glyph(glyph_id)
+        .map(Glyph::alternates)
+        .unwrap_or_default();
+    let mut alternates: Vec<GlyphAlternate> = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let context = || format!("alternate {:?}", input.glyph);
+        let alternate_glyph = base_glyph(&input.glyph).wrap_err_with(context)?;
+        let condition = parse_when(font, Some(glyph_id), &input.when).wrap_err_with(context)?;
+        let kept = existing.iter().find(|alternate| {
+            alternate.glyph() == alternate_glyph
+                && *alternate.condition() == condition
+                && !alternates.iter().any(|taken| taken.id() == alternate.id())
+        });
+        let id = kept.map_or_else(AlternateId::new, GlyphAlternate::id);
+        alternates.push(GlyphAlternate::new(id, condition, alternate_glyph));
+    }
+    Ok(alternates)
 }

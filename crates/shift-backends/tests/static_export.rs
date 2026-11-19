@@ -2,17 +2,19 @@
 //! instance: the same outlines, advances and kerning, measured in the
 //! compiled binaries.
 
+mod outlines;
 mod support;
 
 use std::path::Path;
 use std::str::FromStr;
 
 use harfrust::{Feature, ShapeOptions, ShaperData, ShaperInstance, Tag, UnicodeBuffer, Variation};
-use kurbo::{BezPath, ParamCurve, ParamCurveNearest, PathSeg};
+use kurbo::BezPath;
+use outlines::{Outline, outline_distance};
 use shift_backends::{BinaryEncodings, ColorTables, ExportError, FontExporter, StaticInstanceFile};
 use shift_font::test_support::sample_variable_font;
 use shift_font::{Font, NamedInstance};
-use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::outline::DrawSettings;
 use skrifa::prelude::{LocationRef, Size};
 use skrifa::{FontRef, GlyphId, MetadataProvider};
 use support::mutatorsans;
@@ -29,55 +31,6 @@ const TOLERANCE: f32 = 1.0;
 /// into different quadratic segments; the shapes agree only to within the
 /// conversion's accuracy plus rounding.
 const OUTLINE_TOLERANCE: f64 = 1.5;
-
-/// A glyph's outline as a path.
-#[derive(Default)]
-struct Outline(BezPath);
-
-impl OutlinePen for Outline {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.0.move_to((f64::from(x), f64::from(y)));
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.0.line_to((f64::from(x), f64::from(y)));
-    }
-    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
-        self.0.quad_to(
-            (f64::from(cx0), f64::from(cy0)),
-            (f64::from(x), f64::from(y)),
-        );
-    }
-    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        self.0.curve_to(
-            (f64::from(cx0), f64::from(cy0)),
-            (f64::from(cx1), f64::from(cy1)),
-            (f64::from(x), f64::from(y)),
-        );
-    }
-    fn close(&mut self) {
-        self.0.close_path();
-    }
-}
-
-/// The farthest any point of `from`, sampled along each segment, lies from
-/// the nearest point of `to`.
-fn farthest_from(from: &BezPath, to: &BezPath) -> f64 {
-    let targets: Vec<PathSeg> = to.segments().collect();
-    from.segments()
-        .flat_map(|segment| (0..=8).map(move |step| segment.eval(f64::from(step) / 8.0)))
-        .map(|point| {
-            targets
-                .iter()
-                .map(|target| target.nearest(point, 1e-3).distance_sq.sqrt())
-                .fold(f64::INFINITY, f64::min)
-        })
-        .fold(0.0, f64::max)
-}
-
-/// How far apart two outlines run at most, measured both ways.
-fn outline_distance(a: &BezPath, b: &BezPath) -> f64 {
-    farthest_from(a, b).max(farthest_from(b, a))
-}
 
 /// The user location the variable binary's `fvar` gives the instance
 /// named `name`, as `(tag, value)` pairs.
@@ -311,4 +264,114 @@ fn an_instance_without_a_postscript_name_drops_what_postscript_names_leave_out()
     let files = FontExporter::static_instance_files(&font).unwrap();
 
     assert_eq!(files[0].file_name, "Solenoid-CoarseWiden2.ttf");
+}
+
+/// Weight 100–900 with masters at 400 and 900, `dollar` (a 100-wide bar,
+/// advance 500) and `dollar.heavy` (a 300-wide bar, advance 650), with
+/// `dollar.heavy` drawn for `dollar` from Weight 800, and instances
+/// Regular (400) and Black (900).
+fn heavy_dollar_font() -> Fixture<Font> {
+    use shift_font::{
+        AlternateId, Axis, Condition, ConditionRange, Contour, DesignLocation, ExternalLocation,
+        Glyph, GlyphAlternate, GlyphLayer, LayerId, PointType, Source,
+    };
+
+    let mut font = Font::new();
+    font.metadata_mut().family_name = Some("Heavy Dollar".to_string());
+    let weight = Axis::new("wght".into(), "Weight".into(), 100.0, 400.0, 900.0);
+    let weight_id = weight.id();
+    font.add_axis(weight)?;
+    let regular = font.default_source_id().ok_or("no default source")?;
+    font.source_mut(regular)
+        .ok_or("no default source")?
+        .set_location(DesignLocation::from([(weight_id, 400.0)]));
+    let black = font.add_source(Source::new(
+        "Black".into(),
+        DesignLocation::from([(weight_id, 900.0)]),
+    ));
+    let mut bar = |name: &str, unicode: Option<char>, width: f64, advance: f64| -> Fixture<_> {
+        let mut glyph = Glyph::new(name);
+        if let Some(unicode) = unicode {
+            glyph.set_unicodes(vec![u32::from(unicode)]);
+        }
+        for source in [regular, black] {
+            let mut layer = GlyphLayer::with_width(LayerId::new(), source, advance);
+            let mut contour = Contour::new();
+            for (x, y) in [(0.0, 0.0), (width, 0.0), (width, 700.0), (0.0, 700.0)] {
+                contour.add_point(x, y, PointType::OnCurve, false);
+            }
+            contour.close();
+            layer.add_contour(contour);
+            glyph.set_layer(layer);
+        }
+        Ok(font.insert_glyph(glyph)?)
+    };
+    let heavy = bar("dollar.heavy", None, 300.0, 650.0)?;
+    let dollar = bar("dollar", Some('$'), 100.0, 500.0)?;
+    font.set_glyph_alternates(
+        dollar,
+        vec![GlyphAlternate::new(
+            AlternateId::new(),
+            Condition::all([ConditionRange::new(weight_id, Some(800.0), None)]),
+            heavy,
+        )],
+    )?;
+    let instance = |name: &str, value: f64| {
+        NamedInstance::new(
+            name.to_string(),
+            ExternalLocation::from([(weight_id, value)]),
+            None,
+        )
+    };
+    font.set_named_instances(vec![instance("Regular", 400.0), instance("Black", 900.0)])?;
+    Ok(font)
+}
+
+/// The name, ink width and advance of the glyph `character` maps to in a
+/// static binary.
+fn mapped_glyph(bytes: &[u8], character: char) -> Fixture<(String, f64, f32)> {
+    let font = FontRef::new(bytes)?;
+    let gid = font
+        .charmap()
+        .map(character)
+        .ok_or_else(|| format!("{character:?} is not mapped"))?;
+    let name = font
+        .glyph_names()
+        .get(gid)
+        .ok_or("mapped glyphs have names")?
+        .to_string();
+    let (outline, advance) = outline_and_advance(bytes, &[], character)?;
+    let ink = kurbo::Shape::bounding_box(&outline).width();
+    Ok((name, ink, advance))
+}
+
+#[test]
+fn a_static_instance_draws_the_alternate_that_holds_there_as_its_glyph() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let drawn = static_dollars(temp.path()).map_err(|error| error.to_string());
+
+    // Regular draws dollar itself; Black draws dollar.heavy under dollar's name.
+    assert_eq!(
+        drawn,
+        Ok(vec![
+            ("dollar".to_string(), 100.0, 500.0),
+            ("dollar".to_string(), 300.0, 650.0)
+        ])
+    );
+}
+
+/// The glyph `$` maps to in each static instance of [`heavy_dollar_font`]
+/// exported into `directory`, as [`mapped_glyph`] reads it.
+fn static_dollars(directory: &Path) -> Fixture<Vec<(String, f64, f32)>> {
+    let written = FontExporter::new().export_static_instances_with(
+        &heavy_dollar_font()?,
+        directory,
+        &BinaryEncodings::ttf(),
+        &ColorTables::default(),
+    )?;
+    written
+        .iter()
+        .map(|result| mapped_glyph(&std::fs::read(&result.path)?, '$'))
+        .collect()
 }

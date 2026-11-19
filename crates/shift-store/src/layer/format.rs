@@ -12,7 +12,20 @@ const MAX_LIB_VALUES: usize = 1_000_000;
 
 pub(crate) fn encode_layer(layer: &font::GlyphLayer) -> Result<Vec<u8>, StoreError> {
     validate_layer(layer).map_err(StoreError::InvalidLayerPayload)?;
-    let bytes = rmp_serde::to_vec(layer)?;
+    // Component conditions are stored as rows of their own, so a layer
+    // with them writes the bytes it would without them.
+    let has_conditions = layer
+        .components_iter()
+        .any(|component| !component.condition().is_always());
+    let bytes = if has_conditions {
+        let mut stripped = layer.clone();
+        for component in stripped.components_iter_mut() {
+            component.set_condition(font::Condition::always());
+        }
+        rmp_serde::to_vec(&stripped)?
+    } else {
+        rmp_serde::to_vec(layer)?
+    };
     check_layer_length(bytes.len() as u64)?;
     Ok(bytes)
 }
@@ -61,6 +74,9 @@ fn validate_layer(layer: &font::GlyphLayer) -> Result<(), String> {
             (transform.t_center_y, "component center y"),
         ] {
             validate_finite(value, field)?;
+        }
+        for (_, value) in component.location().iter() {
+            validate_finite(*value, "component location")?;
         }
     }
 

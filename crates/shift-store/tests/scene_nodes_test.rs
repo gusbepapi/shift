@@ -259,7 +259,12 @@ fn a_version_3_document_upgrades_to_one_page_and_keeps_its_scene_edits() {
     drop(ShiftStore::create_document(&path, &sample_font()).unwrap());
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "ALTER TABLE glyphs DROP COLUMN left_metrics_key;
+        "DROP TABLE glyph_component_conditions;
+         DROP TABLE glyph_alternate_conditions;
+         DROP TABLE glyph_alternates;
+         DROP TABLE glyph_layer_locations;
+         DROP TABLE glyph_axes;
+         ALTER TABLE glyphs DROP COLUMN left_metrics_key;
          ALTER TABLE glyphs DROP COLUMN right_metrics_key;
          ALTER TABLE glyphs DROP COLUMN width_metrics_key;
          ALTER TABLE glyphs DROP COLUMN mark_color;

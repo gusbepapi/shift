@@ -11,6 +11,8 @@
  * change sets; until then the editor surface under test is tool/input state.
  */
 
+import { GlyphDesignspace } from "@/lib/variation/GlyphDesignspace";
+import type { GlyphSourceRow } from "@/types/glyphAxes";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +25,12 @@ import {
   type ScreenPoint,
   type ScreenVector,
 } from "@shift/editor/spaces";
-import { Editor, type GridSettings, type GridSettingsChange } from "@shift/editor";
+import {
+  Editor,
+  type GridSettings,
+  type GridSettingsChange,
+  type HistoryReplay,
+} from "@shift/editor";
 import { featureReadMessage } from "@shift/editor/text";
 import { externalAxisLocationFromRecord } from "@shift/editor/variation";
 import { effect } from "@shift/editor/signals";
@@ -61,8 +68,10 @@ import {
   type KerningPosition,
   type MetricsKeySide,
   type MarkColor,
+  type SidebearingEdit,
   type PointId,
   type SelectableId,
+  type Axis as AxisRecord,
   type NamedInstance,
   type Source,
   type SourceId,
@@ -553,7 +562,7 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
     return (
       this.glyphForId(node.glyphId)?.renderModelAt(
-        this.externalLocationCell,
+        this.editLocationCell,
         this.activeSourceIdCell,
       ) ?? null
     );
@@ -1259,6 +1268,43 @@ export class TestEditor extends Editor implements EditorTestSurface {
     await this.settle();
   }
 
+  async duplicateGlyphs(names: readonly string[]): Promise<void> {
+    await this.#actions.duplicateGlyphs(names);
+  }
+
+  async replayedStep(): Promise<HistoryReplay | null> {
+    return this.history.replayedCell.peek();
+  }
+
+  async decomposeGlyphs(names: readonly string[]): Promise<number> {
+    const decomposed = this.#actions.decomposeGlyphs(names);
+    await this.settle();
+    return decomposed;
+  }
+
+  async setSidebearings(
+    names: readonly string[],
+    left: SidebearingEdit,
+    right: SidebearingEdit,
+    allMasters = false,
+  ): Promise<void> {
+    this.#actions.setSidebearings(names, left, right, allMasters);
+    await this.settle();
+  }
+
+  async openGlyphsAsText(names: readonly string[]): Promise<string | null> {
+    return this.#actions.openGlyphsAsText(names);
+  }
+
+  async insertGlyphIntoText(name: string): Promise<boolean> {
+    return this.#actions.insertGlyphIntoText(name);
+  }
+
+  pageText(pageId: string): string {
+    const runs = this.scene.children(asNodeId(pageId)).filter((node) => node.kind === "textRun");
+    return runs.map((run) => this.text.formatItems(this.text.items(run))).join("\n");
+  }
+
   async renameSource(source: string, name: string): Promise<void> {
     await this.#actions.renameSource(source, name);
     await this.settle();
@@ -1503,6 +1549,14 @@ export class TestEditor extends Editor implements EditorTestSurface {
 
   fontOverview(): FontOverview {
     return this.#reads.font.getFont();
+  }
+
+  glyphSource(name: string): GlyphSourceRow | null {
+    return new GlyphDesignspace(this).sourceNamed(name);
+  }
+
+  glyphAxis(tag: string): AxisRecord | null {
+    return new GlyphDesignspace(this).axisTagged(tag)?.record ?? null;
   }
 
   source(selector: SourceSelection): Source | null {

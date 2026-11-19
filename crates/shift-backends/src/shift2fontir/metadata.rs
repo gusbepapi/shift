@@ -6,10 +6,10 @@ use fontdrasil::orchestration::{Access, Work};
 use fontdrasil::types::Axes;
 use fontir::error::Error;
 use fontir::ir::{
-    DEFAULT_VENDOR_ID, FeaturesSource, GlobalMetric, GlobalMetricsBuilder, GlyphOrder, NameBuilder,
-    PreliminaryGdefCategories, StaticMetadata,
+    DEFAULT_VENDOR_ID, FeatureSources, FeaturesSource, GlobalMetric, GlobalMetricsBuilder,
+    GlyphOrder, NameBuilder, PreliminaryGdefCategories, StaticMetadata,
 };
-use fontir::orchestration::{Context, WorkId};
+use fontir::orchestration::{Context, Flags, WorkId};
 use shift_font::{Source, SourceList, StandardMetrics};
 use write_fonts::types::NameId;
 
@@ -73,10 +73,16 @@ impl Work<Context, WorkId, Error> for StaticMetadataWork {
         let named_instances =
             to_ir_named_instances(&self.snapshot.named_instances, &self.snapshot.axes)
                 .map_err(|error| Error::InvalidEntry("Shift named instance", error.to_string()))?;
+        // With VARC, glyph axes are hidden fvar axes the variable components
+        // set; without it, fontc decomposes those components and drops them.
+        let mut fvar_axes = self.snapshot.ir_axes.clone();
+        if context.flags.contains(Flags::EMIT_VARC_TABLE) {
+            fvar_axes.extend(self.snapshot.hidden_axes.fvar_axes());
+        }
         let mut static_metadata = StaticMetadata::new(
             self.snapshot.units_per_em,
             names.build(DEFAULT_VENDOR_ID),
-            self.snapshot.ir_axes.clone(),
+            fvar_axes,
             named_instances,
             global_locations,
             None,
@@ -84,6 +90,10 @@ impl Work<Context, WorkId, Error> for StaticMetadataWork {
             None,
             false,
         )?;
+        static_metadata.glyph_axes = self.snapshot.hidden_axes.by_glyph_name();
+        static_metadata
+            .variations
+            .clone_from(&self.snapshot.feature_variations);
         static_metadata.misc.version_major = version_major;
         static_metadata.misc.version_minor = version_minor;
 
@@ -105,6 +115,8 @@ impl Work<Context, WorkId, Error> for StaticMetadataWork {
                 // Classes are already final: marks by category, bases and
                 // ligatures inferred from anchors in `gdef_classes`.
                 infer_from_anchors: false,
+                // Shift excludes no glyphs from GDEF classes.
+                excluded: Default::default(),
                 mark_category_glyphs: self
                     .snapshot
                     .mark_category_glyphs
@@ -206,7 +218,7 @@ impl Work<Context, WorkId, Error> for GlobalMetricsWork {
 
     fn exec(&self, context: &Context) -> Result<(), Error> {
         let metadata = context.static_metadata.get();
-        let axes = Axes::from(self.snapshot.ir_axes.clone());
+        let axes = &metadata.all_source_axes;
         let mut metrics = GlobalMetricsBuilder::new();
 
         for source in self
@@ -215,7 +227,7 @@ impl Work<Context, WorkId, Error> for GlobalMetricsWork {
             .iter()
             .filter(|source| source.is_master())
         {
-            let location = normalized_source_location(source, &self.snapshot.axes, &axes)?;
+            let location = normalized_source_location(source, &self.snapshot.axes, axes)?;
             let standard = StandardMetrics::of(source, &self.snapshot.metric_definitions);
 
             metrics.set_if_some(GlobalMetric::Ascender, location.clone(), standard.ascender);
@@ -293,7 +305,7 @@ impl Work<Context, WorkId, Error> for FeatureWork {
             None if authored.trim().is_empty() => FeaturesSource::empty(),
             None => FeaturesSource::from_string(authored.to_string()),
         };
-        context.features.set(features);
+        context.features.set(FeatureSources::single(features));
         Ok(())
     }
 }

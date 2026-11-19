@@ -107,6 +107,7 @@ Findings carry a stable code, a fixed severity, the glyph, master, and contour c
 - `D` axes and masters: no master at the default (`D001`), masters at the same location (`D002`), a master outside its axis (`D003`), a mapping that turns back on itself (`D004`), an axis that runs past its last master (`D005`).
 - `I` interpolation against the default master: a glyph missing from the default master (`I001`), incompatible structure (`I002`), compatible layers that can't interpolate (`I003`), a contour whose different start point breaks the shape halfway (`I004`), a contour running the other way (`I005`), contours in each other's place (`I006`), a contour that turns inside out between masters (`I007`), masters using components differently (`I008`, a warning: compilers decompose these, Shift's preview leaves the master out).
 - `O` drawing, per master: open contours (`O001`), contours too small to draw (`O002`), coordinates that aren't numbers (`O003`), invalid advances (`O004`), a contour wholly inside another and winding the same way (`O005`), an encoded glyph that draws nothing in the default master (`O006`), a glyph that can't be drawn (`O007`). Glyphs marked not to export, and unencoded `_` part glyphs, are skipped.
+- `A` alternates and component conditions: an alternate that never wins (`A001`, a warning), because its condition holds nowhere in the axes' ranges or earlier alternates already apply wherever it does; a component with a condition (`A002`, a warning), because export can't write component conditions yet and refuses the font until they are removed.
 - `K` kerning: a pair through an empty group (`K001`), a pair naming a glyph or group not in the font (`K002`).
 - `C` and `M`, opt-in: `--charset ascii|latin1|FILE` requires characters (a file lists characters, `U+XXXX` scalars, and `U+XXXX..U+YYYY` ranges, one per line); `--mono [--width N]` requires one advance width, the most common one per master when no width is given.
 
@@ -276,6 +277,28 @@ shift glyph set Lab.shift --input - --dry-run --json < glyphs.json
 - `"format": 1` names the batch format; a `shift-cli` that reads another format refuses the file.
 - `metricsKeys` on an entry sets the glyph's keys for every source; entries for the same glyph
   must agree on them, as on `unicodes`.
+- `markColor` on an entry sets the glyph's mark colour (see [Mark colours](#mark-colours)); `null`
+  clears it and an omitted `markColor` keeps it. Entries for the same glyph must agree on it.
+
+### Mark colours
+
+A mark colour is the colour a glyph is tagged with, which the app's glyph grid shows and filters
+by. A glyph has one, whatever the source. `glyph color` tags several glyphs in one edit, or clears
+their tags:
+
+```sh
+shift glyph color Lab.shift --glyphs A,B,C --color red
+shift glyph color Lab.shift --glyphs a.ss01 --color 0.1,0.5,1,1
+shift glyph color Lab.shift --glyphs A --clear
+```
+
+- A colour is one of the twelve names Glyphs uses (`red`, `orange`, `brown`, `yellow`,
+  `lightGreen`, `darkGreen`, `lightBlue`, `darkBlue`, `purple`, `magenta`, `lightGray`,
+  `charcoal`), or any other colour as `r,g,b,a` with each channel from 0 to 1.
+- Glyphs are names or full IDs. A glyph that does not exist fails the command and no glyph changes.
+- `glyph set` entries take the same text in `markColor`, and `glyph export` writes it, so exported
+  glyphs keep their colours. `glyph inspect` prints it, and `--json` reports it as `glyph.markColor`
+  (`null` without one).
 
 ### Metrics keys
 
@@ -323,7 +346,8 @@ source (the target document needs sources with those names); the default exports
 source for the target's default source. `--output PATH` writes a file instead of stdout.
 
 - Omitted `layer` authors identity only; it does not create or clear a layer.
-- Omitted `source` selects the default source. Explicit selectors accept source names or full IDs.
+- Omitted `source` selects the default source, unless the entry has a `location`. Explicit selectors
+  accept source names or full IDs.
 - A name may repeat for distinct sources. Repeated glyph/source pairs and conflicting
   supplied Unicode lists are rejected, including equivalent source name/ID selectors.
 - Layer payloads have the same replacement semantics as `layer set`.
@@ -333,6 +357,120 @@ All entries are planned before one atomic workspace application; the CLI does no
 scratch font or load unrelated geometry. Entry errors identify the glyph and one-based entry
 number; malformed JSON reports its line and column. An invalid entry leaves every canonical
 byte unchanged, including otherwise valid entries earlier in the batch.
+
+### Glyph axes and drawings anywhere
+
+A glyph can have axes of its own, such as Spread and Strike on a `dot` that an `H` is built from.
+Every value on a glyph axis is in the axis's own units. A drawing can sit anywhere in the glyph's
+design space (the font's axes plus its own): on a source, at coordinates laid over a source, or at
+coordinates alone with no source, as a Glyphs brace layer does.
+
+```sh
+shift glyph axis add Solenoid.shift dot --name Spread --min 0 --default 0 --max 100   # tag SPRD
+shift glyph axis edit Solenoid.shift dot SPRD --name Splay --tag SPLY
+shift glyph axis edit Solenoid.shift dot SPRD --max 200                 # refused if it strands a value
+shift glyph axis edit Solenoid.shift dot SPRD --max 1000 --rescale      # moves every value with it
+shift glyph axis remove Solenoid.shift dot STRK                         # refused while anything uses it
+shift layer add Solenoid.shift --glyph dot --source Regular --location SPRD=100 --input dot-spread.json
+shift layer add Solenoid.shift --glyph H --location BLED=50 --input H-brace.json   # no source
+shift layer move Solenoid.shift --glyph dot --source Regular --location SPRD=100 --to-source Regular --to-location SPRD=80
+shift layer remove Solenoid.shift --glyph H --location BLED=50
+```
+
+- An omitted `--tag` is made from the name: its first letter and the consonants after it
+  (`Spread` is `SPRD`). Tags are unique across font axes and every glyph's axes.
+- A drawing's place is `--source`, `--location`, or both. With `--location` and no `--source` the
+  drawing sits on no source, and every axis the coordinates don't name is at its default. The same
+  rule names a drawing in `layer set`, `move` and `remove`, and `--to-source`/`--to-location` give
+  `layer move` its new place.
+- A range edit never moves a value. One that would leave a drawing coordinate or a component
+  location outside the range is refused, and the error lists each value with its glyph and drawing.
+  `--rescale` maps every value on the axis onto the new range instead, linearly on each side of the
+  default, in this glyph's drawings and in every component in the font that sets the axis.
+- `remove` is refused while a drawing or a component sets a value on the axis, and lists them.
+- A component's `location` sets its base glyph's own axes as well as font axes, by tag:
+  `{"base": "dot", "location": {"SPRD": 60}}`. A glyph axis a component doesn't set is at its
+  default; it is never inherited from the glyph the component sits in.
+- In `glyph set`, an entry's `location` places its drawing the same way, beside `source`: with
+  `location` and no `source` the drawing sits on no source.
+
+```json
+{
+  "glyphs": [
+    {
+      "name": "dot",
+      "source": "Regular",
+      "location": { "SPRD": 100 },
+      "layer": { "advance": 0, "svgPath": "M0 0 L110 0" }
+    },
+    {
+      "name": "H",
+      "location": { "BLED": 50 },
+      "layer": { "advance": 720, "components": [{ "base": "dot", "location": { "SPRD": 80 } }] }
+    }
+  ]
+}
+```
+
+`inspect` lists each glyph's axes, and `inspect --view layers` each drawing's coordinates.
+
+### Alternates and component conditions
+
+An **alternate** is another glyph text draws in a glyph's place where a condition on the font's
+axes holds, as a designspace rule swaps `dollar` for `dollar.bled`. A glyph's alternates are tried
+in order and the first whose condition holds wins; a component of the glyph is never swapped. A
+**component condition** says where a component draws at all: nowhere its condition fails.
+
+```sh
+shift glyph alternate add Solenoid.shift dollar dollar.bled --when "Bleed >= 70"
+shift glyph alternate add Solenoid.shift dollar dollar.heavy --when wght>=700 --when wdth<=80 --at 1
+shift glyph alternate move Solenoid.shift dollar dollar.heavy --to 2
+shift glyph alternate set Solenoid.shift dollar 1 --when "BLED 80-100"     # or --glyph, --always
+shift glyph alternate remove Solenoid.shift dollar dollar.heavy           # the glyph stays
+shift component condition set Solenoid.shift H 2 --when "RSLN >= 50"     # every drawing of H
+```
+
+- A condition is one `--when` per axis range, all of which must hold. Each names the axis by tag
+  or name, then the value: `700`, `>=700`, `≥700` or `700+` from 700; `<=80` or `≤80` up to 80;
+  `400-600` or `400–600` for both ends. Ends are inclusive. Values on font axes are in **user
+  units**, as the app shows them, and are mapped through the axis mappings into the design units
+  the document stores; a glyph's own axis is in its own units.
+- An alternate is named by its position from 1 or by the glyph it draws; a component by its
+  position from 1 (as `glyph export` lists them) or by the glyph it draws, in the default source's
+  drawing unless `--source` names another.
+- Alternates read font axes only. A component condition is evaluated where its glyph is drawn,
+  before the component's own location applies, so it reads font axes and the glyph's own axes,
+  never the axes of the glyph the component draws. Both refusals, an unknown axis, a reversed
+  range, an alternate that is the glyph itself and a missing glyph are reported without writing.
+- A component condition is set in every drawing of the glyph whose components draw the same
+  glyphs in the same order, since a component exists in all of them.
+- A report, `glyph inspect` and `inspect --view glyphs` list the alternates in order and warn about
+  one that is never used; `check` reports it as `A001`. Compiled fonts carry alternates as `rvrn`
+  substitutions (`compile`, `export`, the compiled path of `proof`), a designspace as
+  `<rules processing="first">`, and a static instance (`compile --static`) draws the alternate
+  that holds there in the glyph's place. They don't carry component conditions: `compile` and
+  `export` refuse a font with any, listing each, and `check` warns about them as `A002`.
+  `proof` still draws such a font, with each conditional component drawn everywhere, and says
+  so: a `warning:` line on stderr and a `component-conditions-drawn-everywhere` entry in the
+  `--json` report's `warnings`. `glyph inspect --location` says which
+  glyph is `drawn as` there, and its structure view marks each component condition `draws here`
+  or `hidden here`; the resolved outline leaves hidden components out.
+- In `glyph set`, an entry's `alternates` replaces the glyph's list (`[]` removes them; omitted
+  keeps them), and a component's `condition` lists its ranges. Give the same condition in every
+  drawing's entry. `glyph export` writes both, by tag, and adds the alternate glyphs to the batch.
+
+```json
+{
+  "name": "dollar",
+  "alternates": [{ "glyph": "dollar.bled", "when": ["BLED >= 70"] }],
+  "layer": {
+    "advance": 500,
+    "components": [{ "base": "dot" }, { "base": "dot", "condition": ["RSLN >= 50"] }]
+  }
+}
+```
+
+Compiled fonts carry alternates; they do not carry component conditions yet.
 
 ### Font metadata and source metrics
 
@@ -386,6 +524,8 @@ name glyphs it leaves out. With none, the whole font is packed as it is.
 ```sh
 shift axis set Lab.shift wght --name Mass --tag WGHT
 shift axis set Lab.shift wght --min 100 --max 1000
+shift axis set Lab.shift opsz --hidden
+shift axis set Lab.shift opsz --visible
 ```
 
 Select an axis by its current tag or full stable ID. `axis set` preserves identity,
@@ -396,6 +536,11 @@ default master must remain at the replacement default. Labels and named instance
 must also remain valid. Mapped axes allow naming edits only when their kind/range
 is unchanged; changing mapped bounds/defaults requires explicit mapping authoring.
 Discrete axes permit name/tag edits only. Empty edits and duplicate tags fail.
+`--hidden` sets the axis's hidden flag, which compiles to the OpenType `fvar`
+`HIDDEN_AXIS` flag so user interfaces do not show the axis; `--visible` clears
+it. It is the same flag as the Hidden checkbox in Settings → Axes. `axis add
+--hidden` creates the axis hidden, and `inspect --view axes` reports the flag
+in its `hidden` column and JSON field.
 
 ### Named instances
 

@@ -1,9 +1,11 @@
 //! Identity-free JSON contracts for CLI authoring.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 
-use shift_font::{DecomposedTransform, MetricsKeySide, PointType};
+use shift_font::{ComponentInheritance, DecomposedTransform, MarkColor, MetricsKeySide, PointType};
+
+use super::mark_color::parse_mark_color;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,6 +61,31 @@ pub(super) struct ComponentInput {
     pub base: String,
     #[serde(default)]
     pub transform: Option<TransformInput>,
+    /// The axes this component sets for its base glyph, by axis tag, in
+    /// design units: font axes or the base glyph's own axes, such as
+    /// `{"BLED": 100, "SPRD": 60}`.
+    #[serde(default)]
+    pub location: BTreeMap<String, f64>,
+    /// Where the base glyph takes the axes `location` doesn't set:
+    /// `parent` (the default) or `font`.
+    #[serde(default)]
+    pub inheritance: ComponentInheritance,
+    /// Where the component draws, one range per text as `--when` reads them,
+    /// such as `["RSLN >= 50"]`; empty draws it everywhere. Give the same
+    /// condition in every drawing of the glyph.
+    #[serde(default)]
+    pub condition: Vec<String>,
+}
+
+/// One of a glyph's alternates: the glyph drawn in its place where every
+/// range of `when` holds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AlternateInput {
+    pub glyph: String,
+    /// One range per text as `--when` reads them; empty always applies.
+    #[serde(default)]
+    pub when: Vec<String>,
 }
 
 /// A component transform: Shift's decomposed form, or an affine
@@ -114,9 +141,43 @@ pub(super) struct GlyphEntryInput {
     pub unicodes: Option<Vec<String>>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Where the drawing sits, by axis tag in design units: font axes or the
+    /// glyph's own axes, laid over `source`, or over no source without one.
+    #[serde(default)]
+    pub location: Option<BTreeMap<String, f64>>,
     /// Metrics keys that apply in every source the glyph's layers do not override.
     #[serde(default)]
     pub metrics_keys: Option<MetricsKeysInput>,
+    /// The glyph's alternates, in the order they are tried, replacing any it
+    /// has; omitted keeps them, and an empty list removes them.
+    #[serde(default)]
+    pub alternates: Option<Vec<AlternateInput>>,
+    /// The glyph's mark colour; an entry without `markColor` keeps it.
+    #[serde(default)]
+    pub mark_color: MarkColorEdit,
     #[serde(default)]
     pub layer: Option<LayerInput>,
+}
+
+/// What a glyph entry does to the glyph's mark colour.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub(super) enum MarkColorEdit {
+    /// No `markColor`: the glyph keeps its colour.
+    #[default]
+    Keep,
+    /// A named colour such as `"red"`, or `"r,g,b,a"` text for any other.
+    Set(MarkColor),
+    /// `null`: the glyph's colour is removed.
+    Clear,
+}
+
+impl<'de> Deserialize<'de> for MarkColorEdit {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<String>::deserialize(deserializer)? {
+            None => Ok(Self::Clear),
+            Some(text) => parse_mark_color(&text)
+                .map(Self::Set)
+                .map_err(serde::de::Error::custom),
+        }
+    }
 }

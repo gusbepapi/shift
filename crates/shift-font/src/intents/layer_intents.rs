@@ -576,9 +576,7 @@ impl LayerIntent for SetComponentTransforms {
 
         let layer = font.require_layer_mut(*layer_id)?;
         for component_id in component_ids {
-            if layer.component(component_id).is_none() {
-                return Err(CoreError::InvalidComponentId(component_id.to_string()));
-            }
+            layer.component(component_id).require(component_id)?;
         }
         let (transforms, _) = transforms.as_chunks::<{ DecomposedTransform::VALUE_COUNT }>();
         for (component_id, values) in component_ids.iter().zip(transforms) {
@@ -613,13 +611,79 @@ impl LayerIntent for SetComponentAlignment {
         } = self;
         let layer = font.require_layer_mut(*layer_id)?;
         for component_id in component_ids {
-            if layer.component(component_id).is_none() {
-                return Err(CoreError::InvalidComponentId(component_id.to_string()));
-            }
+            layer.component(component_id).require(component_id)?;
         }
         for component in layer.components_iter_mut() {
             if component_ids.contains(&component.id()) {
                 component.set_alignment(*alignment);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Sets where components draw their base glyphs: the axes each one sets,
+/// and where it takes the rest from.
+///
+/// Each component's location replaces the one it had, so an empty location
+/// removes every override. Which axes a component sets is part of its
+/// layer's structure: masters that set different axes stop interpolating
+/// together, so an edit meant for every master names each master's layer.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
+pub struct SetComponentLocations {
+    pub layer_id: LayerId,
+    pub component_ids: Vec<ComponentId>,
+    /// One per component, in design units of the font's axes.
+    pub locations: Vec<DesignLocation>,
+    /// One per component.
+    pub inheritances: Vec<ComponentInheritance>,
+}
+
+impl LayerIntent for SetComponentLocations {
+    fn layer_id(&self) -> &LayerId {
+        &self.layer_id
+    }
+
+    fn apply(&self, font: &mut Font) -> CoreResult<()> {
+        let Self {
+            layer_id,
+            component_ids,
+            locations,
+            inheritances,
+        } = self;
+        if locations.len() != component_ids.len() || inheritances.len() != component_ids.len() {
+            return Err(CoreError::InvalidPositionUpdateInput {
+                kind: "component locations",
+                message: format!(
+                    "expected one location and one inheritance for each of {} components, \
+                     got {} and {}",
+                    component_ids.len(),
+                    locations.len(),
+                    inheritances.len()
+                ),
+            });
+        }
+        for (component_id, location) in component_ids.iter().zip(locations) {
+            location
+                .iter()
+                .map(|(_, value)| *value)
+                .require_finite(Coordinates::ComponentLocations)?;
+            let base_glyph_id = font
+                .require_layer(*layer_id)?
+                .component(component_id)
+                .require(component_id)?
+                .base_glyph_id();
+            font.check_component_location(*layer_id, component_id, base_glyph_id, location)?;
+        }
+
+        let layer = font.require_layer_mut(*layer_id)?;
+        for ((component_id, location), inheritance) in
+            component_ids.iter().zip(locations).zip(inheritances)
+        {
+            if let Some(component) = layer.component_mut(component_id) {
+                component.set_location(location.clone());
+                component.set_inheritance(*inheritance);
             }
         }
         Ok(())
@@ -647,9 +711,7 @@ impl LayerIntent for RemoveComponents {
         {
             let layer = font.require_layer_mut(*layer_id)?;
             for component_id in component_ids {
-                if layer.component(component_id).is_none() {
-                    return Err(CoreError::InvalidComponentId(component_id.to_string()));
-                }
+                layer.component(component_id).require(component_id)?;
             }
             for component_id in component_ids {
                 layer.remove_component(component_id);
@@ -678,11 +740,29 @@ impl LayerIntent for DecomposeComponents {
             layer_id,
             component_ids,
         } = self;
+        font.decompose_components(*layer_id, component_ids)
+    }
+}
+
+impl Font {
+    /// Replaces `component_ids` of a layer with the contours they draw, at
+    /// the layer's source, nested components flattened; the layer's anchors
+    /// are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidComponentId`] for a component the layer
+    /// lacks, and the font's error when a component cannot be resolved.
+    pub(crate) fn decompose_components(
+        &mut self,
+        layer_id: LayerId,
+        component_ids: &[ComponentId],
+    ) -> CoreResult<()> {
+        let font = self;
+        let layer_id = &layer_id;
         let layer = font.require_layer(*layer_id)?;
         for component_id in component_ids {
-            if layer.component(component_id).is_none() {
-                return Err(CoreError::InvalidComponentId(component_id.to_string()));
-            }
+            layer.component(component_id).require(component_id)?;
         }
         let resolved_contours = font.layer_component_contours(
             *layer_id,
@@ -1184,6 +1264,13 @@ impl LayerIntent for ReplaceGlyphLayerContent {
                     base_glyph_id,
                 });
             }
+            font.check_component_location(
+                *layer_id,
+                &component.id(),
+                base_glyph_id,
+                component.location(),
+            )?;
+            font.check_component_condition(font.require_glyph(glyph_id)?, component)?;
         }
         let mut layer = font
             .layer(*layer_id)

@@ -121,14 +121,16 @@ pub(crate) fn realign_attached_components<'a>(
     changed_layers
 }
 
-/// The component glyph's own anchors at `layer`'s source; none when it has no layer there.
+/// The component glyph's own anchors at `layer`'s source; none when it has no
+/// layer there or `layer` has no source.
 fn base_anchors<'font>(
     font: &'font Font,
     component: &Component,
     layer: &GlyphLayer,
 ) -> &'font [Anchor] {
     font.glyph(component.base_glyph_id())
-        .and_then(|glyph| glyph.layer_for_source(layer.source_id()))
+        .zip(layer.source_id())
+        .and_then(|(glyph, source_id)| glyph.layer_for_source(source_id))
         .map_or(&[], GlyphLayer::anchors)
 }
 
@@ -241,6 +243,41 @@ pub fn follow_anchors<A: AnchorLike>(components: &[FollowingComponent<'_, A>]) -
         placed_now.push((transform.to_matrix(), component.anchors));
     }
     following
+}
+
+/// One component of a composite as anchored placement reads it.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacingComponent<'a, A> {
+    pub alignment: ComponentAlignment,
+    pub transform: DecomposedTransform,
+    /// The component glyph's own anchors where the component draws it.
+    pub anchors: &'a [A],
+}
+
+/// Returns where each component of a composite sits, anchored ones on their
+/// anchors, when nothing is being edited.
+///
+/// Each component's anchors are read where it draws its glyph, so a mark
+/// whose location is set elsewhere sits on its anchor as drawn there, not
+/// as its glyph's master places it. This is [`follow_anchors`] with no edit
+/// in progress: the same rule.
+pub fn anchored_placements<A: AnchorLike>(
+    components: &[PlacingComponent<'_, A>],
+) -> Vec<DecomposedTransform> {
+    let following: Vec<_> = components
+        .iter()
+        .map(|component| FollowingComponent {
+            alignment: component.alignment,
+            transform: component.transform,
+            accepted_transform: Some(component.transform),
+            anchors: component.anchors,
+            accepted_anchors: component.anchors,
+        })
+        .collect();
+    follow_anchors(&following)
+        .into_iter()
+        .map(|following| following.transform)
+        .collect()
 }
 
 impl DecomposedTransform {

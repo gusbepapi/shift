@@ -51,6 +51,7 @@ fn weight_axis(path: &Path, mutation: MutationArgs) -> AddAxisArgs {
         minimum: 100.0,
         default: 400.0,
         maximum: 900.0,
+        hidden: false,
         mutation,
     }
 }

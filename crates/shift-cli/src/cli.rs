@@ -4,10 +4,19 @@ use anstyle::{AnsiColor, Effects};
 use clap::builder::styling::Styles;
 use clap::{Args, ColorChoice, Parser, Subcommand, ValueEnum, ValueHint};
 
+use shift_font::MarkColor;
+
+use crate::authoring::parse_mark_color;
 use crate::glyph_inspect::GlyphInspectView;
 use crate::inspect::InspectView;
 use crate::proof::ProofArgs;
 
+mod alternate;
+pub(crate) use alternate::{
+    AddAlternateArgs, AlternateSelectorArgs, ComponentCommand, ComponentConditionCommand,
+    ConditionArgs, GlyphAlternateCommand, MoveAlternateArgs, RemoveAlternateArgs, SetAlternateArgs,
+    SetComponentConditionArgs,
+};
 mod color;
 pub(crate) use color::{
     ColorCommand, ColorGlyphCommand, PaletteCommand, RemoveColorGlyphArgs, SetColorGlyphArgs,
@@ -15,6 +24,11 @@ pub(crate) use color::{
 };
 mod font;
 pub(crate) use font::{FontInfoArgs, PackFontArgs, SetFontArgs};
+mod glyph_axis;
+pub(crate) use glyph_axis::{
+    AddGlyphAxisArgs, EditGlyphAxisArgs, GlyphAxisCommand, GlyphAxisRangeArgs,
+    GlyphAxisRangeEditArgs, RemoveGlyphAxisArgs,
+};
 mod page;
 pub(crate) use page::{AddPageArgs, ListPagesArgs, PageCommand, RemovePageArgs, RenamePageArgs};
 mod kerning;
@@ -126,7 +140,13 @@ pub(crate) enum Command {
         command: GlyphCommand,
     },
 
-    /// Author sparse glyph layers.
+    /// Author where a glyph's components draw.
+    Component {
+        #[command(subcommand)]
+        command: ComponentCommand,
+    },
+
+    /// Author a glyph's drawings: on a source, or anywhere in its design space.
     Layer {
         #[command(subcommand)]
         command: LayerCommand,
@@ -166,7 +186,7 @@ pub(crate) enum AxisCommand {
     /// Add a continuous axis.
     Add(AddAxisArgs),
 
-    /// Edit axis naming or range without relocating masters or product presets.
+    /// Edit axis naming, range, or visibility without relocating masters or product presets.
     Set(SetAxisArgs),
 }
 
@@ -189,6 +209,26 @@ pub(crate) enum GlyphCommand {
 
     /// Write glyphs from any font source as the JSON `glyph set` reads.
     Export(ExportGlyphsArgs),
+
+    /// Tag glyphs with a mark colour, the colour the glyph grid shows and
+    /// filters by, or clear it.
+    ///
+    /// A glyph has one mark colour, whatever the source. Every named glyph
+    /// changes in one edit, or none does.
+    Color(MarkColorArgs),
+
+    /// Author axes only one glyph varies along.
+    Axis {
+        #[command(subcommand)]
+        command: GlyphAxisCommand,
+    },
+
+    /// Author the glyphs text draws in a glyph's place at some locations,
+    /// such as dollar.bled where Bleed is at least 70.
+    Alternate {
+        #[command(subcommand)]
+        command: GlyphAlternateCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -201,6 +241,12 @@ pub(crate) enum LayerCommand {
 
     /// Copy one glyph's authored layer to another source with fresh internal ids.
     Copy(CopyLayerArgs),
+
+    /// Move one drawing to another place, keeping its content and identity.
+    Move(MoveLayerArgs),
+
+    /// Remove one drawing, wherever it sits.
+    Remove(RemoveLayerArgs),
 }
 
 #[derive(Debug, Args)]
@@ -250,6 +296,10 @@ pub(crate) struct AddAxisArgs {
     #[arg(long = "max")]
     pub maximum: f64,
 
+    /// Create the axis hidden from user interfaces (the OpenType `fvar` hidden flag).
+    #[arg(long)]
+    pub hidden: bool,
+
     #[command(flatten)]
     pub mutation: MutationArgs,
 }
@@ -291,6 +341,38 @@ pub(crate) struct ExportGlyphsArgs {
     /// Write the JSON here instead of to stdout.
     #[arg(long, value_hint = ValueHint::FilePath)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MarkColorArgs {
+    /// Path to the canonical SQLite .shift document.
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub path: PathBuf,
+
+    /// Glyph names or full stable glyph ids; repeat or comma-separate.
+    #[arg(long, value_delimiter = ',', required = true)]
+    pub glyphs: Vec<String>,
+
+    #[command(flatten)]
+    pub color: MarkColorChoice,
+
+    #[command(flatten)]
+    pub mutation: MutationArgs,
+}
+
+/// The colour to tag glyphs with, or none to clear it.
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct MarkColorChoice {
+    /// A named colour (red, orange, brown, yellow, lightGreen, darkGreen,
+    /// lightBlue, darkBlue, purple, magenta, lightGray, charcoal), or any
+    /// other colour as r,g,b,a with each channel from 0 to 1.
+    #[arg(long, value_parser = parse_mark_color)]
+    pub color: Option<MarkColor>,
+
+    /// Remove the glyphs' mark colour.
+    #[arg(long)]
+    pub clear: bool,
 }
 
 #[derive(Debug, Args)]
@@ -362,13 +444,8 @@ pub(crate) struct LayerPayloadArgs {
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
 
-    /// Glyph name or full stable glyph id.
-    #[arg(long)]
-    pub glyph: String,
-
-    /// Source name or full stable source id.
-    #[arg(long)]
-    pub source: String,
+    #[command(flatten)]
+    pub layer: LayerPlaceArgs,
 
     /// JSON layer payload path, or - to read it from stdin.
     #[arg(long, value_hint = ValueHint::FilePath)]
@@ -376,6 +453,26 @@ pub(crate) struct LayerPayloadArgs {
 
     #[command(flatten)]
     pub mutation: MutationArgs,
+}
+
+/// One of a glyph's drawings, by where it sits: exactly on a source, or at
+/// a location.
+#[derive(Debug, Args)]
+pub(crate) struct LayerPlaceArgs {
+    /// Glyph name or full stable glyph id.
+    #[arg(long)]
+    pub glyph: String,
+
+    /// Source name or full stable source id. With --location, the source the
+    /// coordinates are laid over; without it, the drawing sits on no source.
+    #[arg(long, required_unless_present = "location")]
+    pub source: Option<String>,
+
+    /// Where the drawing sits, as TAG=VALUE on font axes or the glyph's own
+    /// axes, in design units; repeat or comma-separate values. Axes it doesn't
+    /// name take --source's value, or their default without --source.
+    #[arg(long, value_name = "TAG=VALUE", value_delimiter = ',')]
+    pub location: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -387,6 +484,42 @@ pub(crate) struct SetGlyphsArgs {
     /// JSON glyph batch path, or - to read it from stdin.
     #[arg(long, value_hint = ValueHint::FilePath)]
     pub input: PathBuf,
+
+    #[command(flatten)]
+    pub mutation: MutationArgs,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MoveLayerArgs {
+    /// Path to the canonical SQLite .shift document.
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub path: PathBuf,
+
+    /// The drawing, by its current place.
+    #[command(flatten)]
+    pub layer: LayerPlaceArgs,
+
+    /// The source the new place is laid over; without it, the drawing moves
+    /// onto no source.
+    #[arg(long = "to-source", required_unless_present = "to_location")]
+    pub to_source: Option<String>,
+
+    /// The new place as TAG=VALUE; repeat or comma-separate values.
+    #[arg(long = "to-location", value_name = "TAG=VALUE", value_delimiter = ',')]
+    pub to_location: Vec<String>,
+
+    #[command(flatten)]
+    pub mutation: MutationArgs,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RemoveLayerArgs {
+    /// Path to the canonical SQLite .shift document.
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub path: PathBuf,
+
+    #[command(flatten)]
+    pub layer: LayerPlaceArgs,
 
     #[command(flatten)]
     pub mutation: MutationArgs,
@@ -457,6 +590,12 @@ pub(crate) struct CompileArgs {
     /// Also write each compiled .ttf as WOFF2, beside it.
     #[arg(long)]
     pub woff2: bool,
+
+    /// Keep components that set their own location as variable components
+    /// in a VARC table, instead of decomposing them into outlines. Only
+    /// renderers that read VARC draw them.
+    #[arg(long)]
+    pub varc: bool,
 }
 
 /// Colour tables accepted by `shift compile --color-tables`.

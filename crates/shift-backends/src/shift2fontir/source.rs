@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use fontdrasil::coords::NormalizedLocation;
+use fontdrasil::coords::{NormalizedCoord, NormalizedLocation};
+use fontdrasil::types::Tag;
 use fontir::error::Error;
-use fontir::ir::StaticMetadata;
+use fontir::ir::{StaticMetadata, VariableFeature};
 use fontir::orchestration::{Flags, IrWork};
 use fontir::source::Source;
 use shift_font::{
-    Axis, FeatureData, FontMetadata, Glyph, Kerning, LocatedLayer, MetricDefinition, NamedInstance,
-    Source as ShiftSource, SourceId,
+    Axis, DesignLocation, FeatureData, FontMetadata, Glyph, GlyphLayer, Kerning, LayerLocation,
+    LocatedLayer, MetricDefinition, NamedInstance, Source as ShiftSource, SourceId, SourceList,
 };
 
 use crate::glyph_category::GlyphCategories;
@@ -18,12 +18,15 @@ use write_fonts::tables::gdef::GlyphClassDef;
 
 use shift_text::shaper_font::{AxisConversionError, ToGlyphClassDef, UnitsPerEm, to_ir_axes};
 
-use super::axes::normalized_source_location;
+use super::alternates::{self, AlternatesError};
+use super::axes::{normalized_design_location, normalized_source_location};
 use super::glyph::GlyphWork;
+use super::glyph_axes::{GlyphAxesError, HiddenAxes, normalized};
 use super::kerning::{KerningInstanceWork, KerningLocationsWork};
 use super::metadata::{
     ColorGlyphsWork, ColorPaletteWork, FeatureWork, GlobalMetricsWork, StaticMetadataWork,
 };
+use super::regions::Lattice;
 
 /// Describes a Shift font that cannot become an in-memory fontir source.
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +44,15 @@ pub(crate) enum ShiftIrSourceError {
 
     #[error("units per em must be a whole number in 16..=16384, got {value}")]
     InvalidUnitsPerEm { value: f64 },
+
+    #[error("cannot place the font's components: {0}")]
+    Placement(#[from] shift_font::CoreError),
+
+    #[error("cannot compile the glyph axes: {0}")]
+    GlyphAxes(#[from] GlyphAxesError),
+
+    #[error("cannot compile the alternates: {0}")]
+    Alternates(#[from] AlternatesError),
 }
 
 /// Provides fontir work backed by an immutable, shared Shift snapshot.
@@ -62,6 +74,8 @@ pub(super) struct ShiftSnapshot {
     pub metric_definitions: Vec<MetricDefinition>,
     pub axes: Vec<Axis>,
     pub ir_axes: Vec<fontdrasil::types::Axis>,
+    /// Every glyph's own axes, as the hidden axes they compile to.
+    pub hidden_axes: HiddenAxes,
     pub named_instances: Vec<NamedInstance>,
     pub sources: Vec<ShiftSource>,
     pub default_source_id: SourceId,
@@ -78,6 +92,8 @@ pub(super) struct ShiftSnapshot {
     /// Glyphs the source marks as not exported, by name. They stay available
     /// as components, which the compiler decomposes, but are not emitted.
     pub skipped_glyphs: HashSet<String>,
+    /// The `rvrn` substitutions that swap in glyphs' alternates.
+    pub feature_variations: Option<VariableFeature>,
 }
 
 impl ShiftSnapshot {
@@ -104,23 +120,99 @@ impl ShiftSnapshot {
     }
 }
 
-/// `glyph`'s drawings among `masters` (as [`ShiftSnapshot::glyph_masters`]
-/// returns them), each with its master's normalized location, in source order.
-/// A master the glyph has no drawing on is skipped.
-pub(super) fn located_master_layers<'a>(
-    glyph: &'a Glyph,
-    masters: &'a [(&'a ShiftSource, NormalizedLocation)],
-) -> impl Iterator<Item = (LocatedLayer<'a>, &'a NormalizedLocation)> {
-    let locations = masters
-        .iter()
-        .map(|(source, location)| (source.id(), location))
-        .collect::<HashMap<_, _>>();
-    glyph
-        .located_layers_on(masters.iter().map(|(source, _)| *source))
-        .filter_map(move |located| {
-            let location = *locations.get(&located.location.base_source_id()?)?;
-            Some((located, location))
+/// One of a glyph's drawings as a glyph source: the drawing and where it sits.
+#[derive(Debug)]
+pub(super) struct DrawingSource<'a> {
+    pub located: LocatedLayer<'a>,
+    /// Its base source's location with the drawing's own coordinates laid
+    /// over it, in design units.
+    pub design_location: DesignLocation,
+    /// [`Self::design_location`] normalized over the compiled axes.
+    pub location: NormalizedLocation,
+}
+
+impl DrawingSource<'_> {
+    /// The drawing.
+    pub(super) fn drawing(&self) -> &GlyphLayer {
+        self.located.layer
+    }
+}
+
+impl ShiftSnapshot {
+    /// `glyph`'s drawings among the masters [`Self::glyph_masters`]
+    /// returns, as [`Glyph::located_layers_on`] orders them, each at its
+    /// own location: one exactly on a master at the master's location, and
+    /// one located off the masters (a brace drawing, with or without a base
+    /// source, or a drawing on the glyph's own axes) wherever its
+    /// coordinates put it. The location names every one of the glyph's own
+    /// axes by its [hidden tag](HiddenAxes). A master the glyph has no
+    /// drawing on is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the conversion error when a location cannot be normalized.
+    pub(super) fn drawing_sources<'a>(
+        &self,
+        glyph: &'a Glyph,
+        masters: &'a [(&'a ShiftSource, NormalizedLocation)],
+        metadata: &StaticMetadata,
+    ) -> Result<Vec<DrawingSource<'a>>, Error> {
+        glyph
+            .located_layers_on(masters.iter().map(|(source, _)| *source))
+            .filter_map(|located| {
+                let design_location = self.layer_design_location(&located.location)?;
+                let location = normalized_design_location(
+                    &design_location,
+                    &self.axes,
+                    &metadata.all_source_axes,
+                )
+                .map(|mut location| {
+                    for (tag, coord) in self.glyph_axis_coordinates(glyph, &design_location) {
+                        location.insert(tag, coord);
+                    }
+                    DrawingSource {
+                        located,
+                        design_location,
+                        location,
+                    }
+                });
+                Some(location)
+            })
+            .collect()
+    }
+
+    /// `design_location` on `glyph`'s own axes, normalized and tagged as
+    /// [`HiddenAxes`] compiles them; an axis it doesn't set is at its default.
+    fn glyph_axis_coordinates<'a>(
+        &'a self,
+        glyph: &'a Glyph,
+        design_location: &'a DesignLocation,
+    ) -> impl Iterator<Item = (Tag, NormalizedCoord)> + 'a {
+        glyph.axes().iter().filter_map(move |axis| {
+            let ir_axis = self.hidden_axes.axis(axis.id())?;
+            let value = design_location
+                .get(&axis.id())
+                .unwrap_or_else(|| axis.as_axis().default());
+            Some((ir_axis.tag, normalized(ir_axis, value)))
         })
+    }
+
+    /// `location`'s base source location with its own coordinates laid
+    /// over it: [`LayerLocation::design_location`] over the snapshot's
+    /// sources. `None` when the base is a source the snapshot lacks.
+    fn layer_design_location(&self, location: &LayerLocation) -> Option<DesignLocation> {
+        let mut design = match location.base_source_id() {
+            Some(base) => self.sources.source(base)?.location().clone(),
+            None => DesignLocation::new(),
+        };
+        design.extend(
+            location
+                .coordinates()
+                .iter()
+                .map(|(axis_id, value)| (*axis_id, *value)),
+        );
+        Some(design)
+    }
 }
 
 impl ShiftIrSource {
@@ -156,6 +248,19 @@ impl ShiftIrSource {
             .get();
 
         let ir_axes = to_ir_axes(font.axes(), font.axis_mappings())?;
+        let font_tags: Vec<&str> = font.axes().iter().map(Axis::tag).collect();
+        let hidden_axes = HiddenAxes::new(font.glyphs(), &font_tags)?;
+        let skipped_glyphs: HashSet<String> = font
+            .lib()
+            .skipped_export_glyphs()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        // Export compiles each anchored component where its anchors place it.
+        let glyphs = font.glyphs_with_derived_placements()?;
+        let lattice = Lattice::new(font.axes(), &ir_axes);
+        let feature_variations =
+            alternates::feature_variations(&glyphs, &lattice, &skipped_glyphs)?;
 
         Ok(Self {
             snapshot: Arc::new(ShiftSnapshot {
@@ -164,10 +269,11 @@ impl ShiftIrSource {
                 metric_definitions: font.metric_definitions().to_vec(),
                 axes: font.axes().to_vec(),
                 ir_axes,
+                hidden_axes,
                 named_instances: font.named_instances().to_vec(),
                 sources: font.sources().to_vec(),
                 default_source_id,
-                glyphs: font.glyphs().cloned().collect(),
+                glyphs,
                 kerning: font.kerning().clone(),
                 features: font.features().clone(),
                 gdef_classes: GlyphCategories::new()
@@ -190,27 +296,14 @@ impl ShiftIrSource {
                         .map(|glyph| glyph.name().to_string())
                         .collect()
                 },
-                skipped_glyphs: font
-                    .lib()
-                    .skipped_export_glyphs()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
+                skipped_glyphs,
+                feature_variations,
             }),
         })
     }
 }
 
 impl Source for ShiftIrSource {
-    fn new(_root: &Path) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        Err(Error::UnsupportedConstruct(
-            "ShiftIrSource is created from an in-memory Shift font".to_string(),
-        ))
-    }
-
     fn create_static_metadata_work(&self) -> Result<Box<IrWork>, Error> {
         Ok(Box::new(StaticMetadataWork::new(Arc::clone(
             &self.snapshot,
@@ -259,8 +352,10 @@ impl Source for ShiftIrSource {
         Ok(Box::new(ColorGlyphsWork))
     }
 
-    /// Propagates component anchors into composites, as fontc does for Glyphs sources.
+    /// Propagates component anchors into composites and erases open corners,
+    /// as fontc does for Glyphs sources. fontc's frontends erase in their own
+    /// path building, so `GlyphWork` erases; the flag records that it did.
     fn compilation_flags(&self) -> Flags {
-        Flags::PROPAGATE_ANCHORS
+        Flags::PROPAGATE_ANCHORS | Flags::ERASE_OPEN_CORNERS
     }
 }

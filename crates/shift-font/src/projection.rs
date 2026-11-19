@@ -3,20 +3,28 @@
 use crate::Require;
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+mod anchored_placement_tests;
 mod anchors;
+#[cfg(test)]
+mod component_location_tests;
+#[cfg(test)]
+mod condition_tests;
 mod decomposed;
+#[cfg(test)]
+mod glyph_axis_tests;
+mod placement;
 
 pub use decomposed::{Decomposition, OutlineParts};
 use std::sync::Arc;
 
 use crate::composite::{
-    GlyphComponents, ResolvedContour, ResolvedLayerGeometry,
-    flatten_selected_component_contours_from_layers, resolved_contours_from_layers,
-    resolved_layer_geometry_from_layers,
+    GlyphComponents, ResolvedContour, ResolvedLayerGeometry, resolved_contours_from_layers,
+    resolved_layer_geometry_from_parts,
 };
 use crate::{
     Axis, ComponentId, CoreError, CoreResult, DesignLocation, Font, GlyphId, GlyphInterpolation,
-    GlyphLayer, InterpolationBasis, LayerId, Source, SourceId,
+    GlyphLayer, InterpolationBasis, InterpolationSample, LayerId, Source, SourceId,
 };
 
 /// One exact-source shape that cannot be represented by compatible variation.
@@ -71,6 +79,9 @@ pub struct GlyphProjectionSet {
 #[derive(Clone, Debug, PartialEq)]
 struct GlyphLayerProjection {
     fallback: Arc<GlyphLayer>,
+    /// The glyph's own axes: a location off their defaults is never exactly
+    /// on a source.
+    glyph_axes: Vec<Axis>,
     interpolation: Option<GlyphInterpolation>,
     decomposition: Option<Arc<InterpolationBasis>>,
     exact_source_shapes: Vec<GlyphSourceShape>,
@@ -101,9 +112,14 @@ impl GlyphLayerProjection {
         axes: &[Axis],
         sources: &[Source],
     ) -> CoreResult<GlyphLayer> {
-        let exact_source_id = exact_source_id(location, axes, sources);
+        let on_glyph_axis_defaults = self
+            .glyph_axes
+            .iter()
+            .all(|axis| (location.value_on(axis) - axis.default()).abs() <= 1e-6);
+        let exact_source_id =
+            exact_source_id(location, axes, sources).filter(|_| on_glyph_axis_defaults);
         if let Some(source_id) = exact_source_id {
-            if source_id == self.fallback.source_id() {
+            if self.fallback.is_at_source(source_id) {
                 return Ok(self.fallback.as_ref().clone());
             }
 
@@ -219,7 +235,7 @@ pub struct FontProjection<'a> {
     font: &'a Font,
     location: DesignLocation,
     layers: HashMap<GlyphId, GlyphLayer>,
-    interpolation_bases: HashMap<Vec<SourceId>, Arc<InterpolationBasis>>,
+    interpolation_bases: HashMap<Vec<InterpolationSample>, Arc<InterpolationBasis>>,
     decompositions: HashMap<GlyphId, Option<Arc<InterpolationBasis>>>,
     /// Each glyph's compiled anchors, once asked for.
     anchors: HashMap<GlyphId, Arc<crate::anchor_propagation::PropagatedAnchors>>,
@@ -235,6 +251,28 @@ pub struct ResolvedGlyph {
     glyph_id: GlyphId,
     contours: Vec<ResolvedContour>,
     x_advance: f64,
+}
+
+/// A glyph drawn at one location, for a tile or a thumbnail: its outline as
+/// one SVG path in font units, y up, and its advance. No editable structure.
+///
+/// A blank glyph, such as a space, has an empty path.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "pack", derive(pack::Pack))]
+pub struct GlyphPreview {
+    pub glyph_id: GlyphId,
+    pub svg_path: String,
+    pub x_advance: f64,
+}
+
+impl From<&ResolvedGlyph> for GlyphPreview {
+    fn from(glyph: &ResolvedGlyph) -> Self {
+        Self {
+            glyph_id: glyph.glyph_id,
+            svg_path: crate::composite::resolved_contours_to_svg_path(&glyph.contours),
+            x_advance: glyph.x_advance,
+        }
+    }
 }
 
 impl ResolvedGlyph {
@@ -258,16 +296,17 @@ impl Font {
     fn glyph_layer_projection_with_bases(
         &self,
         glyph_id: GlyphId,
-        interpolation_bases: &mut HashMap<Vec<SourceId>, Arc<InterpolationBasis>>,
+        interpolation_bases: &mut HashMap<Vec<InterpolationSample>, Arc<InterpolationBasis>>,
     ) -> CoreResult<Option<Arc<GlyphLayerProjection>>> {
         let Some(glyph) = self.glyph(glyph_id) else {
             return Ok(None);
         };
         let interpolation = self.glyph_interpolation_with_bases(glyph_id, interpolation_bases)?;
+        // The interpolation's reference, with its components' locations
+        // filled in as interpolation reads them.
         let fallback = interpolation
             .as_ref()
-            .and_then(|interpolation| glyph.layers().get(&interpolation.reference_layer().id()))
-            .cloned()
+            .map(|interpolation| Arc::clone(interpolation.shared_reference_layer()))
             .or_else(|| self.fallback_layer(glyph).cloned());
         let Some(fallback) = fallback else {
             return Ok(None);
@@ -275,15 +314,14 @@ impl Font {
         let exact_source_shapes = glyph
             .located_layers(self)
             .filter_map(|located| {
-                let source_id = located.location.base_source_id()?;
+                let source_id = located.location.exact_source_id()?;
                 if located.layer.id() == fallback.id() {
                     return None;
                 }
 
-                let represented_by_interpolation =
-                    interpolation.as_ref().is_some_and(|interpolation| {
-                        interpolation.basis().source_ids().contains(&source_id)
-                    });
+                let represented_by_interpolation = interpolation
+                    .as_ref()
+                    .is_some_and(|interpolation| interpolation.basis().has_source(source_id));
                 if represented_by_interpolation {
                     return None;
                 }
@@ -304,6 +342,11 @@ impl Font {
 
         Ok(Some(Arc::new(GlyphLayerProjection {
             fallback,
+            glyph_axes: glyph
+                .axes()
+                .iter()
+                .map(|axis| axis.as_axis().clone())
+                .collect(),
             interpolation,
             decomposition,
             exact_source_shapes,
@@ -314,7 +357,7 @@ impl Font {
         &self,
         glyph_id: GlyphId,
         location: &DesignLocation,
-        interpolation_bases: &mut HashMap<Vec<SourceId>, Arc<InterpolationBasis>>,
+        interpolation_bases: &mut HashMap<Vec<InterpolationSample>, Arc<InterpolationBasis>>,
     ) -> CoreResult<Option<GlyphLayer>> {
         let Some(projection) =
             self.glyph_layer_projection_with_bases(glyph_id, interpolation_bases)?
@@ -332,7 +375,7 @@ impl Font {
         glyph_ids: &[GlyphId],
         projections: &mut HashMap<GlyphId, Option<Arc<GlyphLayerProjection>>>,
         projection_order: &mut Vec<GlyphId>,
-        interpolation_bases: &mut HashMap<Vec<SourceId>, Arc<InterpolationBasis>>,
+        interpolation_bases: &mut HashMap<Vec<InterpolationSample>, Arc<InterpolationBasis>>,
     ) -> CoreResult<()> {
         let mut pending = glyph_ids.iter().rev().copied().collect::<Vec<_>>();
 
@@ -404,7 +447,7 @@ impl Font {
         layers: Arc<GlyphLayerProjection>,
         projections: &HashMap<GlyphId, Option<Arc<GlyphLayerProjection>>>,
     ) -> CoreResult<GlyphProjection> {
-        let fallback_source_id = layers.fallback.source_id();
+        let fallback_source_id = self.reading_source_id(&layers.fallback)?;
         let components =
             Self::structural_components(glyph_id, &layers, projections, fallback_source_id)?;
 
@@ -647,6 +690,52 @@ impl FontProjection<'_> {
         }))
     }
 
+    /// Resolves `glyph_id` as it is drawn here, in text, a preview or open
+    /// for editing: the glyph of its first alternate that holds at this
+    /// location, else the glyph itself ([`Font::drawn_glyph_at`]). The
+    /// result keeps `glyph_id`, the glyph asked for, with the outline and
+    /// advance of the glyph drawn. Components are never swapped, so
+    /// [`Self::glyph`] stays the glyph itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::glyph`], for the glyph drawn.
+    pub fn drawn_glyph(&mut self, glyph_id: GlyphId) -> CoreResult<Option<ResolvedGlyph>> {
+        let drawn = self.font.drawn_glyph_at(glyph_id, &self.location);
+        Ok(self.glyph(drawn)?.map(|resolved| ResolvedGlyph {
+            glyph_id,
+            ..resolved
+        }))
+    }
+
+    /// [`Self::drawn_glyph`] for each of `glyph_ids` the font has, in request
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::drawn_glyph`].
+    pub fn drawn_glyphs(&mut self, glyph_ids: &[GlyphId]) -> CoreResult<Vec<ResolvedGlyph>> {
+        glyph_ids
+            .iter()
+            .filter_map(|glyph_id| self.drawn_glyph(*glyph_id).transpose())
+            .collect()
+    }
+
+    /// Returns the glyph's advance at this projection's location without
+    /// resolving its outline: the layer's width, with no components composed.
+    ///
+    /// `None` when the glyph has no layer here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::glyph`]: a component whose base glyph does not resolve.
+    pub fn advance(&mut self, glyph_id: GlyphId) -> CoreResult<Option<f64>> {
+        if !self.prepare_layer_tree(glyph_id)? {
+            return Ok(None);
+        }
+        Ok(self.layers.get(&glyph_id).map(GlyphLayer::width))
+    }
+
     /// Resolves selected direct component occurrences into flattened contours.
     ///
     /// Descendant components are included recursively at this projection's
@@ -726,8 +815,9 @@ impl Font {
     /// resolvable shape, or an interpolation error for incompatible
     /// referenced geometry.
     pub fn resolve_layer(&self, layer_id: LayerId) -> CoreResult<ResolvedLayerGeometry> {
-        let (glyph_id, projection) = self.layer_tree_projection(layer_id)?;
-        resolved_layer_geometry_from_layers(glyph_id, &projection.layers)
+        let (glyph_id, mut projection) = self.layer_tree_projection(layer_id)?;
+        let parts = projection.composed_layer_parts(glyph_id)?;
+        resolved_layer_geometry_from_parts(glyph_id, &projection.layers, parts)
     }
 
     /// The outlines `component_ids` of one exact authored layer draw, at that
@@ -744,8 +834,15 @@ impl Font {
         layer_id: LayerId,
         component_ids: &HashSet<ComponentId>,
     ) -> CoreResult<Vec<ResolvedContour>> {
-        let (glyph_id, projection) = self.layer_tree_projection(layer_id)?;
-        flatten_selected_component_contours_from_layers(glyph_id, &projection.layers, component_ids)
+        let (glyph_id, mut projection) = self.layer_tree_projection(layer_id)?;
+        let parts = projection.composed_layer_parts(glyph_id)?;
+        let resolved = resolved_layer_geometry_from_parts(glyph_id, &projection.layers, parts)?;
+        Ok(resolved
+            .components()
+            .iter()
+            .filter(|component| component_ids.contains(&component.component_id()))
+            .flat_map(|component| component.outline().iter().cloned())
+            .collect())
     }
 
     /// A projection at one authored layer's source, with that layer as its
@@ -761,7 +858,7 @@ impl Font {
     ) -> CoreResult<(GlyphId, FontProjection<'_>)> {
         let glyph_id = self.require_layer_owner(layer_id)?;
         let layer = self.require_layer(layer_id)?;
-        let location = self.require_source(layer.source_id())?.location().clone();
+        let location = self.layer_design_location(layer)?;
         let mut projection = self.projection(&location);
         projection.prepare_layer_tree_from(glyph_id, layer.clone())?;
         Ok((glyph_id, projection))
@@ -895,6 +992,20 @@ mod tests {
 
         assert_eq!(glyph.x_advance(), 700.0);
         assert_eq!(glyph.contours()[0].points[1].x(), 340.0);
+    }
+
+    #[test]
+    fn advance_is_the_glyph_advance_at_the_location() {
+        let font = sample_variable_font();
+        let glyph_id = font.glyph_by_name("A").unwrap().id();
+        let location = DesignLocation::from([(font.axes()[0].id(), 600.0)]);
+        let mut projection = font.projection(&location);
+
+        assert_eq!(projection.advance(glyph_id).unwrap(), Some(700.0));
+        assert_eq!(
+            projection.advance(GlyphId::from_raw("missing")).unwrap(),
+            None
+        );
     }
 
     #[test]

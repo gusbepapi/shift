@@ -89,6 +89,17 @@ pub enum CoreError {
         base_glyph_id: GlyphId,
     },
 
+    /// A composite was drawn as a different number of outline parts than it
+    /// has: its own contours, then one part per component occurrence.
+    #[error(
+        "glyph {glyph_id} drew {actual} outline parts, but its contours and components need {expected}"
+    )]
+    ComponentPartsMismatch {
+        glyph_id: GlyphId,
+        expected: usize,
+        actual: usize,
+    },
+
     #[error("source {0} not found")]
     SourceNotFound(SourceId),
 
@@ -98,12 +109,8 @@ pub enum CoreError {
     #[error("layer {0} not found")]
     LayerNotFound(LayerId),
 
-    #[error("layer {layer_id} source is {actual_source_id}, expected {expected_source_id}")]
-    LayerSourceMismatch {
-        layer_id: LayerId,
-        expected_source_id: SourceId,
-        actual_source_id: SourceId,
-    },
+    #[error("layer {layer_id} would move to another location")]
+    LayerLocationMismatch { layer_id: LayerId },
 
     #[error("layer {layer_id} belongs to glyph {actual_glyph_id}, not glyph {glyph_id}")]
     LayerGlyphMismatch {
@@ -141,6 +148,95 @@ pub enum CoreError {
 
     #[error("axis {0} not found")]
     AxisNotFound(AxisId),
+
+    #[error("axis id {0} already exists")]
+    DuplicateAxisId(AxisId),
+
+    #[error("{} stored values would fall outside the range of axis {axis_id}", uses.len())]
+    AxisValuesOutsideRange {
+        axis_id: AxisId,
+        uses: Vec<crate::AxisValueUse>,
+    },
+
+    #[error("glyph axis {axis_id} still has {} stored values", uses.len())]
+    GlyphAxisInUse {
+        axis_id: AxisId,
+        uses: Vec<crate::AxisValueUse>,
+    },
+
+    #[error(
+        "layer {layer_id} is located on axis {axis_id}, which is not in its glyph's design space"
+    )]
+    LayerLocationOffSpace { layer_id: LayerId, axis_id: AxisId },
+
+    #[error(
+        "component {component_id} sets axis {axis_id}, which is neither a font axis nor an axis of its base glyph"
+    )]
+    ComponentLocationOffSpace {
+        component_id: ComponentId,
+        axis_id: AxisId,
+    },
+
+    /// A component condition reads an axis that is neither a font axis nor
+    /// one of the own axes of the glyph the component is placed in.
+    #[error(
+        "component {component_id} has a condition on axis {axis_id}, which is neither a font axis nor an axis of the glyph it is placed in"
+    )]
+    ComponentConditionOffSpace {
+        component_id: ComponentId,
+        axis_id: AxisId,
+    },
+
+    #[error("alternate id {0} already exists")]
+    DuplicateAlternateId(crate::AlternateId),
+
+    #[error("alternate {0} not found")]
+    AlternateNotFound(crate::AlternateId),
+
+    /// An alternate placed or moved past the end of its glyph's list.
+    #[error("glyph {glyph_id} has {count} alternates, so position {position} is out of range")]
+    AlternatePositionOutOfRange {
+        glyph_id: GlyphId,
+        position: usize,
+        count: usize,
+    },
+
+    /// A glyph's alternate draws the glyph itself.
+    #[error("alternate {alternate_id} of glyph {glyph_id} is the glyph itself")]
+    AlternateIsItself {
+        alternate_id: crate::AlternateId,
+        glyph_id: GlyphId,
+    },
+
+    /// An alternate's condition reads an axis that is not a font axis:
+    /// alternates are chosen where text is drawn, on the font's axes alone.
+    #[error("alternate {alternate_id} has a condition on axis {axis_id}, which is not a font axis")]
+    AlternateConditionOffFontAxes {
+        alternate_id: crate::AlternateId,
+        axis_id: AxisId,
+    },
+
+    /// A glyph can't be removed while it is another glyph's alternate.
+    #[error("glyph {glyph_id} is an alternate of glyph {alternate_of}")]
+    GlyphIsAlternate {
+        glyph_id: GlyphId,
+        alternate_of: GlyphId,
+    },
+
+    /// A condition range whose minimum is above its maximum.
+    #[error("condition range on axis {axis_id} runs from {min} down to {max}")]
+    ConditionRangeReversed { axis_id: AxisId, min: f64, max: f64 },
+
+    /// A condition range with an end that is not a finite number.
+    #[error("condition range on axis {axis_id} has an end that is not finite")]
+    ConditionValueNotFinite { axis_id: AxisId },
+
+    #[error("layers {first} and {second} of glyph {glyph_id} sit at the same location")]
+    DuplicateLayerLocation {
+        glyph_id: GlyphId,
+        first: LayerId,
+        second: LayerId,
+    },
 
     #[error("invalid {kind} order: expected {expected} identities, got {actual}")]
     OrderLengthMismatch {
@@ -331,6 +427,13 @@ macro_rules! entity_ref {
     };
 }
 
+/// A component id is reported as text, the form layers' callers send it in.
+impl EntityRef for ComponentId {
+    fn not_found(&self) -> CoreError {
+        CoreError::InvalidComponentId(self.to_string())
+    }
+}
+
 impl<T: EntityRef + ?Sized> EntityRef for &T {
     fn not_found(&self) -> CoreError {
         (**self).not_found()
@@ -345,6 +448,7 @@ entity_ref! {
     LayerId => LayerNotFound,
     SourceId => SourceNotFound,
     AxisId => AxisNotFound,
+    crate::AlternateId => AlternateNotFound,
     NamedInstanceId => NamedInstanceNotFound,
     KerningGroupId => KerningGroupNotFound,
 }
@@ -370,5 +474,22 @@ pub trait Require<T> {
 impl<T> Require<T> for Option<T> {
     fn require<I: EntityRef + ?Sized>(self, id: &I) -> CoreResult<T> {
         self.ok_or_else(|| id.not_found())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_component_is_reported_by_its_id_as_text() {
+        let id = ComponentId::new();
+        let found: Option<&str> = None;
+
+        let error = found.require(&id).unwrap_err();
+
+        assert!(
+            matches!(error, CoreError::InvalidComponentId(missing) if missing == id.to_string())
+        );
     }
 }

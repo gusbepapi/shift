@@ -230,6 +230,10 @@ export class WorkspaceHost implements WorkspaceShell, WorkspaceSync {
     return this.#serialize(() => this.#bridge.source.readFontSourceGlyph(glyphId));
   }
 
+  sourceGlyphPreviews(glyphIds: GlyphId[], location: Location): Promise<readonly GlyphPreview[]> {
+    return this.#serialize(() => this.#bridge.source.fontSourceGlyphPreviews(glyphIds, location));
+  }
+
   prepareSourceAtlasPage(request: FontSourceAtlasPageRequest): Promise<CatalogAtlasPage> {
     return this.#serialize(() => this.#prepareSourceAtlasPage(request));
   }
@@ -284,8 +288,8 @@ export class WorkspaceHost implements WorkspaceShell, WorkspaceSync {
     return this.#serialize(() => this.#bridge.napi.getGlyphProjections(glyphIds));
   }
 
-  glyphPreviews(glyphIds: GlyphId[], location: Location): Promise<GlyphPreview[]> {
-    return this.#serialize(() => this.#bridge.napi.getGlyphPreviews(glyphIds, location));
+  glyphPreviews(glyphIds: GlyphId[], location: Location): Promise<readonly GlyphPreview[]> {
+    return this.#serialize(() => this.#bridge.workspace.glyphPreviews(glyphIds, location));
   }
 
   prepareSlugAtlas(alignment: number): Promise<SlugAtlas> {

@@ -15,19 +15,24 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use authoring::{
-    AuthoringReport, ExportSources, add_axis, add_glyph, add_instance, add_layer, add_page,
-    add_source, assign_kerning_group, copy_layer, create_font, create_kerning_group,
-    delete_kerning_group, export_glyphs, font_info, list_pages, remove_color_glyph,
-    remove_instance, remove_kerning, remove_page, rename_kerning_group, rename_page, set_axis,
-    set_color_glyph, set_font, set_glyphs, set_instance, set_kerning, set_layer, set_palettes,
+    AuthoringReport, ExportSources, add_axis, add_glyph, add_glyph_axis, add_instance, add_layer,
+    add_page, add_source, assign_kerning_group, copy_layer, create_font, create_kerning_group,
+    delete_kerning_group, edit_glyph_axis, export_glyphs, font_info, list_pages, move_layer,
+    remove_color_glyph, remove_glyph_axis, remove_instance, remove_kerning, remove_layer,
+    remove_page, rename_kerning_group, rename_page, set_axis, set_color_glyph, set_font,
+    set_glyphs, set_instance, set_kerning, set_layer, set_mark_color, set_palettes,
     unassign_kerning_group,
+};
+use authoring::{
+    add_alternate, move_alternate, remove_alternate, set_alternate, set_component_condition,
 };
 use clap::Parser;
 use cli::{
     AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, ExportArgs,
-    FontCommand, GlyphCommand, InstanceCommand, KerningCommand, KerningGroupCommand, LayerCommand,
-    PageCommand, PaletteCommand, SkillCommand, SourceCommand,
+    FontCommand, GlyphAxisCommand, GlyphCommand, InstanceCommand, KerningCommand,
+    KerningGroupCommand, LayerCommand, PageCommand, PaletteCommand, SkillCommand, SourceCommand,
 };
+use cli::{ComponentCommand, ComponentConditionCommand, GlyphAlternateCommand};
 use glyph_inspect::GlyphInspection;
 use inspect::{InspectReport, RenderMode};
 use kerning::{get_kerning, kerning_groups, list_kerning};
@@ -35,7 +40,7 @@ use miette::IntoDiagnostic;
 use serde::Serialize;
 use shift_backends::{
     BinaryEncoding, BinaryEncodings, ColorTable, ColorTables, ExportFormat, FontExportRequest,
-    FontExportResult, FontExporter,
+    FontExportResult, FontExporter, VariableComponents,
 };
 use shift_store::ShiftStore;
 use skill::{install_skill, show_skill, skill_status};
@@ -64,6 +69,9 @@ fn main() -> miette::Result<()> {
         Command::Import(args) => write_report(&import::import(&args)?, args.json),
         Command::Proof(args) => {
             let summary = proof::proof(&args)?;
+            for warning in &summary.warnings {
+                write_stderr(&format!("warning: {}", warning.message()))?;
+            }
             write_report(&summary, args.json)
         }
         Command::Font { command } => match command {
@@ -161,7 +169,52 @@ fn main() -> miette::Result<()> {
             }
             GlyphCommand::Inspect(args) => inspect_glyph(&args),
             GlyphCommand::Export(args) => export_glyph_batch(args),
+            GlyphCommand::Color(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(set_mark_color(&args), json)
+            }
+            GlyphCommand::Axis { command } => match command {
+                GlyphAxisCommand::Add(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(add_glyph_axis(args), json)
+                }
+                GlyphAxisCommand::Edit(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(edit_glyph_axis(args), json)
+                }
+                GlyphAxisCommand::Remove(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(remove_glyph_axis(&args), json)
+                }
+            },
+            GlyphCommand::Alternate { command } => match command {
+                GlyphAlternateCommand::Add(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(add_alternate(&args), json)
+                }
+                GlyphAlternateCommand::Remove(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(remove_alternate(&args), json)
+                }
+                GlyphAlternateCommand::Reorder(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(move_alternate(&args), json)
+                }
+                GlyphAlternateCommand::Set(args) => {
+                    let json = args.mutation.json;
+                    write_authoring_result(set_alternate(&args), json)
+                }
+            },
         },
+        Command::Component {
+            command:
+                ComponentCommand::Condition {
+                    command: ComponentConditionCommand::Set(args),
+                },
+        } => {
+            let json = args.mutation.json;
+            write_authoring_result(set_component_condition(&args), json)
+        }
         Command::Layer { command } => match command {
             LayerCommand::Add(args) => {
                 let json = args.mutation.json;
@@ -174,6 +227,14 @@ fn main() -> miette::Result<()> {
             LayerCommand::Copy(args) => {
                 let json = args.mutation.json;
                 write_authoring_result(copy_layer(&args), json)
+            }
+            LayerCommand::Move(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(move_layer(&args), json)
+            }
+            LayerCommand::Remove(args) => {
+                let json = args.mutation.json;
+                write_authoring_result(remove_layer(&args), json)
             }
         },
         Command::Kerning { command } => kerning_command(command),
@@ -293,7 +354,12 @@ fn compile(args: CompileArgs) -> miette::Result<Vec<FontExportResult>> {
         BinaryEncodings::ttf()
     };
     let font = load_document(&args.path)?;
-    let exporter = FontExporter::new();
+    let variable_components = if args.varc {
+        VariableComponents::Varc
+    } else {
+        VariableComponents::Decompose
+    };
+    let exporter = FontExporter::new().with_variable_components(variable_components);
     if args.static_instances {
         return exporter
             .export_static_instances_with(&font, &args.output, &encodings, &color_tables)
@@ -435,9 +501,17 @@ fn load_document(path: &Path) -> miette::Result<shift_font::Font> {
         .into_diagnostic()
 }
 
+fn write_stderr(output: &str) -> miette::Result<()> {
+    write_line(io::stderr().lock(), output)
+}
+
 fn write_stdout(output: &str) -> miette::Result<()> {
-    let mut stdout = io::stdout().lock();
-    match writeln!(stdout, "{output}") {
+    write_line(io::stdout().lock(), output)
+}
+
+/// Writes `output` and a newline to `stream`; a closed pipe is not an error.
+fn write_line(mut stream: impl Write, output: &str) -> miette::Result<()> {
+    match writeln!(stream, "{output}") {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(error).into_diagnostic(),
@@ -458,6 +532,7 @@ mod tests {
             color_tables: None,
             static_instances: false,
             woff2: false,
+            varc: false,
         }
     }
 
