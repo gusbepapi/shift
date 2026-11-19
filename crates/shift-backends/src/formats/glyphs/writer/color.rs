@@ -212,18 +212,15 @@ impl<'a, F: FontView> ColorWriter<'a, F> {
     /// runs because Glyphs measures a gradient against the bounds of its run.
     fn literal(&self, layers: &[(&GlyphId, &Paint)]) -> GlyphColor {
         let mut planned = Vec::with_capacity(layers.len());
-        let mut start = 0;
-        while start < layers.len() {
-            let fill = layers[start].1;
-            let end = layers[start..]
-                .iter()
-                .position(|(_, other)| *other != fill)
-                .map_or(layers.len(), |offset| start + offset);
-            let bounds = self.run_bounds(&layers[start..end]);
-            for (glyph, _) in &layers[start..end] {
+
+        for run in layers.chunk_by(|first, second| first.1 == second.1) {
+            let Some((_, fill)) = run.first() else {
+                continue;
+            };
+            let bounds = self.run_bounds(run);
+            for (glyph, _) in run {
                 planned.push(self.literal_layer(**glyph, fill, bounds));
             }
-            start = end;
         }
         GlyphColor::Literal(planned)
     }

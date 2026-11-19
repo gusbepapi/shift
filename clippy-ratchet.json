@@ -40,7 +40,7 @@
     "shift-store": { "src": 1, "tests": 0 }
   },
   "indexing_slicing": {
-    "shift-backends": { "src": 103, "tests": 10 },
+    "shift-backends": { "src": 98, "tests": 10 },
     "shift-cli": { "src": 5, "tests": 1 },
     "shift-engine": { "src": 0, "tests": 1 },
     "shift-font": { "src": 135, "tests": 6 },

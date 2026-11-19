@@ -166,7 +166,7 @@ impl<'a> CompiledGlyphs<'a> {
         for (glyph_id, name) in skrifa.glyph_names().iter() {
             let id = u16::try_from(glyph_id.to_u32())
                 .map(GlyphId16::new)
-                .map_err(|_| ColorError::TooLarge {
+                .map_err(|_error| ColorError::TooLarge {
                     message: "more than 65 535 glyphs".to_string(),
                 })?;
             ids.insert(name.as_str().to_string(), id);
@@ -299,13 +299,14 @@ fn cpal(color: &ColorData, labels: &[u16]) -> Result<Vec<u8>, ColorError> {
         .collect();
     let labelled = labels.iter().any(|label| *label != NO_LABEL);
 
-    let entries = u16::try_from(per_palette).map_err(|_| too_large("palette entries"))?;
-    let palette_count = u16::try_from(palettes).map_err(|_| too_large("palettes"))?;
-    let record_count = u16::try_from(records.len()).map_err(|_| too_large("colour records"))?;
+    let entries = u16::try_from(per_palette).map_err(|_error| too_large("palette entries"))?;
+    let palette_count = u16::try_from(palettes).map_err(|_error| too_large("palettes"))?;
+    let record_count =
+        u16::try_from(records.len()).map_err(|_error| too_large("colour records"))?;
 
     // Version 1 adds three 32-bit offsets after the palette indices
     let header_len = 12 + 2 * palettes + if labelled { 12 } else { 0 };
-    let records_offset = u32::try_from(header_len).map_err(|_| too_large("palettes"))?;
+    let records_offset = u32::try_from(header_len).map_err(|_error| too_large("palettes"))?;
     let labels_offset = records_offset
         .checked_add(u32::from(record_count) * 4)
         .ok_or_else(|| too_large("colour records"))?;
@@ -317,7 +318,8 @@ fn cpal(color: &ColorData, labels: &[u16]) -> Result<Vec<u8>, ColorError> {
     bytes.extend(record_count.to_be_bytes());
     bytes.extend(records_offset.to_be_bytes());
     for index in 0..palettes {
-        let first = u16::try_from(index * per_palette).map_err(|_| too_large("colour records"))?;
+        let first =
+            u16::try_from(index * per_palette).map_err(|_error| too_large("colour records"))?;
         bytes.extend(first.to_be_bytes());
     }
     if labelled {
@@ -399,7 +401,7 @@ fn colr(
     for (base, entry) in entries {
         let layers = layers_of(&entry.paint, resolve)?;
         if layers.iter().all(|layer| is_opaque_solid(layer.fill)) {
-            let first = u16::try_from(v0_layers.len()).map_err(|_| ColorError::TooLarge {
+            let first = u16::try_from(v0_layers.len()).map_err(|_error| ColorError::TooLarge {
                 message: "more than 65 535 version 0 layers".to_string(),
             })?;
             for layer in &layers {
@@ -426,14 +428,14 @@ fn colr(
                 .into(),
             );
         }
-        let layer_count = u8::try_from(layers.len()).map_err(|_| ColorError::TooLarge {
+        let layer_count = u8::try_from(layers.len()).map_err(|_error| ColorError::TooLarge {
             message: "more than 255 layers in one colour glyph".to_string(),
         })?;
         v1_glyphs.push(BaseGlyphPaint::new(
             base,
             ColrPaint::ColrLayers(PaintColrLayers::new(
                 layer_count,
-                u32::try_from(first).map_err(|_| ColorError::TooLarge {
+                u32::try_from(first).map_err(|_error| ColorError::TooLarge {
                     message: "too many colour layers".to_string(),
                 })?,
             )),
@@ -443,10 +445,10 @@ fn colr(
         }
     }
 
-    let v0_count = u16::try_from(v0_glyphs.len()).map_err(|_| ColorError::TooLarge {
+    let v0_count = u16::try_from(v0_glyphs.len()).map_err(|_error| ColorError::TooLarge {
         message: "more than 65 535 version 0 colour glyphs".to_string(),
     })?;
-    let v0_layer_count = u16::try_from(v0_layers.len()).map_err(|_| ColorError::TooLarge {
+    let v0_layer_count = u16::try_from(v0_layers.len()).map_err(|_error| ColorError::TooLarge {
         message: "more than 65 535 version 0 layers".to_string(),
     })?;
     let mut table = Colr::new(
@@ -529,7 +531,7 @@ fn color_line(stops: &[shift_font::ColorStop]) -> Result<ColorLine, ColorError> 
 ///
 /// Returns [`ColorError::TooLarge`] when `value` does not fit `T`.
 fn narrow<T: TryFrom<usize>>(value: usize, what: &str) -> Result<T, ColorError> {
-    T::try_from(value).map_err(|_| ColorError::TooLarge {
+    T::try_from(value).map_err(|_error| ColorError::TooLarge {
         message: format!("{value} {what}s do not fit the table"),
     })
 }

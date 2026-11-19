@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn empty_data_is_valid() {
-        assert!(ColorData::default().validate(|_| false).is_ok());
+        ColorData::default().validate(|_| false).unwrap();
         assert!(ColorData::default().is_empty());
     }
 
@@ -448,7 +448,7 @@ mod tests {
                 },
             }],
         };
-        assert!(data.validate(|_| true).is_ok());
+        data.validate(|_| true).unwrap();
         assert_eq!(data.palette_len(), 2);
         assert!(data.glyph(base).is_some());
     }
@@ -475,7 +475,7 @@ mod tests {
                 paint: layer(a, solid(1)),
             }],
         };
-        assert!(data.validate(|_| true).is_err());
+        data.validate(|_| true).unwrap_err();
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
                 paint: layer(base, solid(0)),
             }],
         };
-        assert!(data.validate(|_| true).is_err());
+        data.validate(|_| true).unwrap_err();
 
         let data = ColorData {
             palettes: vec![palette(1)],
@@ -497,7 +497,7 @@ mod tests {
                 paint: layer(a, solid(0)),
             }],
         };
-        assert!(data.validate(|id| id != &a).is_err());
+        data.validate(|id| id != &a).unwrap_err();
     }
 
     #[test]
@@ -511,13 +511,13 @@ mod tests {
             palettes: vec![palette(1)],
             glyphs: vec![entry(&base, &a), entry(&base, &b)],
         };
-        assert!(duplicate.validate(|_| true).is_err());
+        duplicate.validate(|_| true).unwrap_err();
 
         let nested = ColorData {
             palettes: vec![palette(1)],
             glyphs: vec![entry(&base, &a), entry(&a, &b)],
         };
-        assert!(nested.validate(|_| true).is_err());
+        nested.validate(|_| true).unwrap_err();
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
                 alpha: 1.5,
             },
         );
-        assert!(with(bad_alpha).validate(|_| true).is_err());
+        with(bad_alpha).validate(|_| true).unwrap_err();
 
         let unordered = layer(
             a,
@@ -557,9 +557,9 @@ mod tests {
                 r1: Some(100.0),
             },
         );
-        assert!(with(unordered).validate(|_| true).is_err());
+        with(unordered).validate(|_| true).unwrap_err();
 
-        assert!(with(solid(0)).validate(|_| true).is_err());
+        with(solid(0)).validate(|_| true).unwrap_err();
         assert!(
             with(Paint::Layers { layers: Vec::new() })
                 .validate(|_| true)

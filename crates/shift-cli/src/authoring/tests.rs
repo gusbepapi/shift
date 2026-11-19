@@ -281,8 +281,8 @@ fn page_commands_refuse_blank_unknown_and_last_pages() {
         mutation: mutation(false),
     });
 
-    assert!(blank.is_err());
-    assert!(unknown.is_err());
+    blank.unwrap_err();
+    unknown.unwrap_err();
     assert!(last.unwrap_err().to_string().contains("last page"));
     assert_eq!(page_names(&path), ["Page 1"]);
 }

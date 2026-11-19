@@ -112,40 +112,44 @@ fn parse_hex(text: &str) -> Result<Rgba8> {
     if !matches!(digits.len(), 6 | 8) || !digits.chars().all(|digit| digit.is_ascii_hexdigit()) {
         bail!("colour {text:?} must be #RRGGBB or #RRGGBBAA");
     }
-    let channel = |index: usize| {
-        u8::from_str_radix(&digits[index * 2..index * 2 + 2], 16)
-            .map_err(|_| miette!("colour {text:?} is not hexadecimal"))
+    let value = u32::from_str_radix(digits, 16)
+        .map_err(|_error| miette!("colour {text:?} is not hexadecimal"))?;
+    let opaque_value = if digits.len() == 8 {
+        value
+    } else {
+        (value << 8) | 0xFF
     };
-    let alpha = if digits.len() == 8 { channel(3)? } else { 255 };
-    Ok(Rgba8::new(channel(0)?, channel(1)?, channel(2)?, alpha))
+    let [red, green, blue, alpha] = opaque_value.to_be_bytes();
+
+    Ok(Rgba8::new(red, green, blue, alpha))
 }
 
 /// Parses a layer fill; the grammar is documented on `--layer`.
 fn parse_fill(text: &str) -> Result<Paint> {
     if let Some(rest) = text.strip_prefix("linear:") {
-        let (geometry, stops) = split_geometry(rest, 4)?;
+        let ([x0, y0, x1, y1], stops) = split_geometry(rest)?;
         return Ok(Paint::LinearGradient {
             stops: parse_stops(stops)?,
-            p0: ColorPoint::new(geometry[0], geometry[1]),
-            p1: ColorPoint::new(geometry[2], geometry[3]),
+            p0: ColorPoint::new(x0, y0),
+            p1: ColorPoint::new(x1, y1),
             p2: None,
         });
     }
     if let Some(rest) = text.strip_prefix("radial:") {
-        let (geometry, stops) = split_geometry(rest, 6)?;
+        let ([x0, y0, r0, x1, y1, r1], stops) = split_geometry(rest)?;
         return Ok(Paint::RadialGradient {
             stops: parse_stops(stops)?,
-            c0: ColorPoint::new(geometry[0], geometry[1]),
-            r0: Some(geometry[2]),
-            c1: ColorPoint::new(geometry[3], geometry[4]),
-            r1: Some(geometry[5]),
+            c0: ColorPoint::new(x0, y0),
+            r0: Some(r0),
+            c1: ColorPoint::new(x1, y1),
+            r1: Some(r1),
         });
     }
     let (color, alpha) = parse_color_alpha(text)?;
     Ok(Paint::Solid { color, alpha })
 }
 
-fn split_geometry(text: &str, count: usize) -> Result<(Vec<f64>, &str)> {
+fn split_geometry<const COUNT: usize>(text: &str) -> Result<([f64; COUNT], &str)> {
     let (geometry, stops) = text
         .split_once(':')
         .ok_or_else(|| miette!("gradient {text:?} needs GEOMETRY:STOPS"))?;
@@ -155,15 +159,14 @@ fn split_geometry(text: &str, count: usize) -> Result<(Vec<f64>, &str)> {
             number
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| miette!("gradient coordinate {number:?} is not a number"))
+                .map_err(|_error| miette!("gradient coordinate {number:?} is not a number"))
         })
         .collect::<Result<Vec<_>>>()?;
-    if numbers.len() != count {
-        bail!(
-            "gradient geometry {geometry:?} needs {count} numbers, found {}",
-            numbers.len()
-        );
-    }
+    let found = numbers.len();
+    let Ok(numbers) = <[f64; COUNT]>::try_from(numbers) else {
+        bail!("gradient geometry {geometry:?} needs {COUNT} numbers, found {found}");
+    };
+
     Ok((numbers, stops))
 }
 
@@ -178,7 +181,7 @@ fn parse_stops(text: &str) -> Result<Vec<ColorStop>> {
                 offset: offset
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| miette!("stop offset {offset:?} is not a number"))?,
+                    .map_err(|_error| miette!("stop offset {offset:?} is not a number"))?,
                 color,
                 alpha,
             })
@@ -193,7 +196,7 @@ fn parse_color_alpha(text: &str) -> Result<(PaintColor, f64)> {
             color,
             alpha
                 .parse::<f64>()
-                .map_err(|_| miette!("alpha {alpha:?} is not a number"))?,
+                .map_err(|_error| miette!("alpha {alpha:?} is not a number"))?,
         ),
         None => (text, 1.0),
     };
@@ -203,7 +206,7 @@ fn parse_color_alpha(text: &str) -> Result<(PaintColor, f64)> {
         PaintColor::Palette {
             index: index
                 .parse()
-                .map_err(|_| miette!("palette index {index:?} is not a whole number"))?,
+                .map_err(|_error| miette!("palette index {index:?} is not a whole number"))?,
         }
     } else {
         bail!("fill {text:?} must be palette:INDEX, foreground, linear:... or radial:...");
@@ -228,8 +231,8 @@ mod tests {
         assert_eq!(anonymous.name, None);
         assert_eq!(anonymous.colors, vec![Rgba8::new(255, 255, 255, 255)]);
 
-        assert!(parse_palette("#12345").is_err());
-        assert!(parse_palette("red").is_err());
+        parse_palette("#12345").unwrap_err();
+        parse_palette("red").unwrap_err();
     }
 
     #[test]
@@ -267,8 +270,8 @@ mod tests {
         };
         assert_eq!((r0, r1), (Some(0.0), Some(300.0)));
 
-        assert!(parse_fill("linear:0,0,0:0=foreground").is_err());
-        assert!(parse_fill("blue").is_err());
-        assert!(parse_fill("palette:x").is_err());
+        parse_fill("linear:0,0,0:0=foreground").unwrap_err();
+        parse_fill("blue").unwrap_err();
+        parse_fill("palette:x").unwrap_err();
     }
 }

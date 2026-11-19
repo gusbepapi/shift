@@ -26,7 +26,7 @@ pub enum WebFontError {
 ///
 /// Returns [`WebFontError::TooLarge`] when `value` does not fit `T`.
 fn narrow<T: TryFrom<usize>>(value: usize, what: &'static str) -> Result<T, WebFontError> {
-    T::try_from(value).map_err(|_| WebFontError::TooLarge { value, what })
+    T::try_from(value).map_err(|_error| WebFontError::TooLarge { value, what })
 }
 
 fn read_error(error: &impl std::fmt::Display) -> WebFontError {

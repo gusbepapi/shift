@@ -1545,17 +1545,20 @@ fn completed_import_store_restores_durable_wal_mode() {
 
 /// Colour data that fills the second glyph of the sample font with palette entry 0.
 fn sample_color(font: &shift_font::Font) -> shift_font::ColorData {
-    let glyphs: Vec<_> = font.glyphs().map(shift_font::Glyph::id).collect();
+    let mut ids = font.glyphs().map(shift_font::Glyph::id);
+    let (Some(first), Some(second)) = (ids.next(), ids.next()) else {
+        return shift_font::ColorData::default();
+    };
     shift_font::ColorData {
         palettes: vec![shift_font::ColorPalette {
             name: None,
             colors: vec![shift_font::Rgba8::new(9, 8, 7, 255)],
         }],
         glyphs: vec![shift_font::ColorGlyph {
-            glyph: glyphs[0],
+            glyph: first,
             paint: shift_font::Paint::Layers {
                 layers: vec![shift_font::Paint::Glyph {
-                    glyph: glyphs[1],
+                    glyph: second,
                     fill: Box::new(shift_font::Paint::Solid {
                         color: shift_font::PaintColor::Palette { index: 0 },
                         alpha: 1.0,

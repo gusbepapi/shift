@@ -635,6 +635,6 @@ mod tests {
             ..compile_args(source_path, temp.path().join("Dogfood.glyphs"))
         });
 
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }

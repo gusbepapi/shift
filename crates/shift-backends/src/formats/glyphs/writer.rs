@@ -7,7 +7,6 @@
 //! are not masters, guidelines, hints and the remaining font information are not written.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use shift_font::{
     Axis, AxisMapping, Component, Contour, Glyph, GlyphId, Kerning, KerningPosition, KerningSide,
@@ -43,7 +42,7 @@ impl GlyphsWriter {
     ///
     /// Returns [`FormatBackendError::Glyphs`] when the font has no default master or a named
     /// instance cannot be placed in the design space.
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "a writer method; the writer is the entry point callers hold"
     )]
@@ -187,6 +186,7 @@ impl GlyphsWriter {
 }
 
 /// A master as the file names it.
+#[derive(Clone)]
 struct Master<'a> {
     id: String,
     source: &'a Source,
@@ -194,7 +194,7 @@ struct Master<'a> {
 
 struct Masters<'a> {
     all: Vec<Master<'a>>,
-    default: usize,
+    default: Master<'a>,
 }
 
 impl<'a> Masters<'a> {
@@ -214,7 +214,8 @@ impl<'a> Masters<'a> {
             .collect();
         let default = all
             .iter()
-            .position(|master| master.source.id() == default_source)
+            .find(|master| master.source.id() == default_source)
+            .cloned()
             .ok_or_else(|| {
                 FormatBackendError::Glyphs("the default source is not a master".into())
             })?;
@@ -222,7 +223,7 @@ impl<'a> Masters<'a> {
     }
 
     fn default(&self) -> &Master<'a> {
-        &self.all[self.default]
+        &self.default
     }
 }
 
@@ -494,8 +495,9 @@ fn path_dict(points: &[Point], closed: bool) -> Dict {
 
 /// Names the segment that arrives at `point`, the way a Glyphs node does.
 fn node_type(point: &Point, index: usize, points: &[Point], closed: bool) -> &'static str {
-    let previous_is_off_curve = if index > 0 {
-        points[index - 1].point_type() == PointType::OffCurve
+    let previous = index.checked_sub(1).and_then(|before| points.get(before));
+    let previous_is_off_curve = if let Some(previous) = previous {
+        previous.point_type() == PointType::OffCurve
     } else {
         closed
             && points
@@ -720,7 +722,8 @@ impl Dict {
     fn render(&self, out: &mut String) {
         out.push_str("{\n");
         for (key, value) in &self.entries {
-            let _ = write!(out, "{} = ", format_string(key));
+            out.push_str(&format_string(key));
+            out.push_str(" = ");
             value.render(out);
             out.push_str(";\n");
         }

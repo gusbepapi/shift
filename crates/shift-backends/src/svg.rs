@@ -73,16 +73,20 @@ pub(crate) fn svg_table(
     let mut list = Vec::with_capacity(list_len);
     list.extend(
         u16::try_from(documents.len())
-            .map_err(|_| overflow())?
+            .map_err(|_error| overflow())?
             .to_be_bytes(),
     );
     for (glyph, text) in &documents {
         list.extend(glyph.to_u16().to_be_bytes());
         list.extend(glyph.to_u16().to_be_bytes());
-        list.extend(u32::try_from(offset).map_err(|_| overflow())?.to_be_bytes());
+        list.extend(
+            u32::try_from(offset)
+                .map_err(|_error| overflow())?
+                .to_be_bytes(),
+        );
         list.extend(
             u32::try_from(text.len())
-                .map_err(|_| overflow())?
+                .map_err(|_error| overflow())?
                 .to_be_bytes(),
         );
         offset = offset.checked_add(text.len()).ok_or_else(overflow)?;
@@ -92,7 +96,7 @@ pub(crate) fn svg_table(
     bytes.extend(0u16.to_be_bytes());
     bytes.extend(
         u32::try_from(HEADER_LEN)
-            .map_err(|_| overflow())?
+            .map_err(|_error| overflow())?
             .to_be_bytes(),
     );
     bytes.extend(0u32.to_be_bytes());
@@ -126,7 +130,7 @@ impl Document<'_, '_> {
             let gradient = format!("g{}_{index}", self.base.to_u16());
             let bounds = self.compiled.bounds(layer.glyph);
             let fill = self.fill(layer.fill, &gradient, bounds, &mut defs);
-            let _ = write!(body, r#"<path d="{path}" {fill}/>"#);
+            append(&mut body, format_args!(r#"<path d="{path}" {fill}/>"#));
         }
         if body.is_empty() {
             return Ok(None);
@@ -134,12 +138,14 @@ impl Document<'_, '_> {
 
         let mut text = String::from(r#"<svg xmlns="http://www.w3.org/2000/svg">"#);
         if !defs.is_empty() {
-            let _ = write!(text, "<defs>{defs}</defs>");
+            append(&mut text, format_args!("<defs>{defs}</defs>"));
         }
-        let _ = write!(
-            text,
-            r#"<g id="glyph{}"><g transform="scale(1,-1)">{body}</g></g></svg>"#,
-            self.base.to_u16()
+        append(
+            &mut text,
+            format_args!(
+                r#"<g id="glyph{}"><g transform="scale(1,-1)">{body}</g></g></svg>"#,
+                self.base.to_u16()
+            ),
         );
         Ok(Some(text))
     }
@@ -162,14 +168,16 @@ impl Document<'_, '_> {
             }
             Paint::LinearGradient { stops, p0, p1, p2 } => {
                 let end = linear_end(*p0, *p1, *p2);
-                let _ = write!(
+                append(
                     defs,
-                    r#"<linearGradient id="{gradient}" gradientUnits="userSpaceOnUse" x1="{}" y1="{}" x2="{}" y2="{}">{}</linearGradient>"#,
-                    number(p0.x),
-                    number(p0.y),
-                    number(end.x),
-                    number(end.y),
-                    self.stops(stops),
+                    format_args!(
+                        r#"<linearGradient id="{gradient}" gradientUnits="userSpaceOnUse" x1="{}" y1="{}" x2="{}" y2="{}">{}</linearGradient>"#,
+                        number(p0.x),
+                        number(p0.y),
+                        number(end.x),
+                        number(end.y),
+                        self.stops(stops),
+                    ),
                 );
                 format!(r#"fill="url(#{gradient})""#)
             }
@@ -181,16 +189,18 @@ impl Document<'_, '_> {
                 r1,
             } => {
                 let outer = r1.unwrap_or_else(|| farthest_corner(*c1, bounds));
-                let _ = write!(
+                append(
                     defs,
-                    r#"<radialGradient id="{gradient}" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" r="{}" fx="{}" fy="{}" fr="{}">{}</radialGradient>"#,
-                    number(c1.x),
-                    number(c1.y),
-                    number(outer),
-                    number(c0.x),
-                    number(c0.y),
-                    number(r0.unwrap_or(0.0)),
-                    self.stops(stops),
+                    format_args!(
+                        r#"<radialGradient id="{gradient}" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" r="{}" fx="{}" fy="{}" fr="{}">{}</radialGradient>"#,
+                        number(c1.x),
+                        number(c1.y),
+                        number(outer),
+                        number(c0.x),
+                        number(c0.y),
+                        number(r0.unwrap_or(0.0)),
+                        self.stops(stops),
+                    ),
                 );
                 format!(r#"fill="url(#{gradient})""#)
             }
@@ -200,17 +210,20 @@ impl Document<'_, '_> {
     }
 
     fn stops(&self, stops: &[ColorStop]) -> String {
-        stops
-            .iter()
-            .map(|stop| {
-                format!(
+        let mut text = String::new();
+        for stop in stops {
+            append(
+                &mut text,
+                format_args!(
                     r#"<stop offset="{}" style="stop-color:{};stop-opacity:{}"/>"#,
                     number(stop.offset),
                     self.colour(stop.color),
                     number(stop.alpha),
-                )
-            })
-            .collect()
+                ),
+            );
+        }
+
+        text
     }
 
     /// Returns a CSS colour for a paint colour.
@@ -290,40 +303,55 @@ fn path_data(
     Ok((!pen.0.is_empty()).then_some(pen.0))
 }
 
+/// Appends formatted text; writing to a `String` cannot fail.
+fn append(out: &mut String, args: std::fmt::Arguments<'_>) {
+    out.write_fmt(args).unwrap_or_default();
+}
+
 /// Collects outline commands as SVG path data.
 #[derive(Default)]
 struct PathPen(String);
 
 impl OutlinePen for PathPen {
     fn move_to(&mut self, x: f32, y: f32) {
-        let _ = write!(self.0, "M{} {}", number(x.into()), number(y.into()));
+        append(
+            &mut self.0,
+            format_args!("M{} {}", number(x.into()), number(y.into())),
+        );
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
-        let _ = write!(self.0, "L{} {}", number(x.into()), number(y.into()));
+        append(
+            &mut self.0,
+            format_args!("L{} {}", number(x.into()), number(y.into())),
+        );
     }
 
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        let _ = write!(
-            self.0,
-            "Q{} {} {} {}",
-            number(cx.into()),
-            number(cy.into()),
-            number(x.into()),
-            number(y.into())
+        append(
+            &mut self.0,
+            format_args!(
+                "Q{} {} {} {}",
+                number(cx.into()),
+                number(cy.into()),
+                number(x.into()),
+                number(y.into())
+            ),
         );
     }
 
     fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
-        let _ = write!(
-            self.0,
-            "C{} {} {} {} {} {}",
-            number(c1x.into()),
-            number(c1y.into()),
-            number(c2x.into()),
-            number(c2y.into()),
-            number(x.into()),
-            number(y.into())
+        append(
+            &mut self.0,
+            format_args!(
+                "C{} {} {} {} {} {}",
+                number(c1x.into()),
+                number(c1y.into()),
+                number(c2x.into()),
+                number(c2y.into()),
+                number(x.into()),
+                number(y.into())
+            ),
         );
     }
 

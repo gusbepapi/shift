@@ -39,33 +39,50 @@ impl GlyphsGlyphStream {
         self.glyph_names.len() + self.synthesized.len()
     }
 
+    /// Returns the colour layer glyph that follows the named glyphs at `index`, if there is one.
+    fn synthesized_glyph(&self, index: usize) -> Option<&SynthesizedGlyph> {
+        let offset = index.checked_sub(self.glyph_names.len())?;
+
+        self.synthesized.get(offset)
+    }
+
     /// Returns how many layers the glyph at `index` imports.
     fn layer_count(&self, index: usize) -> usize {
         match self.glyph_names.get(index) {
-            Some(name) => imported_layer_count(&self.source.glyphs[name.as_str()], &self.sources),
-            None => self.synthesized[index - self.glyph_names.len()].layer_count(),
+            Some(name) => self
+                .source
+                .glyphs
+                .get(name.as_str())
+                .map_or(0, |glyph| imported_layer_count(glyph, &self.sources)),
+            None => self
+                .synthesized_glyph(index)
+                .map_or(0, SynthesizedGlyph::layer_count),
         }
     }
 
     fn convert(&self, index: usize) -> FormatBackendResult<Glyph> {
-        match self.glyph_names.get(index) {
-            Some(name) => convert_glyph(
-                &self.source.glyphs[name.as_str()],
-                &self.glyph_ids,
-                &self.sources,
-                &self.ids,
-            ),
-            None => self.synthesized[index - self.glyph_names.len()]
-                .convert(&self.source, &self.glyph_ids),
+        if let Some(name) = self.glyph_names.get(index) {
+            let glyph = self.source.glyphs.get(name.as_str()).ok_or_else(|| {
+                FormatBackendError::Glyphs(format!("the glyph {name:?} is missing from the file"))
+            })?;
+
+            return convert_glyph(glyph, &self.glyph_ids, &self.sources, &self.ids);
         }
+        let synthesized = self.synthesized_glyph(index).ok_or_else(|| {
+            FormatBackendError::Glyphs(format!("the glyph at index {index} does not exist"))
+        })?;
+
+        synthesized.convert(&self.source, &self.glyph_ids)
     }
 }
 
 impl GlyphStream for GlyphsGlyphStream {
     fn directory(&self) -> Vec<GlyphDirectoryEntry> {
-        let named = self.glyph_names.iter().map(|name| GlyphDirectoryEntry {
-            glyph_id: self.glyph_ids[name],
-            name: name.clone().into(),
+        let named = self.glyph_names.iter().filter_map(|name| {
+            Some(GlyphDirectoryEntry {
+                glyph_id: *self.glyph_ids.get(name)?,
+                name: name.clone().into(),
+            })
         });
         let synthesized = self.synthesized.iter().map(|glyph| GlyphDirectoryEntry {
             glyph_id: glyph.id,

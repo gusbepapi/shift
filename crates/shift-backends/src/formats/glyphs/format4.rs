@@ -63,7 +63,8 @@ fn is_format_4(text: &str) -> bool {
         end -= 1;
     }
 
-    text[..end].contains(FORMAT_4_MARKER)
+    text.get(..end)
+        .is_some_and(|head| head.contains(FORMAT_4_MARKER))
 }
 
 /// Rewrites Glyphs 4 source text to the format 3 shapes, listing what has no place there.

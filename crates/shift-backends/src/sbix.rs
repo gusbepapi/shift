@@ -133,12 +133,16 @@ pub(crate) fn sbix_table(
     bytes.extend(FLAGS.to_be_bytes());
     bytes.extend(
         u32::try_from(strike_count)
-            .map_err(|_| overflow())?
+            .map_err(|_error| overflow())?
             .to_be_bytes(),
     );
     let mut offset = first_strike;
     for strike in &strikes {
-        bytes.extend(u32::try_from(offset).map_err(|_| overflow())?.to_be_bytes());
+        bytes.extend(
+            u32::try_from(offset)
+                .map_err(|_error| overflow())?
+                .to_be_bytes(),
+        );
         offset = offset.checked_add(strike.len()).ok_or_else(overflow)?;
     }
     for strike in strikes {
@@ -163,7 +167,7 @@ fn strike(
     let mut pending = glyphs.iter().peekable();
 
     for glyph in 0..glyph_count {
-        offsets.push(u32::try_from(header_len + records.len()).map_err(|_| overflow())?);
+        offsets.push(u32::try_from(header_len + records.len()).map_err(|_error| overflow())?);
         let Some(next) = pending.next_if(|next| next.base.to_u16() == glyph) else {
             continue;
         };
@@ -175,7 +179,7 @@ fn strike(
         records.extend(b"png ");
         records.extend(bitmap.png);
     }
-    offsets.push(u32::try_from(header_len + records.len()).map_err(|_| overflow())?);
+    offsets.push(u32::try_from(header_len + records.len()).map_err(|_error| overflow())?);
 
     let mut bytes = Vec::with_capacity(header_len + records.len());
     bytes.extend(ppem.to_be_bytes());

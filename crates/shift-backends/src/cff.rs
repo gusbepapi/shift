@@ -209,9 +209,10 @@ fn assemble(assembly: &Assembly<'_>) -> Result<Vec<u8>, CffError> {
 
     let mut charset = vec![0u8];
     for number in 0..assembly.glyph_names.len() {
-        let sid = u16::try_from(FIRST_CUSTOM_SID + number).map_err(|_| CffError::TooLarge {
-            message: "more than 65 000 glyphs".to_string(),
-        })?;
+        let sid =
+            u16::try_from(FIRST_CUSTOM_SID + number).map_err(|_error| CffError::TooLarge {
+                message: "more than 65 000 glyphs".to_string(),
+            })?;
         charset.extend(sid.to_be_bytes());
     }
 
@@ -259,7 +260,7 @@ fn assemble(assembly: &Assembly<'_>) -> Result<Vec<u8>, CffError> {
 
 /// Encodes a CFF INDEX: a count, an offset size, `count + 1` offsets, then the data.
 fn index(items: &[Vec<u8>]) -> Result<Vec<u8>, CffError> {
-    let count = u16::try_from(items.len()).map_err(|_| CffError::TooLarge {
+    let count = u16::try_from(items.len()).map_err(|_error| CffError::TooLarge {
         message: "more than 65 535 entries in one INDEX".to_string(),
     })?;
     let mut out = count.to_be_bytes().to_vec();
@@ -279,7 +280,11 @@ fn index(items: &[Vec<u8>]) -> Result<Vec<u8>, CffError> {
     let mut offset = 1usize;
     let push_offset = |out: &mut Vec<u8>, value: usize| {
         let bytes = u32::try_from(value).unwrap_or(u32::MAX).to_be_bytes();
-        out.extend_from_slice(&bytes[4 - usize::from(offset_size)..]);
+        out.extend_from_slice(
+            bytes
+                .get(4 - usize::from(offset_size)..)
+                .unwrap_or_default(),
+        );
     };
     push_offset(&mut out, offset);
     for item in items {
@@ -345,7 +350,11 @@ fn dict_real(value: f64) -> Vec<u8> {
     }
 
     let mut out = vec![30];
-    out.extend(nibbles.chunks(2).map(|pair| (pair[0] << 4) | pair[1]));
+    out.extend(
+        nibbles
+            .chunks_exact(2)
+            .map(|pair| pair.iter().fold(0u8, |byte, nibble| (byte << 4) | nibble)),
+    );
     out
 }
 

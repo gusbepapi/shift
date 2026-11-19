@@ -263,26 +263,26 @@ impl<'a> Planner<'a> {
         let shapes = &layer.shapes;
         let mut paints = Vec::with_capacity(shapes.len());
         let mut start = 0;
-        while start < shapes.len() {
-            let attributes = shapes[start].attributes();
-            let end = shapes[start..]
-                .iter()
-                .position(|shape| shape.attributes() != attributes)
-                .map_or(shapes.len(), |offset| start + offset);
+        for run in shapes.chunk_by(|first, second| first.attributes() == second.attributes()) {
+            let Some(head) = run.first() else {
+                continue;
+            };
+            let attributes = head.attributes();
             let bounds = if attributes.gradient.is_some() {
-                self.run_bounds(&shapes[start..end])
+                self.run_bounds(run)
             } else {
                 None
             };
-            for (index, shape) in shapes.iter().enumerate().take(end).skip(start) {
+            for (offset, shape) in run.iter().enumerate() {
                 let fill = self.fill(attributes, bounds);
-                let layer_glyph = self.layer_glyph(glyph, &[shape], Origin::ColorShape(index));
+                let layer_glyph =
+                    self.layer_glyph(glyph, &[shape], Origin::ColorShape(start + offset));
                 paints.push(Paint::Glyph {
                     glyph: layer_glyph,
                     fill: Box::new(fill),
                 });
             }
-            start = end;
+            start += run.len();
         }
         paints
     }
@@ -427,7 +427,10 @@ impl<'a> Planner<'a> {
                 colors: Vec::new(),
             });
         }
-        let length = self.palettes[0].colors.len();
+        let length = self
+            .palettes
+            .first()
+            .map_or(0, |palette| palette.colors.len());
         let Some(index) = u16::try_from(length)
             .ok()
             .filter(|_| length < MAX_PALETTE_ENTRIES)

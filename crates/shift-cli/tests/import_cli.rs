@@ -1,3 +1,4 @@
+#[expect(dead_code, reason = "import tests use only some of the shared helpers")]
 mod support;
 
 use shift_backends::font_loader::FontLoader;

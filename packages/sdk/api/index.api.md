@@ -585,6 +585,7 @@ export class Font {
     axisTagged(tag: string): Axis | null;
     beginKerningEdit(): KerningEdit;
     cloneGlyphLayer(glyphId: GlyphId, sourceId: SourceId, fromLayerId: LayerId): LayerId;
+    get colorCell(): Signal<ColorData>;
     get committedRevisionCell(): Signal<number>;
     componentBaseNamesForName(name: GlyphName): readonly GlyphName[];
     contourIdForPoint(pointId: PointId): ContourId | null;
@@ -709,6 +710,7 @@ export class Font {
     renameKerningGroup(groupId: KerningGroupId, name: string): Promise<void>;
     resolveLayers(layerIds: readonly LayerId[]): Promise<readonly LayerRead[]>;
     setAxisMappings(mappings: readonly AxisMapping[]): Promise<void>;
+    setColor(color: ColorData): void;
     setGrid(grid: Grid$1 | null): void;
     setIndependentAxisMapping(axis: Axis$1, mapping: AxisMapping): Promise<void>;
     setKerningException(sourceId: SourceId, first: GlyphId, second: GlyphId, position: KerningPairPosition, exception: boolean): boolean;

@@ -18,7 +18,6 @@ pub(crate) fn load_font(path: &str) -> Font {
         .unwrap()
 }
 
-#[allow(dead_code)]
 pub(crate) fn shift_with_stdin(args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_shift-cli"))
         .args(args)

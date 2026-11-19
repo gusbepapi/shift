@@ -2731,17 +2731,18 @@ fn one_palette(red: u8) -> shift_font::ColorData {
     }
 }
 
-fn set_color(workspace: &mut FontWorkspace, color: &shift_font::ColorData) {
-    workspace
-        .apply(
-            &FontIntentSet {
-                intents: vec![FontIntent::SetColor(
-                    shift_font::SetColor::new(color).unwrap(),
-                )],
-            },
-            Some("Set Colour".to_string()),
-        )
-        .unwrap();
+fn set_color(
+    workspace: &mut FontWorkspace,
+    color: &shift_font::ColorData,
+) -> Result<(), Box<dyn std::error::Error>> {
+    workspace.apply(
+        &FontIntentSet {
+            intents: vec![FontIntent::SetColor(shift_font::SetColor::new(color)?)],
+        },
+        Some("Set Colour".to_string()),
+    )?;
+
+    Ok(())
 }
 
 #[test]
@@ -2751,13 +2752,13 @@ fn colour_edits_persist_across_resume_and_undo_and_redo() {
     let mut workspace = FontWorkspace::create_untitled(&store_path, NewWorkspace::new()).unwrap();
     assert!(workspace.font().color().is_empty());
 
-    set_color(&mut workspace, &one_palette(10));
+    set_color(&mut workspace, &one_palette(10)).unwrap();
     drop(workspace);
 
     let mut workspace = FontWorkspace::resume(&store_path).unwrap();
     assert_eq!(workspace.font().color(), &one_palette(10));
 
-    set_color(&mut workspace, &one_palette(200));
+    set_color(&mut workspace, &one_palette(200)).unwrap();
     let undone = workspace.undo().unwrap().expect("setColor should undo");
     assert!(
         undone
