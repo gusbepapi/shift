@@ -1,7 +1,7 @@
-use crate::test_support::{closed_contour, sample_variable_font};
+use crate::test_support::{closed_contour, mapping_point, sample_variable_font};
 use crate::{
-    Contour, DesignLocation, Font, GlyphLayer, KerningGroup, KerningGroupId, KerningPair,
-    KerningPosition, KerningSide, PointType, SourceId,
+    AxisMapping, Contour, DesignLocation, Font, GlyphLayer, KerningGroup, KerningGroupId,
+    KerningPair, KerningPosition, KerningSide, PointType, SourceId,
 };
 
 use super::{Charset, Check, CheckOptions, MonospaceCell};
@@ -27,7 +27,8 @@ fn edit_layer(font: &mut Font, source: &str, edit: impl FnOnce(&mut GlyphLayer))
     let source_id = source_named(font, source);
     let glyph_id = font.glyph_id_by_name("A").unwrap();
     let mut glyph = font.pop_glyph(glyph_id).unwrap();
-    edit(glyph.layer_for_source_mut(source_id).unwrap());
+    let layer_id = glyph.layer_for_source(source_id).unwrap().id();
+    edit(glyph.layer_mut(layer_id).unwrap());
     font.insert_glyph(glyph).unwrap();
 }
 
@@ -127,6 +128,27 @@ fn reports_a_master_outside_its_axis() {
     font.source_mut(bold).unwrap().set_location(location);
 
     assert!(checks(&font).contains(&Check::MasterOutsideAxis));
+}
+
+#[test]
+fn keeps_masters_inside_an_axis_whose_mapping_runs_backwards() {
+    let mut font = sample_variable_font();
+    let weight = font.axes()[0].clone();
+    // User 100..900 maps to design 900..100: the design range runs high to low,
+    // and the masters at 400, 600 and 800 all sit inside it.
+    font.set_axis_mappings(vec![AxisMapping::new(
+        "Reversed weight".to_string(),
+        vec![weight.id()],
+        vec![weight.id()],
+        vec![
+            mapping_point(&weight, 100.0, 900.0),
+            mapping_point(&weight, 400.0, 400.0),
+            mapping_point(&weight, 900.0, 100.0),
+        ],
+    )])
+    .unwrap();
+
+    assert!(!checks(&font).contains(&Check::MasterOutsideAxis));
 }
 
 #[test]
@@ -319,4 +341,68 @@ fn a_round_contour_starting_elsewhere_is_not_reported_when_it_keeps_its_shape() 
     }
 
     assert!(!glyph_a_checks(&font).contains(&Check::WrongStartPoint));
+}
+
+#[test]
+fn reports_an_alternate_an_earlier_one_covers() {
+    use crate::{AlternateId, EditGlyphAlternate, GlyphAlternateEdit};
+
+    let mut font = crate::test_support::conditions_font();
+    // `heavy` (Weight ≥ 700) first covers `compact-heavy` (also Weight ≥ 700).
+    let reorder = EditGlyphAlternate {
+        alternate_id: AlternateId::from_raw("heavy"),
+        edit: GlyphAlternateEdit::Move(0),
+    };
+    let dollar = font.glyph_by_name("dollar").unwrap().id();
+    let unused = |font: &Font| -> Vec<_> {
+        font.check_glyph(dollar)
+            .unwrap()
+            .into_iter()
+            .filter(|finding| finding.check == Check::NeverUsedAlternate)
+            .collect()
+    };
+    assert!(unused(&font).is_empty());
+    font.apply_intents(&reorder.into()).unwrap();
+
+    let findings = unused(&font);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].check, Check::NeverUsedAlternate);
+    assert_eq!(
+        findings[0].message,
+        "dollar: dollar.compact-heavy (alternate 2) is never used, because \
+         dollar.heavy (alternate 1) already applies wherever its condition holds"
+    );
+}
+
+#[test]
+fn warns_that_a_component_condition_cant_be_exported() {
+    let font = crate::test_support::conditions_font();
+    let messages: Vec<String> = font
+        .check()
+        .unwrap()
+        .into_iter()
+        .filter(|finding| finding.check == Check::ComponentConditionNotExported)
+        .map(|finding| finding.message)
+        .collect();
+
+    let cant = "has a condition; component conditions can't be exported yet";
+    assert_eq!(
+        messages,
+        [
+            format!("H: component 1 (bar) {cant}"),
+            format!("H: component 2 (dot) {cant}"),
+            format!("H: component 3 (bar) {cant}"),
+            format!("mid: component 1 (bar) {cant}"),
+        ]
+    );
+    let h = font.glyph_by_name("H").unwrap().id();
+    assert_eq!(
+        font.check_glyph(h)
+            .unwrap()
+            .iter()
+            .filter(|finding| finding.check == Check::ComponentConditionNotExported)
+            .count(),
+        3
+    );
 }

@@ -28,6 +28,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 mod change_set;
+mod glyph_alternates;
+mod glyph_axes;
 mod index;
 
 use index::{EntityIdTransfer, FontIndex, IndexEntries};
@@ -394,6 +396,7 @@ impl Font {
         {
             return Err(CoreError::DuplicateAxisTag(axis.tag().to_string()));
         }
+        self.check_font_axis_against_glyph_axes(axis.id(), axis.tag())?;
 
         let axis_id = axis.id();
         let axis_default = axis.default();
@@ -451,6 +454,7 @@ impl Font {
         {
             return Err(CoreError::DuplicateAxisTag(axis.tag().to_string()));
         }
+        self.check_font_axis_against_glyph_axes(axis.id(), axis.tag())?;
         let mapped = self.axis_mappings().iter().any(|mapping| {
             mapping.inputs().contains(&axis.id()) || mapping.outputs().contains(&axis.id())
         });
@@ -748,6 +752,7 @@ impl Font {
         glyph: &'a Glyph,
     ) -> impl Iterator<Item = (&'a Source, &'a GlyphLayer)> {
         glyph.located_layers(self).filter_map(|located| {
+            located.location.exact_source_id()?;
             let source = located.location.base_source(self)?;
             Some((source, located.layer.as_ref()))
         })
@@ -1042,11 +1047,20 @@ impl Font {
     ///
     /// Returns [`CoreError::DuplicateGlyphId`] when the id is taken,
     /// [`CoreError::DuplicateGlyphName`] when the name is, and [`CoreError::DuplicateLayerId`] or
-    /// [`CoreError::DuplicateGlyphLayer`] when one of its layers clashes with the font's.
+    /// [`CoreError::DuplicateGlyphLayer`] when one of its layers clashes with the font's;
+    /// [`CoreError::AlternateIsItself`], [`CoreError::AlternateConditionOffFontAxes`] or
+    /// [`CoreError::GlyphNotFound`] for an alternate glyph the font lacks (so an alternate glyph
+    /// is added first); [`CoreError::ComponentConditionOffSpace`] or [`CoreError::AxisNotFound`]
+    /// for a component condition on an axis the glyph doesn't draw along; and a condition's own error for a
+    /// range that is reversed or not finite.
     pub fn insert_glyph(&mut self, glyph: Glyph) -> CoreResult<GlyphId> {
         let glyph_id = glyph.id();
         if self.data().glyphs.contains(&glyph_id) {
             return Err(CoreError::DuplicateGlyphId(glyph_id));
+        }
+        self.check_glyph_alternates(&glyph)?;
+        for layer in glyph.layers().values() {
+            self.check_layer_conditions(&glyph, layer)?;
         }
         let mut index = self.index().clone();
         index.try_insert(IndexEntries::of_glyph(glyph_id, &glyph))?;
@@ -1274,6 +1288,7 @@ impl Font {
         if tail_id != glyph_id {
             return Err(CoreError::GlyphNotAtTail(glyph_id));
         }
+        self.check_not_an_alternate(glyph_id)?;
 
         self.remove_glyph(glyph_id).require(&glyph_id)
     }
@@ -1282,8 +1297,8 @@ impl Font {
         self.data().glyphs.len()
     }
 
-    /// This font with only `kept` and the glyphs their components use,
-    /// transitively, in the font's order, and with no kerning or feature
+    /// This font with only `kept`, the glyphs their components use and their
+    /// alternate glyphs, transitively, in the font's order, and with no kerning or feature
     /// code, which may name glyphs it leaves out: a font that shows a few
     /// glyphs, as a memory session opens one.
     ///
@@ -1298,6 +1313,7 @@ impl Font {
             self.require_glyph(glyph_id)?;
             if closure.insert(glyph_id) {
                 frontier.extend(self.component_glyph_ids_of_glyphs([&glyph_id]));
+                frontier.extend(self.alternate_glyphs_of([&glyph_id]));
             }
         }
         let mut subset = self.clone();
@@ -1341,7 +1357,7 @@ impl Font {
     ///
     /// Returns [`CoreError::GlyphNotFound`] when the glyph is missing, and the
     /// index's error when the edit breaks it. The font is unchanged on failure.
-    fn edit_indexed_glyph(
+    pub(super) fn edit_indexed_glyph(
         &mut self,
         glyph_id: GlyphId,
         edit: impl FnOnce(&mut Glyph),
@@ -1504,15 +1520,22 @@ impl Font {
     ///
     /// Returns [`CoreError::SourceNotFound`] or [`CoreError::GlyphNotFound`] when the layer's
     /// source or the glyph is missing, and [`CoreError::DuplicateLayerId`] or
-    /// [`CoreError::DuplicateGlyphLayer`] when the layer's id or source is already used.
+    /// [`CoreError::DuplicateGlyphLayer`] when the layer's id or source is already used. A
+    /// [located](GlyphLayer::located) layer is also refused with
+    /// [`CoreError::LayerLocationOffSpace`] when it names an axis that is neither a font axis nor
+    /// one of the glyph's, [`CoreError::AxisValuesOutsideRange`] when a glyph-axis value is
+    /// outside its range, and [`CoreError::DuplicateLayerLocation`] when another drawing of the
+    /// glyph already sits there.
     pub fn insert_glyph_layer(&mut self, glyph_id: GlyphId, layer: GlyphLayer) -> CoreResult<()> {
-        if self.source(layer.source_id()).is_none() {
-            return Err(CoreError::SourceNotFound(layer.source_id()));
+        if let Some(source_id) = layer.source_id() {
+            self.require_source(source_id)?;
         }
 
-        if self.glyph(glyph_id).is_none() {
-            return Err(CoreError::GlyphNotFound(glyph_id));
+        let glyph = self.require_glyph(glyph_id)?;
+        if layer.is_located() {
+            self.check_layer_location(glyph, layer.id(), layer.location())?;
         }
+        self.check_layer_conditions(glyph, &layer)?;
         let mut index = self.index().clone();
         index.try_insert(IndexEntries::of_layer(glyph_id, &layer))?;
 
@@ -1564,7 +1587,7 @@ impl Font {
     ///
     /// Returns [`CoreError::DuplicateLayerId`] when the batch names a layer twice,
     /// [`CoreError::LayerNotFound`] when a layer does not exist, and
-    /// [`CoreError::LayerSourceMismatch`] when a replacement changes its layer's source. No layer
+    /// [`CoreError::LayerLocationMismatch`] when a replacement moves its layer. No layer
     /// changes on failure.
     pub fn replace_glyph_layers<L>(&mut self, layers: Vec<L>) -> CoreResult<()>
     where
@@ -1591,12 +1614,8 @@ impl Font {
                 .and_then(|glyph| glyph.layers().get(&layer_id))
                 .cloned()
                 .require(&layer_id)?;
-            if layer.source_id() != previous.source_id() {
-                return Err(CoreError::LayerSourceMismatch {
-                    layer_id,
-                    expected_source_id: previous.source_id(),
-                    actual_source_id: layer.source_id(),
-                });
+            if layer.location() != previous.location() {
+                return Err(CoreError::LayerLocationMismatch { layer_id });
             }
             replacements.push((glyph_id, previous, layer));
         }
@@ -2647,6 +2666,23 @@ mod tests {
     }
 
     #[test]
+    fn glyph_axes_and_drawings_off_the_sources_travel_with_the_font() {
+        let font = crate::test_support::glyph_axis_font();
+        let dot = font.glyph_id_by_name("dot").unwrap();
+        let spread = font.glyph(dot).unwrap().axes()[0].id();
+
+        let json = serde_json::to_string(&font).unwrap();
+        let decoded: Font = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded, font);
+        assert_eq!(decoded.glyph_axis_owner(spread), Some(dot));
+        assert_eq!(
+            decoded.glyph_axis(spread).map(crate::GlyphAxis::tag),
+            Some("SPRD")
+        );
+    }
+
+    #[test]
     fn deserialization_rebuilds_private_indexes() {
         let mut font = Font::new();
         let source_id = font.default_source_id().unwrap();
@@ -3153,7 +3189,9 @@ mod tests {
         font.insert_glyph(glyph).unwrap();
         let glyph = font.glyphs().next().unwrap();
 
-        let fallback = font.fallback_layer(glyph).map(|layer| layer.source_id());
+        let fallback = font
+            .fallback_layer(glyph)
+            .and_then(|layer| layer.source_id());
 
         assert_eq!(fallback, Some(first));
     }
@@ -3166,13 +3204,13 @@ mod tests {
 
         let drawn = font
             .masters_with_layers(glyph)
-            .map(|(source, layer)| (source.name(), layer.source_id()))
+            .map(|(source, layer)| (source.name(), layer.source_id().unwrap()))
             .collect::<Vec<_>>();
 
         assert_eq!(font.default_master().map(Source::id), Some(default_id));
         assert_eq!(
             font.default_master_layer(glyph)
-                .map(|layer| layer.source_id()),
+                .and_then(|layer| layer.source_id()),
             Some(default_id)
         );
         assert_eq!(

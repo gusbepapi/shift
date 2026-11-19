@@ -28,6 +28,18 @@ pub fn closed_contour(points: &[(f64, f64)]) -> Contour {
     contour
 }
 
+/// glyphsLib's `hasCornerGlyph`, a triangle whose apex is an open corner,
+/// widened by `stretch`. Its edges cross at (114.5417 × `stretch`, 191.2080),
+/// where fontc erases the corner.
+pub fn open_corner_contour(stretch: f64) -> Contour {
+    closed_contour(&[
+        (20.0 * stretch, 0.0),
+        (179.0 * stretch, 0.0),
+        (60.0 * stretch, 353.0),
+        (198.0 * stretch, 360.0),
+    ])
+}
+
 /// A closed contour of on-curve points: `contour![(0, 0), (40, 0), (40, 700)]`.
 #[macro_export]
 macro_rules! contour {
@@ -482,7 +494,7 @@ fn set_source_metrics(
     }
 }
 
-fn mapping_point(axis: &Axis, user: f64, design: f64) -> AxisMappingPoint {
+pub(crate) fn mapping_point(axis: &Axis, user: f64, design: f64) -> AxisMappingPoint {
     let input = Location::from([(axis.id(), user)]);
     let output = Location::from([(axis.id(), design)]);
     AxisMappingPoint {
@@ -516,4 +528,251 @@ pub fn kerning_between(font: &Font, source_id: SourceId, first: &str, second: &s
 /// Returns [`kerning_between`] at the font's default source.
 pub fn default_kerning_between(font: &Font, first: &str, second: &str) -> Option<f64> {
     kerning_between(font, font.default_source_id()?, first, second)
+}
+
+/// A Solenoid-like font with glyph axes and drawings off its sources, for
+/// tests of where drawings sit.
+///
+/// A Bleed axis (`BLED`, 0 to 100) has a Regular master at 0 and a Bled one
+/// at 100. `dot` has axes of its own, Spread and Strike (0 to 100), and is a
+/// two-point line drawn on both masters and at Spread 100 and Strike 100 on
+/// Regular. `H` holds two `dot` components on both masters, the first
+/// setting Spread 60, and has a brace layer at Bleed 50 with no base source
+/// whose first component sets Spread 80.
+///
+/// # Panics
+///
+/// Panics if the font's model refuses the fixture, which would be a bug.
+pub fn glyph_axis_font() -> Font {
+    use crate::{GlyphAxis, LayerLocation};
+
+    let line = |location: LayerLocation, from: (f64, f64), to: (f64, f64)| {
+        let mut layer = GlyphLayer::located(LayerId::new(), location);
+        let mut contour = Contour::new();
+        contour.add_point(from.0, from.1, PointType::OnCurve, false);
+        contour.add_point(to.0, to.1, PointType::OnCurve, false);
+        layer.add_contour(contour);
+        layer
+    };
+
+    let mut font = Font::new();
+    font.clear_sources();
+    let axis = Axis::new("BLED".into(), "Bleed".into(), 0.0, 0.0, 100.0);
+    let bleed = axis.id();
+    font.add_axis(axis).unwrap();
+    let regular = font.add_source(Source::new(
+        "Regular".into(),
+        DesignLocation::from([(bleed, 0.0)]),
+    ));
+    let bled = font.add_source(Source::new(
+        "Bled".into(),
+        DesignLocation::from([(bleed, 100.0)]),
+    ));
+    font.set_default_source_id(regular);
+
+    let dot = GlyphId::from_raw("dot");
+    let mut glyph = Glyph::with_id(dot, "dot");
+    glyph.set_layer(line(
+        LayerLocation::at_source(regular),
+        (0.0, 0.0),
+        (10.0, 0.0),
+    ));
+    glyph.set_layer(line(
+        LayerLocation::at_source(bled),
+        (20.0, 0.0),
+        (30.0, 0.0),
+    ));
+    font.insert_glyph(glyph).unwrap();
+    let spread = font
+        .add_glyph_axis(dot, GlyphAxis::new("Spread", 0.0, 0.0, 100.0))
+        .unwrap();
+    let strike = font
+        .add_glyph_axis(dot, GlyphAxis::new("Strike", 0.0, 0.0, 100.0))
+        .unwrap();
+    let on_regular =
+        |axis: AxisId| LayerLocation::new(Some(regular), DesignLocation::from([(axis, 100.0)]));
+    font.insert_glyph_layer(dot, line(on_regular(spread), (0.0, 0.0), (110.0, 0.0)))
+        .unwrap();
+    font.insert_glyph_layer(dot, line(on_regular(strike), (0.0, 50.0), (10.0, 50.0)))
+        .unwrap();
+
+    let h_layer = |location: LayerLocation, first_spread: f64| {
+        let mut layer = GlyphLayer::located(LayerId::new(), location);
+        layer.set_width(720.0);
+        let mut spread_dot = Component::new(dot, "dot");
+        spread_dot.set_location(DesignLocation::from([(spread, first_spread)]));
+        layer.add_component(spread_dot);
+        let mut plain_dot = Component::new(dot, "dot");
+        plain_dot.translate(500.0, 0.0);
+        layer.add_component(plain_dot);
+        layer
+    };
+    let h = GlyphId::from_raw("H");
+    let mut glyph = Glyph::with_id(h, "H");
+    for source in [regular, bled] {
+        glyph.set_layer(h_layer(LayerLocation::at_source(source), 60.0));
+    }
+    font.insert_glyph(glyph).unwrap();
+    let brace = LayerLocation::at(DesignLocation::from([(bleed, 50.0)]));
+    font.insert_glyph_layer(h, h_layer(brace, 80.0)).unwrap();
+    font
+}
+
+/// A font with glyph alternates and component conditions, built in code.
+///
+/// - Axes: Weight (`wght`, 100–400–900) and Width (`wdth`, 50–100–100), one
+///   master, Regular, at their defaults.
+/// - Each simple glyph is one line from `(x, 0)` to `(x + 10, 0)`, its `x`
+///   telling it apart: `dollar` 1 (advance 500, U+0024 `$`), `dollar.heavy` 2 (600),
+///   `dollar.compact-heavy` 3 (450), `bar` 4, `dot` 5.
+/// - `dollar` has two alternates, tried in order: Weight ≥ 700 and Width ≤ 80
+///   draws `dollar.compact-heavy`; Weight ≥ 700 draws `dollar.heavy`.
+/// - `dollarcomp` is one component of `dollar`.
+/// - `dot` has a glyph axis, Spread (`SPRD`, 0–100).
+/// - `H` has a glyph axis of its own, Crossbar (`CRSB`, 0–100), and three
+///   components: `bar` where Weight ≥ 700; `dot`, moved 100 right, where
+///   Crossbar is 70–100; and `bar` drawn at Weight 800, moved 200 right,
+///   where Weight ≥ 700, which reads `H`'s Weight, not the 800 it sets.
+/// - `HX` is `H` drawn at Crossbar 80.
+/// - `mid` is `bar` where Weight is at least 700; `T` is `mid` drawn at
+///   Weight 800, and `U` is `mid` drawn where `U` is.
+///
+/// # Panics
+///
+/// Panics if the font refuses one of the glyphs it is built from.
+pub fn conditions_font() -> Font {
+    use crate::{AlternateId, Condition, ConditionRange, GlyphAlternate, GlyphAxis};
+
+    let line = |source: SourceId, x: f64, advance: f64| {
+        let mut layer = GlyphLayer::with_width(LayerId::new(), source, advance);
+        let mut contour = Contour::new();
+        contour.add_point(x, 0.0, PointType::OnCurve, false);
+        contour.add_point(x + 10.0, 0.0, PointType::OnCurve, false);
+        layer.add_contour(contour);
+        layer
+    };
+
+    let mut font = Font::new();
+    font.clear_sources();
+    let weight = Axis::new("wght".into(), "Weight".into(), 100.0, 400.0, 900.0);
+    let width = Axis::new("wdth".into(), "Width".into(), 50.0, 100.0, 100.0);
+    let (wght, wdth) = (weight.id(), width.id());
+    font.add_axis(weight).unwrap();
+    font.add_axis(width).unwrap();
+    let regular = font.add_source(Source::new(
+        "Regular".into(),
+        DesignLocation::from([(wght, 400.0), (wdth, 100.0)]),
+    ));
+    font.set_default_source_id(regular);
+
+    let mut simple = |name: &str, x: f64, advance: f64| {
+        let mut glyph = Glyph::with_id(GlyphId::from_raw(name), name);
+        glyph.set_layer(line(regular, x, advance));
+        font.insert_glyph(glyph).unwrap()
+    };
+    let heavy = simple("dollar.heavy", 2.0, 600.0);
+    let compact_heavy = simple("dollar.compact-heavy", 3.0, 450.0);
+    let bar = simple("bar", 4.0, 0.0);
+    let dot = simple("dot", 5.0, 0.0);
+
+    let heavy_weight = ConditionRange::new(wght, Some(700.0), None);
+    let mut dollar = Glyph::with_id(GlyphId::from_raw("dollar"), "dollar");
+    dollar.set_unicodes(vec![u32::from('$')]);
+    dollar.set_layer(line(regular, 1.0, 500.0));
+    dollar.set_alternates(vec![
+        GlyphAlternate::new(
+            AlternateId::from_raw("compact-heavy"),
+            Condition::all([heavy_weight, ConditionRange::new(wdth, None, Some(80.0))]),
+            compact_heavy,
+        ),
+        GlyphAlternate::new(
+            AlternateId::from_raw("heavy"),
+            Condition::all([heavy_weight]),
+            heavy,
+        ),
+    ]);
+    let dollar = font.insert_glyph(dollar).unwrap();
+
+    let composite = |name: &str, components: Vec<Component>| {
+        let mut glyph = Glyph::with_id(GlyphId::from_raw(name), name);
+        let mut layer = GlyphLayer::with_width(LayerId::new(), regular, 500.0);
+        for component in components {
+            layer.add_component(component);
+        }
+        glyph.set_layer(layer);
+        glyph
+    };
+    font.insert_glyph(composite(
+        "dollarcomp",
+        vec![Component::new(dollar, "dollar")],
+    ))
+    .unwrap();
+
+    font.add_glyph_axis(dot, GlyphAxis::new("Spread", 0.0, 0.0, 100.0))
+        .unwrap();
+    let heavy_bar = || {
+        let mut component = Component::new(bar, "bar");
+        component.set_condition(Condition::all([heavy_weight]));
+        component
+    };
+    let crossbar = AxisId::from_raw("crossbar");
+    let mut crossbar_dot = Component::new(dot, "dot");
+    crossbar_dot.set_condition(Condition::all([ConditionRange::new(
+        crossbar,
+        Some(70.0),
+        Some(100.0),
+    )]));
+    crossbar_dot.translate(100.0, 0.0);
+    let mut own_weight_bar = heavy_bar();
+    own_weight_bar.set_location(DesignLocation::from([(wght, 800.0)]));
+    own_weight_bar.translate(200.0, 0.0);
+    let mut h = composite("H", vec![heavy_bar(), crossbar_dot, own_weight_bar]);
+    h.set_axes(vec![GlyphAxis::with_id(
+        crossbar, "CRSB", "Crossbar", 0.0, 0.0, 100.0,
+    )]);
+    let h = font.insert_glyph(h).unwrap();
+    let mut crossbar_h = Component::new(h, "H");
+    crossbar_h.set_location(DesignLocation::from([(crossbar, 80.0)]));
+    font.insert_glyph(composite("HX", vec![crossbar_h]))
+        .unwrap();
+
+    let mid = font
+        .insert_glyph(composite("mid", vec![heavy_bar()]))
+        .unwrap();
+    let mut heavy_mid = Component::new(mid, "mid");
+    heavy_mid.set_location(DesignLocation::from([(wght, 800.0)]));
+    font.insert_glyph(composite("T", vec![heavy_mid])).unwrap();
+    font.insert_glyph(composite("U", vec![Component::new(mid, "mid")]))
+        .unwrap();
+    font
+}
+
+/// Applies `set`, then checks that undoing it restores the font and redoing
+/// it brings the edit back. Returns the edited font.
+///
+/// # Panics
+///
+/// Panics when `set` is refused, or undo or redo doesn't restore the font.
+pub fn apply_undo_redo(font: &mut Font, set: impl Into<crate::FontIntentSet>) -> Font {
+    let before = font.clone();
+    let applied = font.apply_intents(&set.into()).unwrap();
+    let after = font.clone();
+
+    font.apply_change_set(&applied.changes.inverted()).unwrap();
+    assert_eq!(*font, before, "undo restores the font");
+    font.apply_change_set(&applied.changes).unwrap();
+    assert_eq!(*font, after, "redo brings the edit back");
+    after
+}
+
+/// Applies `set` and returns its error, checking the font is unchanged.
+///
+/// # Panics
+///
+/// Panics when `set` applies, or a refused edit changed the font.
+pub fn refused_edit(font: &mut Font, set: impl Into<crate::FontIntentSet>) -> crate::CoreError {
+    let before = font.clone();
+    let error = font.apply_intents(&set.into()).unwrap_err();
+    assert_eq!(*font, before, "a refused edit leaves the font as it was");
+    error
 }

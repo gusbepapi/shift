@@ -15,7 +15,8 @@ use std::sync::Arc;
 use indexmap::IndexSet;
 
 use crate::collection::PersistentEntityList;
-use crate::entity::{GlyphEntityId, GlyphId, LayerId, SourceId};
+use crate::entity::{AlternateId, AxisId, GlyphEntityId, GlyphId, LayerId, SourceId};
+use crate::glyph_axis::GlyphAxis;
 use crate::persistent::{PersistentListMultiMap, PersistentMultiMap, PersistentSet, UniqueIndex};
 use crate::{CoreError, CoreResult, Glyph, GlyphLayer, GlyphName};
 
@@ -36,6 +37,16 @@ pub(super) struct FontIndex {
     metrics_keyed: PersistentMultiMap<GlyphId, KeyHolder>,
     /// Every point, contour, component, anchor, and guideline id in the font.
     pub(super) entity_ids: PersistentSet<GlyphEntityId>,
+    /// The glyph that owns each glyph axis.
+    glyph_axes: UniqueIndex<AxisId, GlyphId>,
+    /// Each glyph axis's tag. Font axis tags are checked against these, and
+    /// these against them, by [`Font`](super::Font).
+    glyph_axis_tags: UniqueIndex<AxisTag, AxisId>,
+    /// The glyph that owns each alternate.
+    alternates: UniqueIndex<AlternateId, GlyphId>,
+    /// The glyphs each glyph is an alternate of, so removing a glyph finds
+    /// the alternates that draw it without scanning every glyph.
+    alternate_owners: PersistentMultiMap<GlyphId, GlyphId>,
 }
 
 impl FontIndex {
@@ -71,6 +82,29 @@ impl FontIndex {
             glyph_id,
             source_id,
         })
+    }
+
+    /// The glyph that owns the glyph axis `axis_id`.
+    pub(super) fn glyph_axis_owner(&self, axis_id: AxisId) -> Option<&GlyphId> {
+        self.glyph_axes.get(&axis_id)
+    }
+
+    /// The glyph axis tagged `tag`.
+    pub(super) fn glyph_axis_by_tag(&self, tag: &str) -> Option<&AxisId> {
+        self.glyph_axis_tags.get(tag)
+    }
+
+    /// The glyph that has the alternate `alternate_id`.
+    pub(super) fn alternate_owner(&self, alternate_id: AlternateId) -> Option<&GlyphId> {
+        self.alternates.get(&alternate_id)
+    }
+
+    /// The glyphs `glyph_id` is an alternate of.
+    pub(super) fn glyphs_with_alternate(
+        &self,
+        glyph_id: &GlyphId,
+    ) -> impl Iterator<Item = &GlyphId> {
+        self.alternate_owners.get(glyph_id)
     }
 
     /// Layers with at least one component of `base_glyph_id`.
@@ -111,6 +145,16 @@ impl FontIndex {
         self.entity_ids
             .try_extend(entries.entity_ids)
             .or_duplicate()?;
+        self.glyph_axes
+            .try_extend(entries.glyph_axes)
+            .or_duplicate()?;
+        self.glyph_axis_tags
+            .try_extend(entries.glyph_axis_tags)
+            .or_duplicate()?;
+        self.alternates
+            .try_extend(entries.alternates)
+            .or_duplicate()?;
+        self.alternate_owners.extend(entries.alternate_owners);
         self.by_unicode.extend(entries.unicodes);
         self.by_component_base.extend(entries.component_bases);
         self.metrics_keyed.extend(entries.metrics_keyed);
@@ -125,6 +169,10 @@ impl FontIndex {
         self.by_component_base.remove_all(&entries.component_bases);
         self.metrics_keyed.remove_all(&entries.metrics_keyed);
         self.entity_ids.remove_all(&entries.entity_ids);
+        self.glyph_axes.remove_all(&entries.glyph_axes);
+        self.glyph_axis_tags.remove_all(&entries.glyph_axis_tags);
+        self.alternates.remove_all(&entries.alternates);
+        self.alternate_owners.remove_all(&entries.alternate_owners);
     }
 
     /// Indexes the touched glyphs again after a change set replaced them.
@@ -194,6 +242,10 @@ pub(super) struct IndexEntries {
     component_bases: Vec<(GlyphId, LayerId)>,
     metrics_keyed: Vec<(GlyphId, KeyHolder)>,
     entity_ids: Vec<GlyphEntityId>,
+    glyph_axes: Vec<(AxisId, GlyphId)>,
+    glyph_axis_tags: Vec<(AxisTag, AxisId)>,
+    alternates: Vec<(AlternateId, GlyphId)>,
+    alternate_owners: Vec<(GlyphId, GlyphId)>,
 }
 
 impl IndexEntries {
@@ -223,7 +275,27 @@ impl IndexEntries {
         for layer in glyph.layers().values() {
             entries.add_layer_records(glyph_id, layer);
         }
+        for axis in glyph.axes() {
+            entries.add_glyph_axis(glyph_id, axis);
+        }
+        for alternate in glyph.alternates() {
+            entries.alternates.push((alternate.id(), glyph_id));
+            entries.alternate_owners.push((alternate.glyph(), glyph_id));
+        }
         entries
+    }
+
+    /// One glyph axis's owner and tag.
+    pub(super) fn of_glyph_axis(glyph_id: GlyphId, axis: &GlyphAxis) -> Self {
+        let mut entries = Self::default();
+        entries.add_glyph_axis(glyph_id, axis);
+        entries
+    }
+
+    fn add_glyph_axis(&mut self, glyph_id: GlyphId, axis: &GlyphAxis) {
+        self.glyph_axes.push((axis.id(), glyph_id));
+        self.glyph_axis_tags
+            .push((AxisTag(axis.tag().to_string()), axis.id()));
     }
 
     /// A layer's owner, source, and component bases, but not its entity ids,
@@ -237,8 +309,16 @@ impl IndexEntries {
     fn add_layer_records(&mut self, glyph_id: GlyphId, layer: &GlyphLayer) {
         let layer_id = layer.id();
         self.owners.push((layer_id, glyph_id));
-        self.source_layers
-            .push((SourceLayerKey::of(glyph_id, layer), layer_id));
+        // A located layer is not the glyph's layer on its source.
+        if let Some(source_id) = layer.location().exact_source_id() {
+            self.source_layers.push((
+                SourceLayerKey {
+                    glyph_id,
+                    source_id,
+                },
+                layer_id,
+            ));
+        }
         for component in layer.components_iter() {
             self.component_bases
                 .push((component.base_glyph_id(), layer_id));
@@ -264,12 +344,31 @@ pub(super) struct SourceLayerKey {
     source_id: SourceId,
 }
 
-impl SourceLayerKey {
-    fn of(glyph_id: GlyphId, layer: &GlyphLayer) -> Self {
-        Self {
-            glyph_id,
-            source_id: layer.source_id(),
-        }
+/// A glyph axis's tag as an index key.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct AxisTag(String);
+
+impl std::borrow::Borrow<str> for AxisTag {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl DuplicateKey for AxisTag {
+    fn duplicate_error(&self) -> CoreError {
+        CoreError::DuplicateAxisTag(self.0.clone())
+    }
+}
+
+impl DuplicateKey for AlternateId {
+    fn duplicate_error(&self) -> CoreError {
+        CoreError::DuplicateAlternateId(*self)
+    }
+}
+
+impl DuplicateKey for AxisId {
+    fn duplicate_error(&self) -> CoreError {
+        CoreError::DuplicateAxisId(*self)
     }
 }
 

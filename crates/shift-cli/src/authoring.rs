@@ -15,25 +15,33 @@ use shift_font::{
     SourceId,
 };
 use shift_store::ShiftStore;
-use shift_workspace::FontWorkspace;
+use shift_workspace::{FontWorkspace, WorkspaceError};
 
 use crate::cli::{AddAxisArgs, AddSourceArgs, CreateFontArgs, MutationArgs};
 
+mod alternate;
 mod axis;
 mod font_info;
 mod glyph;
+mod glyph_axis;
 mod glyph_batch;
 mod glyph_export;
 mod input;
 mod instance;
 mod kerning;
 mod layer_payload;
+mod layer_place;
+mod mark_color;
 mod metrics_keys;
 mod report;
 
+pub(crate) use alternate::{
+    add_alternate, move_alternate, remove_alternate, set_alternate, set_component_condition,
+};
 pub(crate) use axis::set_axis;
 pub(crate) use font_info::{font_info, set_font};
 pub(crate) use glyph::{add_glyph, add_layer, copy_layer, set_layer};
+pub(crate) use glyph_axis::{add_glyph_axis, edit_glyph_axis, remove_glyph_axis};
 pub(crate) use glyph_batch::set_glyphs;
 pub(crate) use glyph_export::{ExportSources, export_glyphs};
 pub(crate) use instance::{add_instance, remove_instance, set_instance};
@@ -41,8 +49,10 @@ pub(crate) use kerning::{
     assign_kerning_group, create_kerning_group, delete_kerning_group, remove_kerning,
     rename_kerning_group, set_kerning, unassign_kerning_group,
 };
+pub(crate) use layer_place::{move_layer, remove_layer};
+pub(crate) use mark_color::{parse_mark_color, set_mark_color};
 use report::report_changes;
-pub(crate) use report::{AuthoringChange, AuthoringReport};
+pub(crate) use report::{AlternateReport, AuthoringChange, AuthoringReport};
 
 /// Creates a canonical SQLite `.shift` document with the model's default source.
 ///
@@ -114,13 +124,14 @@ fn font_structure(path: &Path) -> Result<Font> {
 /// Returns an error when the document cannot be loaded, the axis is invalid or
 /// conflicts with existing authoring data, or the destination cannot be saved.
 pub(crate) fn add_axis(args: AddAxisArgs) -> Result<AuthoringReport> {
-    let axis = Axis::new(
+    let mut axis = Axis::new(
         args.tag,
         args.name,
         args.minimum,
         args.default,
         args.maximum,
     );
+    axis.set_hidden(args.hidden);
     let set = FontIntentSet::from(CreateAxis { axis });
 
     apply_mutation(&args.path, &args.mutation, &set)
@@ -177,10 +188,20 @@ pub(super) fn apply_checked_mutation(
     let changes = if set.intents.is_empty() {
         Vec::new()
     } else {
-        let outcome = workspace
-            .apply(set, None)
-            .into_diagnostic()
-            .wrap_err("authoring change is invalid")?;
+        let outcome = match workspace.apply(set, None) {
+            Ok(outcome) => outcome,
+            Err(WorkspaceError::Font(error))
+                if let Some(values) = layer_place::refused_values(workspace.font(), &error) =>
+            {
+                return Err(miette!("{values}").wrap_err(error.to_string()))
+                    .wrap_err("authoring change is invalid");
+            }
+            Err(error) => {
+                return Err(error)
+                    .into_diagnostic()
+                    .wrap_err("authoring change is invalid");
+            }
+        };
         check(workspace.font())?;
         report_changes(workspace.font(), &outcome.changes)
     };
@@ -230,6 +251,18 @@ pub(super) fn resolve_axis_id(font: &Font, selector: &str) -> Result<AxisId> {
 // Parsing resolves identity and numeric syntax only. Callers construct the
 // appropriate nominal location; parsing never applies an axis mapping.
 fn parse_location(font: &Font, coordinates: &[String]) -> Result<BTreeMap<AxisId, f64>> {
+    parse_coordinates(coordinates, |tag| font.axis_id_by_tag(tag))
+}
+
+/// `TAG=VALUE` coordinates, each tag resolved to an axis by `axis_for_tag`.
+///
+/// # Errors
+///
+/// Rejects malformed, blank, repeated or unknown tags and non-finite values.
+pub(super) fn parse_coordinates(
+    coordinates: &[String],
+    axis_for_tag: impl Fn(&str) -> Option<AxisId>,
+) -> Result<BTreeMap<AxisId, f64>> {
     let mut location = BTreeMap::new();
     let mut seen = HashSet::new();
     for coordinate in coordinates {
@@ -242,9 +275,8 @@ fn parse_location(font: &Font, coordinates: &[String]) -> Result<BTreeMap<AxisId
         if tag.is_empty() || !seen.insert(tag.to_string()) {
             bail!("axis tag {tag:?} is blank or repeated in the location");
         }
-        let axis_id = font
-            .axis_id_by_tag(tag)
-            .ok_or_else(|| miette!("axis tag {tag:?} does not exist"))?;
+        let axis_id =
+            axis_for_tag(tag).ok_or_else(|| miette!("axis tag {tag:?} does not exist"))?;
         let value = value
             .trim()
             .parse::<f64>()

@@ -5,6 +5,7 @@
 //! carry caller-minted ids and insertion anchors, while changesets retain
 //! expected originals and replacements for atomic persistence and inversion.
 
+use crate::LayerLocation;
 use crate::Require;
 use crate::anchor_attachment::realign_attached_components;
 use crate::changes::{FontChange, FontChangeSet, Replacement, SourceCollection};
@@ -14,10 +15,10 @@ use crate::error::{CoreError, CoreResult};
 use crate::interpolation::GlyphInterpolationValues;
 use crate::ir::{
     Anchor, AnchorId, Axis, AxisId, AxisMapping, BooleanOp, Component, ComponentAlignment,
-    ComponentId, Contour, ContourId, DecomposedTransform, DesignLocation, Font, FontMetadata,
-    GRID_LIB_KEY, Glyph, GlyphId, GlyphLayer, GlyphName, Grid, LANGUAGES_LIB_KEY, LayerId,
-    LibValue, MarkColor, MetricDefinition, MetricId, MetricValue, NamedInstance, NamedInstanceId,
-    PointId, PointType, Source, SourceId, Transform,
+    ComponentId, ComponentInheritance, Contour, ContourId, DecomposedTransform, DesignLocation,
+    Font, FontMetadata, GRID_LIB_KEY, Glyph, GlyphId, GlyphLayer, GlyphName, Grid,
+    LANGUAGES_LIB_KEY, LayerId, LibValue, MarkColor, MetricDefinition, MetricId, MetricValue,
+    NamedInstance, NamedInstanceId, PointId, PointType, Source, SourceId, Transform,
 };
 use crate::layer_edit::BulkNodePositionUpdates;
 use crate::linked_metrics::ChangedGlyphs;
@@ -29,10 +30,16 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+mod alternate_intents;
 mod font_intents;
+mod glyph_axis_intents;
+mod glyph_intents;
 mod layer_intents;
 
+pub use alternate_intents::*;
 pub use font_intents::*;
+pub use glyph_axis_intents::*;
+pub use glyph_intents::*;
 pub use layer_intents::*;
 
 /// A point to create, with stable identity minted by a trusted caller.
@@ -139,6 +146,7 @@ font_intents! {
         AddComponent,
         SetComponentTransforms,
         SetComponentAlignment,
+        SetComponentLocations,
         RemoveComponents,
         DecomposeComponents,
         ReverseContour,
@@ -187,6 +195,19 @@ font_intents! {
         LinkMetricsSide,
         UnlinkMetricsSide,
         SetMarkColor,
+        DuplicateGlyphs,
+        DecomposeGlyphs,
+        SetSidebearings,
+        CreateGlyphAxis,
+        EditGlyphAxis,
+        CreateLocatedGlyphLayer,
+        MaterializeLocatedGlyphLayer,
+        SetGlyphLayerLocation,
+        DeleteGlyphLayer,
+        SetGlyphAlternates,
+        AddGlyphAlternate,
+        EditGlyphAlternate,
+        SetComponentCondition,
     }
 }
 
@@ -220,9 +241,11 @@ enum Coordinates {
     AnchorPositions,
     AdvanceWidth,
     ComponentTransforms,
+    ComponentLocations,
     LayerTransform,
     PointTransform,
     SidebearingDelta,
+    LayerLocation,
 }
 
 impl Coordinates {
@@ -235,9 +258,11 @@ impl Coordinates {
             Self::AnchorPositions => "anchor positions",
             Self::AdvanceWidth => "advance width",
             Self::ComponentTransforms => "component transforms",
+            Self::ComponentLocations => "component locations",
             Self::LayerTransform => "layer transform",
             Self::PointTransform => "point transform",
             Self::SidebearingDelta => "sidebearing delta",
+            Self::LayerLocation => "layer location",
         }
     }
 }
@@ -271,6 +296,12 @@ impl<I: IntoIterator<Item = f64>> RequireFinite for I {
 trait FontLevelIntent {
     /// Authored layers to load before applying it.
     fn required_layer_ids(&self, _font: &Font) -> Vec<LayerId> {
+        Vec::new()
+    }
+
+    /// Glyphs whose composites applying it reads: every layer with a
+    /// component of one of them must be loaded first.
+    fn composites_read(&self, _font: &Font) -> Vec<GlyphId> {
         Vec::new()
     }
 
@@ -399,6 +430,19 @@ impl FontIntentSet {
         glyph_ids
     }
 
+    /// Glyphs whose composites this set reads, such as a glyph axis whose
+    /// range edit checks every component that sets it. The layers with a
+    /// component of one of them must be loaded before the set applies.
+    pub fn composites_read(&self, font: &Font) -> BTreeSet<GlyphId> {
+        self.intents
+            .iter()
+            .flat_map(|intent| match intent.kind() {
+                IntentKind::Layer(_) => Vec::new(),
+                IntentKind::Font(intent) => intent.composites_read(font),
+            })
+            .collect()
+    }
+
     /// The kerning values this set writes, by source and pair.
     fn kerning_keys(&self) -> BTreeSet<(SourceId, KerningPair)> {
         let mut keys = BTreeSet::new();
@@ -463,17 +507,18 @@ impl EditScopes {
             else {
                 continue;
             };
-            changed
-                .entry(layer.source_id())
-                .or_default()
-                .insert(glyph_id);
+            // A layer placed by coordinates alone is no source's layer.
+            if let Some(source_id) = layer.source_id() {
+                changed.entry(source_id).or_default().insert(glyph_id);
+            }
         }
         for glyph in self.glyph_ids.iter().filter_map(|id| font.glyph(*id)) {
-            for layer in glyph.layers().values() {
-                changed
-                    .entry(layer.source_id())
-                    .or_default()
-                    .insert(glyph.id());
+            for source_id in glyph
+                .layers()
+                .values()
+                .filter_map(|layer| layer.source_id())
+            {
+                changed.entry(source_id).or_default().insert(glyph.id());
             }
         }
         changed
@@ -899,7 +944,18 @@ impl Font {
         source_id: SourceId,
         from_layer_id: LayerId,
     ) -> CoreResult<Vec<LayerId>> {
-        let layer = self.cloned_glyph_layer(layer_id, glyph_id, source_id, from_layer_id)?;
+        if self.layer_id_for_source(glyph_id, source_id).is_some() {
+            return Err(CoreError::DuplicateGlyphLayer {
+                glyph_id,
+                source_id,
+            });
+        }
+        let layer = self.cloned_glyph_layer(
+            layer_id,
+            glyph_id,
+            LayerLocation::at_source(source_id),
+            from_layer_id,
+        )?;
 
         self.insert_glyph_layer(glyph_id, layer)?;
         Ok(vec![layer_id])
@@ -913,28 +969,56 @@ impl Font {
         from_layer_id: LayerId,
         values: &GlyphInterpolationValues,
     ) -> CoreResult<Vec<LayerId>> {
-        let mut layer = self.cloned_glyph_layer(layer_id, glyph_id, source_id, from_layer_id)?;
-        layer.apply_interpolation_values(values)?;
-
-        self.insert_glyph_layer(glyph_id, layer)?;
-        Ok(vec![layer_id])
-    }
-
-    fn cloned_glyph_layer(
-        &self,
-        layer_id: LayerId,
-        glyph_id: GlyphId,
-        source_id: SourceId,
-        from_layer_id: LayerId,
-    ) -> CoreResult<GlyphLayer> {
-        if self.glyph_id_by_layer(layer_id).is_some() {
-            return Err(CoreError::DuplicateLayerId(layer_id));
-        }
         if self.layer_id_for_source(glyph_id, source_id).is_some() {
             return Err(CoreError::DuplicateGlyphLayer {
                 glyph_id,
                 source_id,
             });
+        }
+        let layer = self.cloned_glyph_layer(
+            layer_id,
+            glyph_id,
+            LayerLocation::at_source(source_id),
+            from_layer_id,
+        )?;
+        let location = self.require_source(source_id)?.location().clone();
+        self.insert_materialized_layer(glyph_id, layer, &location, values)
+    }
+
+    /// Inserts `layer`, a clone of one of `glyph_id`'s layers drawn at
+    /// `location`, with `values` from the glyph's interpolation there.
+    pub(crate) fn insert_materialized_layer(
+        &mut self,
+        glyph_id: GlyphId,
+        mut layer: GlyphLayer,
+        location: &DesignLocation,
+        values: &GlyphInterpolationValues,
+    ) -> CoreResult<Vec<LayerId>> {
+        let layer_id = layer.id();
+        // `values` come from interpolation, which reads the masters with
+        // their component locations filled in.
+        match self.glyph_interpolation(glyph_id)? {
+            Some(interpolation) => {
+                layer.apply_read_values(interpolation.reference_layer(), values, self, location)?;
+            }
+            None => layer.apply_interpolation_values(values)?,
+        }
+
+        self.insert_glyph_layer(glyph_id, layer)?;
+        Ok(vec![layer_id])
+    }
+
+    /// A copy of `from_layer_id`, one of `glyph_id`'s layers, with fresh ids,
+    /// placed at `location`.
+    pub(crate) fn cloned_glyph_layer(
+        &self,
+        layer_id: LayerId,
+        glyph_id: GlyphId,
+        location: LayerLocation,
+        from_layer_id: LayerId,
+    ) -> CoreResult<GlyphLayer> {
+        if self.glyph_id_by_layer(layer_id).is_some() {
+            return Err(CoreError::DuplicateLayerId(layer_id));
         }
 
         let from_glyph_id = self.require_layer_owner(from_layer_id)?;
@@ -947,9 +1031,7 @@ impl Font {
         }
 
         let source_layer = self.require_layer(from_layer_id)?;
-        let layer = source_layer.clone_with_fresh_ids(layer_id, source_id);
-
-        Ok(layer)
+        Ok(source_layer.clone_with_fresh_ids(layer_id, location))
     }
 
     fn apply_update_glyph(
@@ -976,7 +1058,9 @@ impl Font {
         base_glyph_id: GlyphId,
     ) -> CoreResult<Option<DecomposedTransform>> {
         let layer = self.require_layer(layer_id)?;
-        let source_id = layer.source_id();
+        let Some(source_id) = layer.source_id() else {
+            return Ok(None);
+        };
         let base_layer_at_source = |glyph_id: GlyphId| {
             self.glyph(glyph_id)
                 .and_then(|glyph| glyph.layer_for_source(source_id))
@@ -1181,6 +1265,12 @@ impl FontDiff<'_> {
 mod replacement_tests;
 
 #[cfg(test)]
+mod glyph_axis_tests;
+
+#[cfg(test)]
+mod glyph_tests;
+
+#[cfg(test)]
 mod kerning_tests;
 
 #[cfg(test)]
@@ -1188,6 +1278,9 @@ mod mark_color_tests;
 
 #[cfg(test)]
 mod consistency_tests;
+
+#[cfg(test)]
+mod alternate_tests;
 
 /// A kerning group name trimmed of surrounding space.
 ///

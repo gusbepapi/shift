@@ -3,8 +3,7 @@ use crate::input::parse_id_list;
 use crate::reply::{PackedReply, answer};
 use crate::wire_napi::IntoEach;
 use crate::wire_napi::{
-  self, NapiGlyphPreview, NapiGlyphProjection, NapiGlyphSnapshot, NapiGlyphSnapshotRequest,
-  NapiLayerRead,
+  self, NapiGlyphProjection, NapiGlyphSnapshot, NapiGlyphSnapshotRequest, NapiLayerRead,
 };
 use napi::bindgen_prelude::*;
 use napi::{Error, Status};
@@ -12,23 +11,22 @@ use napi_derive::napi;
 use shift_backends::{
   AxisIndex as SourceAxisIndex, BinaryEncoding, BinaryEncodings, DirectoryGlyph, DirectoryInstance,
   DirectorySource, ExportFormat, FontDirectory, FontExportRequest, FontExportResult, FontExporter,
-  FontSource, FontView, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
+  FontSource, GlyphIndex, GlyphPointKind as SourceGlyphPointKind,
   GlyphProjection as SourceGlyphProjection, GlyphShape as SourceGlyphShape, OpenedFont,
   SourceAtlasDescriptor, SourceIds, VariationAxisKind, font_loader::FontLoader,
 };
-use shift_font::composite::resolved_contours_to_svg_path;
 use shift_font::wire::{
   AnchorData, ComponentData, ComponentGlyph, ComponentTransformKind, ContourData, FontMetadata,
   FontMetrics, FontSnapshot, GlyphComponents, GlyphEntry, GlyphLayerShape, GlyphLayerSnapshot,
   GlyphProjection, GlyphSnapshot, GlyphSnapshotRequest, GlyphSourceComponents, GlyphSourceShape,
-  GlyphState, GlyphStructure, GlyphVariation, InterpolationSupport, Location as WireLocation,
-  MetricDefinition, NamedInstance, PointData, PointType, VariationBasis, VariationDelta,
+  GlyphStructure, GlyphVariation, InterpolationSupport, Location as WireLocation, MetricDefinition,
+  NamedInstance, PointData, PointType, VariationBasis, VariationDelta,
 };
 use shift_font::{
   AnchorId, Axis as FontAxis, AxisId, AxisMapping as FontAxisMapping, AxisMappingId,
-  AxisMappingPoint as FontAxisMappingPoint, CompiledHeader, ComponentId, ContourId, Font, Glyph,
-  GlyphId, GlyphLayer, LayerId, Location as FontLocation, MetricId, MetricKind, NamedInstanceId,
-  PointId, SourceId,
+  AxisMappingPoint as FontAxisMappingPoint, CompiledHeader, ComponentId, ContourId, CoreResult,
+  Font, GlyphId, GlyphLayer, LayerId, Location as FontLocation, MetricId, MetricKind,
+  NamedInstanceId, PointId, SourceId,
 };
 use shift_slug::{AuthoredAtlasProfile, VariableAtlas};
 use shift_workspace::{AcquireScope, FontWorkspace, WorkspaceError};
@@ -36,7 +34,6 @@ use std::{
   collections::{BTreeMap, HashMap, HashSet, VecDeque},
   iter,
   path::Path,
-  sync::Arc,
   time::Duration,
 };
 
@@ -240,6 +237,46 @@ impl RetainedSource {
     })
   }
 
+  /// Each of `glyph_ids` drawn at the design `location`: a compiled font's
+  /// outlines and advances as its own scaler draws them there. An axis
+  /// `location` leaves out is at its default.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BridgeError::InvalidInput`] for an authored source (UFO,
+  /// designspace, Glyphs), whose window's engine draws its previews, or a
+  /// glyph id the source lacks, and the font's error when a glyph cannot be
+  /// drawn.
+  fn glyph_previews(
+    &self,
+    glyph_ids: &[GlyphId],
+    location: &shift_font::DesignLocation,
+  ) -> BridgeResult<Vec<shift_font::GlyphPreview>> {
+    let OpenedFont::OpenType(font) = &self.font else {
+      return Err(BridgeError::InvalidInput {
+        kind: "font source",
+        value: "an authored source's previews draw in the window's engine".to_string(),
+      });
+    };
+    let identity = &self.identity;
+    let design = identity
+      .font_axes
+      .iter()
+      .map(|axis| location.value_on(axis))
+      .collect::<Vec<_>>();
+    glyph_ids
+      .iter()
+      .map(|glyph_id| {
+        let drawn = font.drawn_glyph(identity.glyph_index(*glyph_id)?, &design)?;
+        Ok(shift_font::GlyphPreview {
+          glyph_id: *glyph_id,
+          svg_path: drawn.svg_path,
+          x_advance: drawn.x_advance,
+        })
+      })
+      .collect()
+  }
+
   /// Maps external axis coordinates, in source axis order, to design values.
   fn location(&self, coordinates: Vec<f64>) -> BridgeResult<Vec<f64>> {
     let identity = &self.identity;
@@ -431,6 +468,8 @@ impl RetainedSource {
           base_glyph_id,
           base_glyph_name,
           alignment: Default::default(),
+          location_axes: Vec::new(),
+          inheritance: Default::default(),
         })
       })
       .collect::<BridgeResult<Vec<_>>>()?;
@@ -577,105 +616,6 @@ pub(crate) struct DocumentVersion(u64);
 impl DocumentVersion {
   fn next(self) -> Self {
     Self(self.0 + 1)
-  }
-}
-
-#[derive(Clone)]
-pub(crate) struct FontSaveSnapshot {
-  font: Font,
-  active_glyph_override: Option<Arc<Glyph>>,
-}
-
-impl FontSaveSnapshot {
-  fn new(font: Font, active_glyph_override: Option<Glyph>) -> Self {
-    Self {
-      font,
-      active_glyph_override: active_glyph_override.map(Arc::new),
-    }
-  }
-}
-
-impl FontView for FontSaveSnapshot {
-  fn metadata(&self) -> &shift_font::FontMetadata {
-    self.font.metadata()
-  }
-
-  fn metrics(&self) -> &shift_font::FontMetrics {
-    self.font.metrics()
-  }
-
-  fn metric_definitions(&self) -> &[shift_font::MetricDefinition] {
-    self.font.metric_definitions()
-  }
-
-  fn axes(&self) -> &[shift_font::Axis] {
-    self.font.axes()
-  }
-
-  fn axis_mappings(&self) -> &[shift_font::AxisMapping] {
-    self.font.axis_mappings()
-  }
-
-  fn named_instances(&self) -> &[shift_font::NamedInstance] {
-    self.font.named_instances()
-  }
-
-  fn sources(&self) -> &[shift_font::Source] {
-    self.font.sources()
-  }
-
-  fn default_source_id(&self) -> Option<SourceId> {
-    self.font.default_source_id()
-  }
-
-  fn glyphs(&self) -> impl Iterator<Item = &Glyph> {
-    let active_glyph = self.active_glyph_override.as_deref();
-    let override_name = active_glyph.map(Glyph::name);
-
-    active_glyph.into_iter().chain(
-      self
-        .font
-        .glyphs()
-        .filter(move |glyph| override_name != Some(glyph.name())),
-    )
-  }
-
-  fn glyph(&self, name: &str) -> Option<&Glyph> {
-    if let Some(active_glyph) = self.active_glyph_override.as_ref()
-      && active_glyph.name() == name
-    {
-      return Some(active_glyph.as_ref());
-    }
-
-    self.font.glyph_by_name(name)
-  }
-
-  fn kerning(&self) -> &shift_font::Kerning {
-    self.font.kerning()
-  }
-
-  fn features(&self) -> &shift_font::FeatureData {
-    self.font.features()
-  }
-
-  fn guidelines(&self) -> &[shift_font::Guideline] {
-    self.font.guidelines()
-  }
-
-  fn lib(&self) -> &shift_font::LibData {
-    self.font.lib()
-  }
-
-  fn fontinfo_remainder(&self) -> &shift_font::LibData {
-    self.font.fontinfo_remainder()
-  }
-
-  fn data_files(&self) -> &shift_font::BinaryData {
-    self.font.data_files()
-  }
-
-  fn images(&self) -> &shift_font::BinaryData {
-    self.font.images()
   }
 }
 
@@ -1146,8 +1086,8 @@ impl Bridge {
   #[napi(ts_return_type = "Promise<NapiSpecimen | null>")]
   pub fn document_specimen(&mut self) -> Result<AsyncTask<crate::specimen::SpecimenTask>> {
     Ok(AsyncTask::new(crate::specimen::SpecimenTask {
-      input: crate::specimen::SpecimenInput::Snapshot(
-        self.specimen_snapshot().map_err(generic_failure)?,
+      input: crate::specimen::SpecimenInput::Document(
+        self.specimen_font().map_err(generic_failure)?,
       ),
     }))
   }
@@ -1177,12 +1117,8 @@ impl Bridge {
       let projection = font.glyph_projection(glyph_id)?.as_ref().map(Into::into);
 
       let layers = glyph
-        .located_layers(font)
-        .map(|located| GlyphLayerSnapshot {
-          glyph_id,
-          source_id: located.layer.source_id(),
-          state: GlyphState::from_layer(located.layer),
-        })
+        .editor_drawings(font)
+        .map(|(source_id, layer)| GlyphLayerSnapshot::new(glyph_id, source_id, layer))
         .collect();
 
       snapshots.push(GlyphSnapshot {
@@ -1217,7 +1153,7 @@ impl Bridge {
       .zip(glyph_ids)
       .map(|(layer_id, glyph_id)| {
         Ok(NapiLayerRead {
-          authored: layer_snapshot(glyph_id, font.require_layer(*layer_id)?).into(),
+          authored: layer_snapshot(font, glyph_id, font.require_layer(*layer_id)?)?.into(),
           resolved: (&font.resolve_layer(*layer_id)?).into(),
         })
       })
@@ -1256,38 +1192,6 @@ impl Bridge {
     }
 
     Ok(projections)
-  }
-
-  /// Location-resolved glyph previews: one svg path and advance per glyph.
-  ///
-  /// `location` is an internal authoring location; external axis mappings must
-  /// be evaluated first (see `map_location`). Components and interpolation
-  /// resolve at that location with shared component work across the batch.
-  /// Missing glyph identities are omitted. No editable structure crosses the
-  /// boundary, so the payload stays orders of magnitude lighter than
-  /// `get_glyph_snapshots`.
-  #[napi(ts_args_type = "glyphIds: Array<GlyphId>, location: Location")]
-  pub fn get_glyph_previews(
-    &mut self,
-    glyph_ids: Vec<String>,
-    location: wire_napi::Location,
-  ) -> errors::Result<Vec<NapiGlyphPreview>> {
-    let glyph_ids = parse_id_list::<GlyphId>(&glyph_ids)?;
-    let location =
-      shift_font::DesignLocation::from_untyped(shift_font::Location::try_from(location)?);
-    let font = self.acquire_and_font(&glyph_ids, AcquireScope::ComponentClosure)?;
-    let mut projection = font.projection(&location);
-    let previews = projection
-      .glyphs(&glyph_ids)?
-      .into_iter()
-      .map(|glyph| NapiGlyphPreview {
-        glyph_id: glyph.glyph_id().to_string(),
-        svg_path: resolved_contours_to_svg_path(glyph.contours()),
-        x_advance: glyph.x_advance(),
-      })
-      .collect();
-
-    Ok(previews)
   }
 
   /// Streams the prepared generation with native Web Stream backpressure.
@@ -1388,10 +1292,10 @@ impl Bridge {
     Ok(shift_font::wire::Location::from(mapped.as_untyped()).into())
   }
 
-  /// Snapshots the font with only the glyphs its thumbnail specimen compiles loaded.
-  fn specimen_snapshot(&mut self) -> BridgeResult<FontSaveSnapshot> {
+  /// Copies the font with only the glyphs its thumbnail specimen compiles loaded.
+  fn specimen_font(&mut self) -> BridgeResult<Font> {
     crate::specimen::acquire_specimen_glyphs(self.workspace_mut()?)?;
-    Ok(FontSaveSnapshot::new(self.font()?.clone(), None))
+    Ok(self.font()?.clone())
   }
 
   /// An owned copy of the font with every layer loaded.
@@ -1455,12 +1359,20 @@ fn path_to_string(path: &Path) -> BridgeResult<String> {
     .ok_or_else(|| WorkspaceError::InvalidPathUtf8(path.to_path_buf()).into())
 }
 
-fn layer_snapshot(glyph_id: GlyphId, layer: &GlyphLayer) -> GlyphLayerSnapshot {
-  GlyphLayerSnapshot {
-    glyph_id,
-    source_id: layer.source_id(),
-    state: GlyphState::from_layer(layer),
-  }
+/// `layer` as the editor reads it, by the source a per-source read of it
+/// uses ([`Font::reading_source_id`]).
+///
+/// # Errors
+///
+/// Returns [`CoreError::MissingDefaultSource`] for a layer with no base in a
+/// font with no default source.
+fn layer_snapshot(
+  font: &Font,
+  glyph_id: GlyphId,
+  layer: &GlyphLayer,
+) -> CoreResult<GlyphLayerSnapshot> {
+  let source_id = font.reading_source_id(layer)?;
+  Ok(GlyphLayerSnapshot::new(glyph_id, source_id, layer))
 }
 
 #[cfg(test)]
@@ -2160,7 +2072,9 @@ mod tests {
     assert_eq!(created.updated[0].id, GlyphId::from_raw("glyph_a"));
     let font: Font = rmp_serde::from_slice(&directory.0).unwrap();
     assert_eq!(
-      font.glyph(GlyphId::from_raw("glyph_a")).map(Glyph::name),
+      font
+        .glyph(GlyphId::from_raw("glyph_a"))
+        .map(shift_font::Glyph::name),
       Some("A")
     );
   }
@@ -3266,7 +3180,7 @@ mod tests {
   }
 
   #[test]
-  fn get_glyph_previews_resolve_drawable_paths_at_a_location() {
+  fn glyph_previews_resolve_drawable_paths_at_a_location() {
     let mut bridge = bridge_with_workspace();
     let (layer_id, contour_id) = pen_setup(&mut bridge);
     let glyph = bridge.get_glyphs().unwrap()[0].clone();
@@ -3284,19 +3198,12 @@ mod tests {
         None,
       )
       .unwrap();
-    let missing_glyph_id = GlyphId::new().to_string();
-
     let previews = bridge
-      .get_glyph_previews(
-        vec![glyph.id.to_string(), missing_glyph_id],
-        wire_napi::Location {
-          values: HashMap::new(),
-        },
-      )
+      .glyph_previews(vec![glyph.id, GlyphId::new()], FontLocation::new())
       .unwrap();
 
     assert_eq!(previews.len(), 1);
-    assert_eq!(previews[0].glyph_id, glyph.id.as_str());
+    assert_eq!(previews[0].glyph_id, glyph.id);
     assert_eq!(previews[0].x_advance, 500.0);
     assert!(previews[0].svg_path.starts_with('M'));
   }

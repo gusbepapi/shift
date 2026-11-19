@@ -14,6 +14,10 @@ import { useGlyphMetrics } from "./useGlyphMetrics";
 export interface GlyphSidebarHost {
   /** Controls at the end of the header, after the glyph's name; replaces the default zoom control. */
   headerActions?: ReactNode;
+  /** Replaces the header's title, such as `Mixed` while several glyphs are selected. */
+  title?: ReactNode;
+  /** Rendered beside the Glyph heading, such as the glyph's tag colour. */
+  glyphHeading?: ReactNode;
   /** Rendered below the glyph metrics, for panels about the current selection. */
   selection?: ReactNode;
 }
@@ -78,7 +82,7 @@ function metricKeyProps(
   return {
     keyText: link.key,
     onKeyCommit,
-    iconPosition: side === "right" ? "left" : "right",
+    iconPosition: keyChipPosition(side),
     icon: (
       <Tooltip content={problem ?? chipTooltip(source, value)}>
         <button
@@ -112,7 +116,9 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
   const leftSidebearing = sidebearings.lsb === null ? null : Math.round(sidebearings.lsb);
   const rightSidebearing = sidebearings.rsb === null ? null : Math.round(sidebearings.rsb);
   const sidebearingsEditable = editable && leftSidebearing !== null && rightSidebearing !== null;
-  const pageName = useSignalState(editor.scene.shownPageCell)?.name ?? null;
+  const page = useSignalState(editor.scene.shownPageCell);
+  // A glyph opened in its own tab sits on an unnamed glyph page; the glyph names it.
+  const title = page?.role === "glyph" ? (glyph?.name ?? page.name) : (page?.name ?? "Untitled");
 
   return (
     <aside
@@ -121,7 +127,7 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
     >
       <div className="flex items-center justify-between gap-2 px-3 py-2">
         <span className="min-w-0 truncate text-ui font-medium text-primary">
-          {pageName ?? "Untitled"}
+          {host.title ?? title}
         </span>
         {host.headerActions ?? (
           <Button
@@ -141,7 +147,10 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
       <ScrollArea className="min-h-0 flex-1">
         <div className="px-3 py-3">
           <section className="flex flex-col gap-2">
-            <h3 className="text-ui font-medium text-primary">Glyph</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-ui font-medium text-primary">Glyph</h3>
+              {host.glyphHeading}
+            </div>
             <main className="flex flex-col items-center">
               <div className="flex items-center justify-center gap-2">
                 <EditableSidebarInput
@@ -215,4 +224,19 @@ export function GlyphSidebar({ session, host = {} }: GlyphSidebarProps) {
       </ScrollArea>
     </aside>
   );
+}
+
+/**
+ * Where a linked field's key chip sits: a sidebearing's on the edge nearest
+ * the glyph, the advance's in the middle, as the advance spans the glyph.
+ */
+function keyChipPosition(side: MetricsKeySide): "left" | "right" | "center" {
+  switch (side) {
+    case "left":
+      return "right";
+    case "right":
+      return "left";
+    case "width":
+      return "center";
+  }
 }

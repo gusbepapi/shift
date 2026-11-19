@@ -1,3 +1,5 @@
+use crate::authoring::AlternateReport;
+use shift_font::AxisNaming;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -6,7 +8,7 @@ use miette::Diagnostic;
 use serde::Serialize;
 use shift_font::{
     Axis, AxisId, AxisKind, AxisLabel, AxisMapping, AxisMappingPoint, AxisRole, Font, Glyph,
-    GlyphLayer, Location, MetricDefinition, MetricKind, NamedInstance, Source, SourceId,
+    GlyphAxis, GlyphLayer, Location, MetricDefinition, MetricKind, NamedInstance, Source, SourceId,
 };
 use shift_store::{SHIFT_DOCUMENT_SCHEMA_VERSION, ShiftStore, StoreError};
 use thiserror::Error;
@@ -170,16 +172,36 @@ pub(crate) struct GlyphSummary {
     pub id: String,
     pub name: String,
     pub unicodes: Vec<String>,
+    /// Axes only this glyph varies along, in their own units.
+    pub axes: Vec<GlyphAxis>,
     pub layer_count: usize,
     pub layers: Vec<GlyphLayerSummary>,
+    /// The glyphs text draws in its place, in the order they are tried,
+    /// with never-used warnings.
+    pub alternates: Vec<AlternateReport>,
+    /// Where each component of its default drawing draws, by position from
+    /// 1; components that always draw are left out.
+    pub component_conditions: Vec<ComponentConditionSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComponentConditionSummary {
+    pub position: usize,
+    pub base: String,
+    pub condition: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GlyphLayerSummary {
     pub id: String,
-    pub source_id: String,
+    /// `None` for a layer placed by coordinates alone.
+    pub source_id: Option<String>,
     pub source_name: Option<String>,
+    /// Coordinates that place the layer off its source, on font axes or the
+    /// glyph's own; empty for a layer exactly on its source.
+    pub location: Vec<LocationValue>,
     pub advance: f64,
     pub height: Option<f64>,
     pub contour_count: usize,
@@ -232,7 +254,12 @@ impl InspectReport {
         let source_names_by_id = source_names_by_id(font.sources());
         let glyphs = font
             .glyphs()
-            .map(|glyph| GlyphSummary::from_glyph(glyph, &source_names_by_id))
+            .map(|glyph| {
+                let mut summary = GlyphSummary::from_glyph(glyph, &source_names_by_id, &axes_by_id);
+                summary.alternates = AlternateReport::of_glyph(font, glyph);
+                summary.component_conditions = component_conditions(font, glyph);
+                summary
+            })
             .collect::<Vec<_>>();
 
         Self {
@@ -446,11 +473,24 @@ fn location_values(
 }
 
 impl GlyphSummary {
-    fn from_glyph(glyph: &Glyph, source_names_by_id: &HashMap<SourceId, String>) -> Self {
+    fn from_glyph(
+        glyph: &Glyph,
+        source_names_by_id: &HashMap<SourceId, String>,
+        font_axes_by_id: &HashMap<AxisId, String>,
+    ) -> Self {
+        let mut axes_by_id = font_axes_by_id.clone();
+        axes_by_id.extend(
+            glyph
+                .axes()
+                .iter()
+                .map(|axis| (axis.id(), axis.tag().to_string())),
+        );
         let mut layers = glyph
             .layers()
             .values()
-            .map(|layer| GlyphLayerSummary::from_layer(layer.as_ref(), source_names_by_id))
+            .map(|layer| {
+                GlyphLayerSummary::from_layer(layer.as_ref(), source_names_by_id, &axes_by_id)
+            })
             .collect::<Vec<_>>();
         layers.sort_by(|left, right| {
             left.source_id
@@ -466,21 +506,55 @@ impl GlyphSummary {
                 .iter()
                 .map(|unicode| format!("U+{unicode:04X}"))
                 .collect(),
+            axes: glyph.axes().to_vec(),
             layer_count: layers.len(),
             layers,
+            alternates: Vec::new(),
+            component_conditions: Vec::new(),
         }
     }
 }
 
+/// The conditions on the components of `glyph`'s default drawing.
+fn component_conditions(font: &Font, glyph: &Glyph) -> Vec<ComponentConditionSummary> {
+    let Some(layer) = font
+        .default_source_id()
+        .and_then(|source_id| glyph.layer_for_source(source_id))
+    else {
+        return Vec::new();
+    };
+    // Fails only for an axis mapping that doesn't compile, which `check`
+    // reports; the summary then leaves conditions out.
+    let Ok(space) = font.condition_space(Some(glyph.id())) else {
+        return Vec::new();
+    };
+    layer
+        .components_iter()
+        .enumerate()
+        .filter(|(_, component)| !component.condition().is_always())
+        .map(|(index, component)| ComponentConditionSummary {
+            position: index + 1,
+            base: component.base_glyph_name().to_string(),
+            condition: space.format(component.condition(), AxisNaming::Name),
+        })
+        .collect()
+}
+
 impl GlyphLayerSummary {
-    fn from_layer(layer: &GlyphLayer, source_names_by_id: &HashMap<SourceId, String>) -> Self {
+    fn from_layer(
+        layer: &GlyphLayer,
+        source_names_by_id: &HashMap<SourceId, String>,
+        axes_by_id: &HashMap<AxisId, String>,
+    ) -> Self {
         let source_id = layer.source_id();
         let point_count = layer.contours_iter().map(shift_font::Contour::len).sum();
 
         Self {
             id: layer.id().to_string(),
-            source_id: source_id.to_string(),
-            source_name: source_names_by_id.get(&source_id).cloned(),
+            source_id: source_id.map(|source_id| source_id.to_string()),
+            source_name: source_id
+                .and_then(|source_id| source_names_by_id.get(&source_id).cloned()),
+            location: location_values(layer.location().coordinates().as_untyped(), axes_by_id),
             advance: layer.width(),
             height: layer.height(),
             contour_count: layer.contours().len(),

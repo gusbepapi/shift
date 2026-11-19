@@ -5,7 +5,7 @@ use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Tab
 use crate::format::{Coordinates, Number};
 
 use super::InspectView;
-use super::report::{AxisReference, InspectReport};
+use super::report::{AxisReference, InspectReport, LocationValue};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RenderMode {
@@ -293,19 +293,57 @@ impl InspectReport {
             mode.header("name"),
             mode.header("id"),
             mode.header("unicode"),
+            mode.header("axes"),
             mode.header("layers"),
         ]);
         for glyph in &self.glyphs {
+            let axes: Vec<String> = glyph
+                .axes
+                .iter()
+                .map(|axis| {
+                    format!(
+                        "{} {}·{}·{}",
+                        axis.tag(),
+                        Number(axis.minimum()),
+                        Number(axis.as_axis().default()),
+                        Number(axis.maximum())
+                    )
+                })
+                .collect();
             table.add_row(vec![
                 Cell::new(glyph.name.clone()),
                 mode.muted(compact_id(&glyph.id)),
                 Cell::new(display_list(&glyph.unicodes)),
+                Cell::new(display_list(&axes)),
                 right(glyph.layer_count),
             ]);
         }
-        align_right(&mut table, &[3]);
+        align_right(&mut table, &[4]);
 
-        mode.section_with_table("Glyphs", &table)
+        let mut lines = vec![mode.section_with_table("Glyphs", &table)];
+        for glyph in &self.glyphs {
+            if !glyph.alternates.is_empty() {
+                lines.push(format!("\n{} alternates", glyph.name));
+                lines.extend(
+                    glyph
+                        .alternates
+                        .iter()
+                        .map(|alternate| format!("  {}", alternate.render())),
+                );
+            }
+            if !glyph.component_conditions.is_empty() {
+                lines.push(format!("\n{} component conditions", glyph.name));
+                lines.extend(glyph.component_conditions.iter().map(|component| {
+                    format!(
+                        "  {}. {}  when {}",
+                        component.position,
+                        component.base,
+                        component.condition.join(", ")
+                    )
+                }));
+            }
+        }
+        lines.join("\n")
     }
 
     fn render_layers(&self, mode: RenderMode) -> String {
@@ -318,6 +356,7 @@ impl InspectReport {
             mode.header("glyph"),
             mode.header("layer"),
             mode.header("source"),
+            mode.header("location"),
             mode.header("advance"),
             mode.header("contours"),
             mode.header("points"),
@@ -329,7 +368,11 @@ impl InspectReport {
                 table.add_row(vec![
                     Cell::new(glyph.name.clone()),
                     mode.muted(compact_id(&layer.id)),
-                    Cell::new(source_label(layer.source_name.as_deref(), &layer.source_id)),
+                    Cell::new(source_label(
+                        layer.source_name.as_deref(),
+                        layer.source_id.as_deref(),
+                    )),
+                    Cell::new(location_label(&layer.location)),
                     right(Number(layer.advance)),
                     right(layer.contour_count),
                     right(layer.point_count),
@@ -338,7 +381,7 @@ impl InspectReport {
                 ]);
             }
         }
-        align_right(&mut table, &[3, 4, 5, 6, 7]);
+        align_right(&mut table, &[4, 5, 6, 7, 8]);
 
         mode.section_with_table("Layers", &table)
     }
@@ -464,11 +507,23 @@ fn source_name(name: &str, is_default: bool) -> String {
     }
 }
 
-fn source_label(name: Option<&str>, source_id: &str) -> String {
-    match name {
-        Some(name) => name.to_string(),
-        None => compact_id(source_id),
+/// A layer's source as a column shows it: its name, else its short id, else
+/// a dash for a layer placed by coordinates alone.
+fn source_label(name: Option<&str>, source_id: Option<&str>) -> String {
+    match (name, source_id) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(source_id)) => compact_id(source_id),
+        (None, None) => "-".to_string(),
     }
+}
+
+/// A layer's own coordinates as a column shows them, or a dash for a layer
+/// exactly on its source.
+fn location_label(location: &[LocationValue]) -> String {
+    if location.is_empty() {
+        return "-".to_string();
+    }
+    Coordinates::of(location).to_string()
 }
 
 fn display_list(values: &[String]) -> String {

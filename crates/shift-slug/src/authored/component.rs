@@ -39,7 +39,7 @@ impl AuthoredWeightSet {
         basis: InterpolationBasis,
         source_weight_indices: Vec<u32>,
     ) -> Result<Self, AuthoredSlugError> {
-        let expected = basis.source_ids().len();
+        let expected = basis.samples().len();
         let actual = source_weight_indices.len();
         if expected != actual {
             return Err(AuthoredSlugError::WeightCountMismatch { expected, actual });
@@ -147,10 +147,16 @@ pub(super) fn add_authored_glyph_with_weight_sets_cached(
             projection,
             source_id,
         )?;
-        let topology = CurveTopology::from_contours(resolved.contours());
+        // An exact source's shape stands alone, so it erases on its own.
+        let erased = super::open_corners::erased_masters(&[resolved.contours()]);
+        let contours = erased
+            .as_ref()
+            .and_then(|masters| masters.first())
+            .map_or_else(|| resolved.contours(), Vec::as_slice);
+        let topology = CurveTopology::from_contours(contours);
         let advance = authored_advance(resolved.x_advance(), 0)?;
         let glyph_index = builder.add_outline_glyph(
-            topology.outline_from_contours(resolved.contours())?,
+            topology.outline_from_contours(contours)?,
             compilation.constant_weight_index,
             [],
         )?;
@@ -400,13 +406,13 @@ fn decomposition_advances(
     basis: &InterpolationBasis,
 ) -> Result<Vec<f32>, AuthoredSlugError> {
     basis
-        .source_ids()
+        .samples()
         .iter()
         .enumerate()
-        .map(|(source_index, source_id)| {
-            let location = font.require_source(*source_id)?.location();
+        .map(|(source_index, sample)| {
+            let location = font.sample_location(*sample)?;
             let glyph = font
-                .projection(location)
+                .projection(&location)
                 .glyph(glyph_id)?
                 .require(&glyph_id)?;
             authored_advance(glyph.x_advance(), source_index)
@@ -564,7 +570,7 @@ fn fallback_bounds(
         font,
         projection_set,
         projection,
-        projection.fallback().source_id(),
+        font.reading_source_id(projection.fallback())?,
     )?;
     let curves = curves_from_resolved_contours(resolved.contours())?;
     Ok(Bounds::of_curves(&curves))

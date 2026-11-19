@@ -4,11 +4,14 @@ pub mod binary_data;
 pub mod boolean;
 pub mod collection;
 pub mod component;
+pub mod condition;
 pub mod contour;
 pub mod entity;
 pub mod features;
 pub mod font;
 pub mod glyph;
+pub mod glyph_alternate;
+pub mod glyph_axis;
 pub mod glyph_category;
 pub mod glyph_name;
 pub mod grid;
@@ -33,16 +36,24 @@ pub use axis::{
 };
 pub use binary_data::BinaryData;
 pub use boolean::{BooleanOp, boolean};
-pub use component::{Component, ComponentAlignment, DecomposedTransform, Transform};
+pub use component::{
+    Component, ComponentAlignment, ComponentInheritance, ConditionalComponent, DecomposedTransform,
+    Transform,
+};
+pub use condition::{Condition, ConditionRange};
 pub use contour::{Contour, Contours};
 pub use entity::{
-    AnchorId, AxisId, AxisLabelId, AxisMappingId, ComponentId, ContourId, EntityId, GlyphEntityId,
-    GlyphId, GuidelineId, KerningGroupId, LayerId, MetricId, NamedInstanceId, NodeId, PointId,
-    RunId, SourceId, TextItemId,
+    AlternateId, AnchorId, AxisId, AxisLabelId, AxisMappingId, ComponentId, ContourId, EntityId,
+    GlyphEntityId, GlyphId, GuidelineId, KerningGroupId, LayerId, MetricId, NamedInstanceId,
+    NodeId, PointId, RunId, SourceId, TextItemId,
 };
 pub use features::FeatureData;
 pub use font::{Font, FontCopyId, FontMetadata, LANGUAGES_LIB_KEY};
 pub use glyph::{Glyph, GlyphLayer};
+pub use glyph_alternate::{
+    GlyphAlternate, NeverUsedAlternate, NeverUsedReason, never_used_alternates,
+};
+pub use glyph_axis::{AxisValueUse, GlyphAxis, GlyphAxisEdit};
 pub use glyph_category::{
     GlyphCategory, GlyphClasses, GlyphDataCategory, GlyphSubcategory, Ligature, NamedGlyph,
     OpenTypeCategories, OpenTypeCategory, RecordCategory, UnknownGlyphCategory,
@@ -66,4 +77,4 @@ pub use persistent::PersistentMap;
 pub use point::{Point, PointType};
 pub use segment::{CurveSegment, CurveSegmentIter, PointKinds, SegmentIndexIter, SegmentIndices};
 pub use source::{Source, SourceList, SourceRole};
-pub use variation::{AxisMappingBasis, AxisRange, DesignNormalization};
+pub use variation::{AxisMappingBasis, AxisRange, DesignNormalization, RangeBounds};

@@ -8,7 +8,8 @@ interface MarkColorSwatchProps {
   readonly color: MarkColor | null;
   /** What pressing the swatch does, as its tooltip and accessible name. */
   readonly label: string;
-  readonly pressed: boolean;
+  /** True when every glyph has the colour, `mixed` when only some do; both show the tile. */
+  readonly pressed: boolean | "mixed";
   /** Faded, as the colours left out while a filter shows others. */
   readonly dimmed?: boolean;
   readonly onPress: (event: MouseEvent<HTMLElement>) => void;
@@ -27,6 +28,8 @@ export function MarkColorSwatch({
       <Button
         aria-label={label}
         aria-pressed={pressed}
+        // A pressed swatch sits on the ghost button's active tile.
+        isActive={pressed !== false}
         variant="ghost"
         size="icon-sm"
         onClick={onPress}
@@ -34,10 +37,9 @@ export function MarkColorSwatch({
         <span
           aria-hidden="true"
           className={cn(
-            "block h-3 w-3 rounded-full",
-            // The untagged dot is hollow; a pressed dot is ringed.
+            "block h-3.5 w-3.5 rounded-full",
+            // The untagged dot is hollow.
             color ? null : "border border-control-muted bg-surface",
-            pressed && "ring-1 ring-primary/40 ring-offset-1 ring-offset-surface",
             dimmed && "opacity-35",
           )}
           // A tag's colour is data.

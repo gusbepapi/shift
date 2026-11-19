@@ -25,18 +25,22 @@ mod traits;
 
 pub use binary_encoding::{BinaryEncoding, BinaryEncodings};
 pub use errors::{BackendError, BackendResult, FormatBackendError, FormatBackendResult};
-pub use export::{ExportError, ExportFormat, FontExportRequest, FontExportResult, FontExporter};
+pub use export::{
+    ComponentConditions, ConditionalComponentRef, ExportError, ExportFormat, FontExportRequest,
+    FontExportResult, FontExporter, PreviewBinary, VariableComponents,
+};
 pub use export_static::StaticInstanceFile;
 pub use font_source::{
     AuthoredReadError, AuthoredSource, AxisIndex, ContourError, DesignspaceFont, DirectoryGlyph,
-    DirectoryInstance, DirectoryMapping, DirectoryMappingPoint, DirectorySource, FontDirectory,
-    FontImporter, FontMetrics, FontReadError, FontSource, GlyphAnchor, GlyphComponent, GlyphDelta,
-    GlyphIndex, GlyphMetrics, GlyphPoint, GlyphPointKind, GlyphProjection, GlyphShape,
-    GlyphShapeContour, GlyphShapePoint, GlyphSourceShape, GlyphVariation, GlyphsFont, OpenTypeFont,
-    OpenedAuthoredSource, OpenedFont, PointProvenance, ProjectedGlyph, SourceAtlasDescriptor,
-    SourceAtlasError, SourceAtlasPage, SourceIndex, TrueTypePointIndex, UfoFont, VariationAxis,
-    VariationAxisKind, VariationCoordinate, VariationLocation, VariationRegion, VariationSupport,
-    build_binary_atlas_page, variable_glyph_inputs,
+    DirectoryInstance, DirectoryMapping, DirectoryMappingPoint, DirectorySource, DrawnGlyph,
+    FontDirectory, FontImporter, FontMetrics, FontReadError, FontSource, GlyphAnchor,
+    GlyphComponent, GlyphDelta, GlyphIndex, GlyphMetrics, GlyphPoint, GlyphPointKind,
+    GlyphProjection, GlyphShape, GlyphShapeContour, GlyphShapePoint, GlyphSourceShape,
+    GlyphVariation, GlyphsFont, OpenTypeFont, OpenedAuthoredSource, OpenedFont, PointProvenance,
+    ProjectedGlyph, SourceAtlasDescriptor, SourceAtlasError, SourceAtlasPage, SourceIndex,
+    TrueTypePointIndex, UfoFont, VariationAxis, VariationAxisKind, VariationCoordinate,
+    VariationLocation, VariationRegion, VariationSupport, build_binary_atlas_page,
+    variable_glyph_inputs,
 };
 pub use format::FontFormat;
 pub use glyph_category::GlyphCategories;
@@ -47,7 +51,7 @@ pub use import::{FontImport, GlyphDirectoryEntry, ImportBatchLimit};
 pub(crate) use import_report::distinct_named_instances;
 pub use import_report::{ImportLoss, ImportLossKind, ImportReport};
 pub use shift2fontir::{
-    AxisConversionError, MappingSide, PropagatedAnchor, PropagatedGlyphAnchors,
+    AlternatesError, AxisConversionError, MappingSide, PropagatedAnchor, PropagatedGlyphAnchors,
     PropagatedSourceAnchors,
 };
 pub use source_ids::SourceIds;

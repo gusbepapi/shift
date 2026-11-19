@@ -1,14 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, cn } from "@shift/ui";
+import { GlyphPreviewSvg } from "../glyph-grid/GlyphPreviewSvg";
 import { GlyphContextMenu } from "./GlyphContextMenu";
 import { GlyphCatalogLayout } from "./glyphCatalogLayout";
 import { GlyphNameInput } from "./GlyphNameInput";
-import { GlyphPreviewLayout } from "./GlyphPreviewLayout";
 import { useCatalogSelection } from "./useCatalogSelection";
 import { useGlyphPreviewFrame } from "./useGlyphPreviewFrame";
 import { useRevealSelectedGlyph } from "./useRevealSelectedGlyph";
 import type { GlyphId } from "@shift/types";
-import { markColorCss, markColorKey } from "@/lib/glyph-grid/markColor";
+import { markColorCss, markColorInk, markColorKey } from "@/lib/glyph-grid/markColor";
 import type { SvgGlyphCatalogGridProps } from "@/types/glyphCatalog";
 
 const PLAIN_CLICK = { range: false, toggle: false };
@@ -115,6 +115,7 @@ export function SvgGlyphCatalogGrid({
   return (
     <GlyphContextMenu
       glyphAt={(event) => selecting.glyphAt(event.clientX, event.clientY)}
+      glyphs={glyphs}
       selection={selection}
       selectGlyphs={selectGlyphs}
       openGlyph={openGlyph}
@@ -142,25 +143,16 @@ export function SvgGlyphCatalogGrid({
         <div className="relative" style={{ height: layout.totalHeight, width: "100%" }}>
           {targetFrame.cells.map((cell) => {
             const preview = previews.get(cell.glyph.id);
-            const previewLayout = preview
-              ? new GlyphPreviewLayout(metrics, preview.xAdvance, cell.previewRect.height)
-              : null;
             const top = cell.cellRect.top + targetFrame.scrollTop;
             let previewContent: ReactNode = null;
-            if (preview?.svgPath && previewLayout) {
+            if (preview?.svgPath) {
               previewContent = (
-                <svg
-                  aria-hidden="true"
+                <GlyphPreviewSvg
+                  preview={preview}
+                  metrics={metrics}
                   width={cell.previewContentRect.width}
                   height={cell.previewContentRect.height}
-                  viewBox={previewLayout.viewBox}
-                  preserveAspectRatio="xMidYMid meet"
-                  className="overflow-hidden"
-                >
-                  <g transform="scale(1, -1)">
-                    <path d={preview.svgPath} fill="currentColor" fillRule="nonzero" />
-                  </g>
-                </svg>
+                />
               );
             } else if (
               readiness === "Complete" &&
@@ -174,12 +166,15 @@ export function SvgGlyphCatalogGrid({
               );
             }
 
+            // A tagged name reads in its colour's ink; an untagged one is muted.
+            const nameInk = cell.glyph.markColor ? markColorInk(cell.glyph.markColor) : undefined;
             let nameCell = (
               <div
                 className={cn(
                   "flex h-7 w-full items-center justify-center truncate px-2 text-xs",
-                  cell.glyph.markColor ? "text-primary" : "text-muted",
+                  !cell.glyph.markColor && "text-muted",
                 )}
+                style={{ color: nameInk }}
               >
                 {cell.glyph.displayName}
               </div>
@@ -191,8 +186,9 @@ export function SvgGlyphCatalogGrid({
                   variant="ghost"
                   className={cn(
                     "h-7 w-full truncate px-2 text-center font-ui text-xs font-normal",
-                    cell.glyph.markColor ? "text-primary" : "text-muted",
+                    !cell.glyph.markColor && "text-muted",
                   )}
+                  style={{ color: nameInk }}
                   onClick={() => setEditingGlyphId(cell.glyph.id)}
                 >
                   {cell.glyph.displayName}
@@ -221,7 +217,7 @@ export function SvgGlyphCatalogGrid({
                 data-glyph-id={cell.glyph.id}
                 data-mark-color={markColorKey(cell.glyph.markColor)}
                 className={cn(
-                  "absolute flex flex-col overflow-hidden rounded-lg",
+                  "absolute flex flex-col overflow-hidden rounded-md",
                   selected ? "bg-hover" : "bg-tile",
                 )}
                 style={{
@@ -245,23 +241,30 @@ export function SvgGlyphCatalogGrid({
                 >
                   {previewContent}
                 </Button>
-                {/* A tag colours the band that holds the name; the preview is never tinted. */}
+                {/* A tag colours the band that holds the name, else it is a shade off the tile; the preview is never tinted. */}
                 <div
                   className="flex items-center px-0.75"
                   style={{
                     background: cell.glyph.markColor
                       ? markColorCss(cell.glyph.markColor)
-                      : undefined,
+                      : "var(--color-tile-band)",
                     height: bandHeight,
                   }}
                 >
                   {nameCell}
                 </div>
                 {selected ? (
-                  <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-inset ring-accent"
-                  />
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 rounded-md ring-2 ring-inset ring-accent"
+                    />
+                    {/* A hairline of surface inside the ring, so it reads on a band of its own colour. */}
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0.5 rounded-sm ring-1 ring-inset ring-surface"
+                    />
+                  </>
                 ) : null}
               </div>
             );

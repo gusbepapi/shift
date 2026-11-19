@@ -22,7 +22,7 @@ export interface EditableSidebarInputProps {
   className?: string;
   value?: number | null;
   icon?: ReactNode;
-  iconPosition?: "left" | "right";
+  iconPosition?: "left" | "right" | "center";
   onValueChange?: (value: number) => void;
   disabled?: boolean;
   suffix?: string;
@@ -41,6 +41,8 @@ export interface EditableSidebarInputProps {
   onKeyCommit?: (text: string) => string | null;
   /** What the tooltip says; the field's accessible name when omitted. */
   tooltip?: string;
+  /** Shown in place of a null value, such as "Mixed" when a selection differs. */
+  placeholder?: string;
 }
 
 /** Whether `text` is a key the field passes to `onKeyCommit` rather than a number. */
@@ -73,6 +75,7 @@ export const EditableSidebarInput = forwardRef<
       defaultValue = 0,
       keyText = null,
       onKeyCommit,
+      placeholder,
       tooltip,
     },
     ref,
@@ -169,6 +172,7 @@ export const EditableSidebarInput = forwardRef<
             onChange={(event) => setEditValue(event.target.value)}
             disabled={disabled}
             aria-invalid={refusal !== null}
+            placeholder={placeholder}
           />
         </TooltipTrigger>
         <TooltipContent>{refusal ?? tooltip ?? ariaLabel}</TooltipContent>

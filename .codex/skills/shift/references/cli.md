@@ -36,17 +36,27 @@ shift-cli font create Lab.shift
 shift-cli font create Lab.shift --from Family.glyphspackage   # names, UPM, metrics, axes, masters; no glyphs
 shift-cli import Family.glyphspackage --output Family.shift    # the whole font: glyphs, kerning, features, instances
 shift-cli axis add Lab.shift --tag wght --name Weight --min 100 --default 400 --max 900
+shift-cli axis add Lab.shift --tag opsz --name "Optical size" --min 8 --default 12 --max 72 --hidden
+shift-cli axis set Lab.shift opsz --visible                  # or --hidden; the fvar hidden flag
 shift-cli source add Lab.shift --name Black --location wght=900
 shift-cli glyph add Lab.shift A --unicode U+0041
 shift-cli layer set Lab.shift --glyph A --source Regular --input A.json
 shift-cli glyph set Lab.shift --input glyphs.json --dry-run --json
 shift-cli glyph export Inter.glyphspackage --glyphs aacute,one.ss01 > glyphs.json   # any source → the JSON glyph set reads
 shift-cli glyph export Inter.glyphspackage --glyphs aacute | shift-cli glyph set Lab.shift --input -
+shift-cli glyph color Lab.shift --glyphs A,B,C --color red      # tag glyphs; --clear removes the tag
 shift-cli font set Lab.shift --family-name "Packet Mono" --x-height 480 --cap-height 720
 shift-cli instance add Lab.shift --name Book --location wght=450
 shift-cli kerning set Lab.shift @A @V -60 --source Bold
 shift-cli kerning set Lab.shift --input kerning.json --dry-run --json
 shift-cli kerning group create Lab.shift O O Q --position first
+shift-cli glyph axis add Lab.shift dot --name Spread --min 0 --default 0 --max 100     # an axis only dot has (tag SPRD)
+shift-cli glyph axis edit Lab.shift dot SPRD --max 1000 --rescale                      # also --name, --tag; remove
+shift-cli glyph alternate add Lab.shift dollar dollar.bled --when "Bleed >= 70"         # also remove, move --to N, set
+shift-cli component condition set Lab.shift H 2 --when "RSLN >= 50"                     # in every drawing of H
+shift-cli layer add Lab.shift --glyph dot --source Regular --location SPRD=100 --input dot-wide.json
+shift-cli layer add Lab.shift --glyph H --location BLED=50 --input H-brace.json        # a brace drawing on no source
+shift-cli layer move Lab.shift --glyph H --location BLED=50 --to-location BLED=40      # layer remove takes the same place flags
 ```
 
 - **Shift assigns all identities.** Read the IDs a command returns and use them as selectors; never invent IDs.
@@ -54,7 +64,11 @@ shift-cli kerning group create Lab.shift O O Q --position first
 - **`layer set` replaces a drawing**, components included: the payload's components replace the layer's. Use `layer copy` to duplicate a layer into another source.
 - **`glyph set` applies a batch atomically** and supports `--dry-run`. A component's base may be another glyph in the same batch.
 - **Metrics keys** (`=n`, `=n+10`, `=|H`) go in `metricsKeys` on a glyph entry (every source) or on a layer (its source only, winning over the glyph's). They apply in the same edit, as in the app, and keep applying when a glyph they read changes later. A key that cannot be evaluated fails the command without writing. `""` removes a side's key.
+- **Mark colours** are the colour tags the app's glyph grid shows and filters by; a glyph has one, whatever the source. `glyph color --glyphs A,B --color NAME` tags many glyphs at once (`--clear` removes the tag). Names are `red`, `orange`, `brown`, `yellow`, `lightGreen`, `darkGreen`, `lightBlue`, `darkBlue`, `purple`, `magenta`, `lightGray`, `charcoal`; any other colour is `r,g,b,a` with channels from 0 to 1. In a `glyph set` entry, `"markColor": "red"` sets it, `null` clears it, and leaving it out keeps it. `glyph export` writes it and `glyph inspect` (and `--json`'s `glyph.markColor`) shows it.
 - **`glyph export` copies real glyphs**: it reads named glyphs from any source (`.shift`, UFO, Designspace, Glyphs, TTF, OTF) as the batch `glyph set` reads, adding every glyph their components use. `--source NAME` or `--source all` picks masters (default: the default source). Small exported files are good scratch fixtures: edit them, then `glyph set` them into a document.
+- **Glyph axes** (`glyph axis add|edit|remove`) belong to one glyph; values on them are in the axis's own units. A component sets its base glyph's axes in its `location`, by tag (`{"base": "dot", "location": {"SPRD": 60}}`); one that doesn't is at the axis default, never the parent's value. A range edit that would leave a drawing or component location outside is refused and lists them; `--rescale` moves them with the range. `remove` is refused while anything sets the axis.
+- **Alternates** (`glyph alternate add|remove|move|set`) are other glyphs text draws in a glyph's place where a condition on font axes holds; they are tried in order, the first match wins, and components are never swapped. **Component conditions** (`component condition set`) hide a component wherever they fail, in every drawing of its glyph, and read font axes and the glyph's own axes, never its base glyph's. A condition is one `--when` per range: axis tag or name, then `700`/`>=700`/`700+` (from), `<=80` (up to) or `400-600`, in **user units** on font axes. Alternates and components are named by position from 1 or by the glyph they draw. `glyph set` takes `"alternates": [{"glyph": "dollar.bled", "when": ["BLED>=70"]}]` and a component's `"condition": ["RSLN>=50"]`. `check` warns about a never-used alternate (`A001`); `glyph inspect --location` shows `drawn as`. Compiled fonts carry alternates as `rvrn` substitutions, first match first; a designspace export writes them as `<rules>`, and a static instance draws the alternate that holds there in the glyph's place. They can't carry component conditions yet: `compile` and `export` refuse a font with any, and `check` warns about each (`A002`); `proof` draws them everywhere and warns (stderr, and `warnings` in `--json`).
+- **A drawing can sit anywhere**: `--source`, `--location TAG=VALUE` (font or glyph axes), or both. `--location` without `--source` places it on no source, other axes at their defaults. `glyph set` entries take the same `location` beside `source`. `inspect --json` lists each glyph's `axes` and each layer's `location`.
 - Instances are presets, not masters: instance commands never create sources or drawings.
 - **Kerning sides**: `first` is the left glyph, and its first-position group kerns its right edge; `second` is the right glyph. A side is a glyph name or `@GROUP` for a group at that position. Values are per master and default to the default source; set every master you mean to change.
 - **`kerning set --input`** applies `groups` (created if missing; `members` replaces membership) and then `pairs` (`value: null` removes) atomically, so pairs can name groups the batch creates.

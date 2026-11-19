@@ -10,8 +10,8 @@ use shift_font::wire::{
   SourceMetricsInterpolationSnapshot,
 };
 use shift_font::{
-  FontChangeImpact, FontChangeSet, FontIntent, FontIntentSet, Glyph, GlyphId, GlyphRecordChanges,
-  GlyphRecords, LayerId, OpenTypeCategories,
+  DesignLocation, FontChangeImpact, FontChangeSet, FontIntent, FontIntentSet, Glyph, GlyphId,
+  GlyphPreview, GlyphRecordChanges, GlyphRecords, LayerId, Location, OpenTypeCategories,
 };
 use shift_workspace::{
   AcquireScope, DocumentIdentity as StoreDocumentIdentity, FontWorkspace, NewWorkspace,
@@ -207,6 +207,24 @@ pub(crate) trait NativeWorkspace {
     &mut self,
     layer_ids: Vec<LayerId>,
   ) -> Result<Vec<GlyphLayerSnapshot>, NativeWorkspaceError>;
+
+  /// Each of `glyph_ids` drawn at the design `location`: one SVG path in
+  /// font units and its advance, components and interpolation resolved
+  /// there with shared component work across the batch. External axis
+  /// mappings must be evaluated first (see `map_location`). A glyph the
+  /// font lacks is left out; a glyph without ink has an empty path. No
+  /// editable structure crosses the boundary, so the payload stays far
+  /// lighter than glyph snapshots.
+  ///
+  /// # Errors
+  ///
+  /// Fails when no workspace is open, a glyph cannot be loaded, or one
+  /// cannot be resolved at `location`.
+  fn glyph_previews(
+    &mut self,
+    glyph_ids: Vec<GlyphId>,
+    location: Location,
+  ) -> Result<Vec<GlyphPreview>, NativeWorkspaceError>;
 
   /// Whether the font has axes.
   ///
@@ -567,6 +585,24 @@ impl NativeWorkspace for Bridge {
     Ok(())
   }
 
+  fn glyph_previews(
+    &mut self,
+    glyph_ids: Vec<GlyphId>,
+    location: Location,
+  ) -> Result<Vec<GlyphPreview>, NativeWorkspaceError> {
+    let location = DesignLocation::from_untyped(location);
+    // A tile draws each glyph as text does, as the alternate picked at this
+    // location, so the alternate glyphs are acquired too.
+    let mut drawn = glyph_ids.clone();
+    drawn.extend(self.font()?.alternate_glyphs_of(&glyph_ids));
+    let font = self.acquire_and_font(&drawn, AcquireScope::ComponentClosure)?;
+    let glyphs = font
+      .projection(&location)
+      .drawn_glyphs(&glyph_ids)
+      .map_err(BridgeError::from)?;
+    Ok(glyphs.iter().map(GlyphPreview::from).collect())
+  }
+
   fn read_layers(
     &mut self,
     layer_ids: Vec<LayerId>,
@@ -577,7 +613,10 @@ impl NativeWorkspace for Bridge {
     layer_ids
       .iter()
       .zip(glyph_ids)
-      .map(|(layer_id, glyph_id)| Ok(layer_snapshot(glyph_id, font.require_layer(*layer_id)?)))
+      .map(|(layer_id, glyph_id)| {
+        let layer = font.require_layer(*layer_id)?;
+        Ok(layer_snapshot(font, glyph_id, layer).map_err(BridgeError::from)?)
+      })
       .collect()
   }
 

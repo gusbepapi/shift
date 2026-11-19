@@ -28,6 +28,89 @@ use crate::shift2fontir::{PropagatedGlyphAnchors, ShiftIrSource, ShiftIrSourceEr
 use crate::traits::FontView;
 use shift_font::{Axis, AxisRole, Font};
 
+/// A component that carries a condition, named by its glyph and its
+/// position in the glyph's drawings.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ConditionalComponentRef {
+    pub glyph: String,
+    /// Its position in the drawing, counting from 1.
+    pub position: usize,
+    /// The glyph it draws.
+    pub base: String,
+}
+
+/// Every component of a font that carries a condition, in glyph order.
+///
+/// Export refuses them all. fontc 2.0.1 has no place for a component's
+/// condition (fontir's `Component` carries none, and fontbe writes every
+/// `VARC` component without a `conditionIndex`), and the designspace and UFO
+/// writers have none either, so a conditional component would otherwise be
+/// drawn everywhere.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentConditions(pub Vec<ConditionalComponentRef>);
+
+impl ComponentConditions {
+    /// The conditional components of `font`.
+    fn of(font: &impl FontView) -> Self {
+        Self(
+            font.glyphs()
+                .flat_map(|glyph| {
+                    glyph.conditional_components().into_iter().map(|component| {
+                        ConditionalComponentRef {
+                            glyph: glyph.name().to_string(),
+                            position: component.position,
+                            base: component.base.to_string(),
+                        }
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Refuses `font` when any of its components carries a condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError::ComponentConditions`] listing every one.
+    fn refuse(font: &impl FontView) -> Result<(), ExportError> {
+        let conditions = Self::of(font);
+        if conditions.0.is_empty() {
+            return Ok(());
+        }
+        Err(ExportError::ComponentConditions(conditions))
+    }
+}
+
+impl std::fmt::Display for ComponentConditions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let components: Vec<String> = self
+            .0
+            .iter()
+            .map(|component| {
+                format!(
+                    "{}: component {} ({})",
+                    component.glyph, component.position, component.base
+                )
+            })
+            .collect();
+        write!(
+            f,
+            "component conditions can't be exported yet; remove the condition from {}",
+            components.join(", ")
+        )
+    }
+}
+
+/// A binary compiled for a preview by [`FontExporter::compile_preview_ttf`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreviewBinary {
+    /// The TrueType binary.
+    pub bytes: Vec<u8>,
+    /// The components whose conditions the binary leaves out, so it draws
+    /// them everywhere, in glyph order; empty when the font has none.
+    pub drawn_everywhere: Vec<ConditionalComponentRef>,
+}
+
 /// Identifies a format [`FontExporter`] can write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExportFormat {
@@ -174,6 +257,9 @@ pub enum ExportError {
     #[error("cannot compile this Shift font: {message}")]
     InvalidSource { message: String },
 
+    #[error("{0}")]
+    ComponentConditions(ComponentConditions),
+
     #[error("failed to compile TrueType font: {message}")]
     CompileTtf { message: String },
 
@@ -223,12 +309,35 @@ pub enum ExportError {
     },
 }
 
+/// How a compiled font writes a component that sets its own location.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VariableComponents {
+    /// Decomposed into outlines drawn at the component's location, which
+    /// every renderer draws.
+    #[default]
+    Decompose,
+    /// Kept as a variable component in a `VARC` table, smaller, but drawn
+    /// only by renderers that read `VARC`.
+    Varc,
+}
+
 /// Exports [`FontView`] snapshots as binaries or editable sources.
-pub struct FontExporter;
+#[derive(Clone, Debug, Default)]
+pub struct FontExporter {
+    variable_components: VariableComponents,
+}
 
 impl FontExporter {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// This exporter, writing components that set their own location as
+    /// `variable_components` says.
+    #[must_use]
+    pub fn with_variable_components(mut self, variable_components: VariableComponents) -> Self {
+        self.variable_components = variable_components;
+        self
     }
 
     /// Writes `font` in the requested format, replacing each destination
@@ -250,7 +359,9 @@ impl FontExporter {
     /// of a font with several masters, [`ExportError::WriteSources`] when a
     /// source format cannot represent the font or its files cannot be written,
     /// the errors of [`Self::export_static_instances_with`], and the compile and
-    /// write errors of TrueType export.
+    /// write errors of TrueType export. Every format refuses a font whose
+    /// components carry conditions ([`ExportError::ComponentConditions`]),
+    /// before writing anything.
     pub fn export(
         &self,
         font: &Font,
@@ -274,6 +385,7 @@ impl FontExporter {
         encodings: &BinaryEncodings,
     ) -> Result<FontExportResult, ExportError> {
         let files = self.plan_with(font, &request, encodings)?;
+        ComponentConditions::refuse(font)?;
         if let Some(directory) = request.path.parent()
             && request.format != ExportFormat::StaticTtf
         {
@@ -390,15 +502,44 @@ impl FontExporter {
     ///
     /// # Errors
     ///
+    /// Returns [`ExportError::ComponentConditions`] when a component carries
+    /// a condition, and [`ExportError`] when the source cannot otherwise be
+    /// represented in the supported compiler model or compilation fails.
+    pub fn compile_ttf(&self, font: &impl FontView) -> Result<Vec<u8>, ExportError> {
+        ComponentConditions::refuse(font)?;
+        self.compile_ttf_drawing_conditions_everywhere(font)
+    }
+
+    /// Compiles a TrueType binary for a preview, such as a proof, that may
+    /// show a font export refuses: every component that carries a condition
+    /// is drawn everywhere, as if it had none, and the result lists them so
+    /// the preview can say so. A font without component conditions compiles
+    /// exactly as [`Self::compile_ttf`] compiles it.
+    ///
+    /// # Errors
+    ///
     /// Returns [`ExportError`] when the source cannot be represented in the
     /// supported compiler model or compilation fails.
-    #[allow(
-        clippy::unused_self,
-        reason = "an exporter method; the exporter is the export entry point callers hold"
-    )]
-    pub fn compile_ttf(&self, font: &impl FontView) -> Result<Vec<u8>, ExportError> {
+    pub fn compile_preview_ttf(&self, font: &impl FontView) -> Result<PreviewBinary, ExportError> {
+        Ok(PreviewBinary {
+            bytes: self.compile_ttf_drawing_conditions_everywhere(font)?,
+            drawn_everywhere: ComponentConditions::of(font).0,
+        })
+    }
+
+    /// Compiles `font`, drawing each conditional component everywhere:
+    /// fontc 2.0.1 has no place for the condition.
+    fn compile_ttf_drawing_conditions_everywhere(
+        &self,
+        font: &impl FontView,
+    ) -> Result<Vec<u8>, ExportError> {
         let source = ShiftIrSource::from_font_view(font)?;
-        let bytes = fontc::generate_font(Box::new(source), fontc::Options::default())
+        let mut options = fontc::Options::default();
+        options.flags.set(
+            fontir::orchestration::Flags::EMIT_VARC_TABLE,
+            self.variable_components == VariableComponents::Varc,
+        );
+        let bytes = fontc::generate_font(Box::new(source), options)
             .map_err(|error| compile_error(&error))?;
         strip_compiler_version(&bytes)
     }
@@ -445,12 +586,6 @@ impl FontExporter {
         ShiftIrSource::from_font_view(font)?
             .propagated_anchors()
             .map_err(|error| compile_error(&error))
-    }
-}
-
-impl Default for FontExporter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -626,7 +761,7 @@ mod tests {
         let compiled = FontRef::new(&bytes).unwrap();
         let gid = |codepoint: u32| compiled.charmap().map(codepoint).unwrap();
         let class_def = compiled.gdef().unwrap().glyph_class_def().unwrap().unwrap();
-        let class = |codepoint: u32| class_def.get(gid(codepoint).try_into().unwrap());
+        let class = |codepoint: u32| class_def.get(gid(codepoint));
         let advance = |codepoint: u32| {
             compiled
                 .glyph_metrics(
@@ -637,8 +772,8 @@ mod tests {
                 .unwrap()
         };
 
-        assert_ne!(class(0x0237), GlyphClassDef::Mark as u16);
-        assert_eq!(class(0x0301), GlyphClassDef::Mark as u16);
+        assert_ne!(class(0x0237), GlyphClassDef::Mark as u32);
+        assert_eq!(class(0x0301), GlyphClassDef::Mark as u32);
         assert_eq!(advance(0x0237), 300.0);
         assert_eq!(advance(0x0301), 0.0);
     }
