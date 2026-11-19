@@ -1,0 +1,1232 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+    types:
+      - checks_requested
+  push:
+    branches:
+      - main
+      - feat/expand-language-list-rebased
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
+# Caches are restored on every run but saved only from pushes to main. A pull
+# request or merge-queue ref can restore only its own caches and main's, so
+# entries they saved were never reused; they filled the 10 GB limit and evicted
+# main's Rust caches, so macOS builds compiled the workspace from scratch.
+env:
+  CARGO_INCREMENTAL: 0
+  # Every turbo run writes .turbo/runs/<id>.json (each task's hash, cache hit or
+  # miss, timings and inputs). The ci-telemetry artifacts carry them off the
+  # runner so cache misses and task times can be tracked across runs.
+  TURBO_RUN_SUMMARY: "true"
+  CARGO_PROFILE_TEST_DEBUG: 0
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: detect which parts of the monorepo changed
+  # ---------------------------------------------------------------------------
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      integration: ${{ steps.filter.outputs.integration }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      release: ${{ steps.filter.outputs.release }}
+      skills: ${{ steps.filter.outputs.skills }}
+      docs: ${{ steps.filter.outputs.docs }}
+      e2e: ${{ steps.e2e-filter.outputs.e2e }}
+      e2e-builds: ${{ steps.e2e-plan.outputs.builds }}
+      e2e-runs: ${{ steps.e2e-plan.outputs.runs }}
+      e2e-windows: ${{ steps.e2e-plan.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - 'clippy-ratchet.json'
+              - 'scripts/clippy-ratchet.mjs'
+            # shift-bridge's tests also run the packages it imports.
+            integration:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'packages/wasm/**'
+              - 'packages/pack/**'
+              - 'packages/types/**'
+              - '.github/actions/wasm-toolchain/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            typescript:
+              - 'apps/**'
+              # The editor runs these through packages/wasm.
+              - 'crates/shift-font/**'
+              - 'crates/shift-wasm/**'
+              # Its vocabulary crosses into @shift/wasm/protocol with the scene.
+              - 'crates/shift-layout/**'
+              # They generate @shift/wasm/protocol.
+              - 'crates/pack/**'
+              - 'crates/pack-derive/**'
+              - 'Cargo.lock'
+              - '.github/actions/wasm-toolchain/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'scripts/run-e2e.mjs'
+              - 'scripts/run-with-virtual-desktop.mjs'
+              - 'scripts/oxlint/**'
+              - '.oxlintrc.json'
+              - 'tsconfig*.json'
+              - 'turbo.json'
+              # A change to this workflow runs the jobs it may have changed.
+              - '.github/workflows/ci.yml'
+            release:
+              - '.github/workflows/**'
+              - '.release-please-manifest.json'
+              - 'release-please-config.json'
+              - 'CHANGELOG.md'
+              - 'docs/releases.md'
+              - 'package.json'
+              - 'apps/desktop/package.json'
+              - 'apps/desktop/build.ts'
+              - 'apps/desktop/electron-builder.config.ts'
+              - 'apps/desktop/forge.config.ts'
+              - 'apps/desktop/vite.main.config.ts'
+              - 'apps/desktop/vite.preload.config.ts'
+              - 'scripts/clippy-ratchet.mjs'
+              - 'scripts/clippy-ratchet.test.mjs'
+              - 'scripts/find-retired-nightly-objects.mjs'
+              - 'scripts/find-retired-nightly-objects.test.mjs'
+              - 'scripts/prepare-linux-repositories.mjs'
+              - 'scripts/prepare-linux-repositories.test.mjs'
+              - 'scripts/prepare-nightly-release.mjs'
+              - 'scripts/prepare-nightly-release.test.mjs'
+              - 'scripts/prepare-update-feed.mjs'
+              - 'scripts/prepare-update-feed.test.mjs'
+              - 'scripts/product-version.mjs'
+              - 'scripts/product-version.test.mjs'
+              - 'scripts/capture-installed-app.mjs'
+              - 'scripts/smoke-packaged.mjs'
+            skills:
+              - '.agents/skills/**'
+            docs:
+              - '**/docs/DOCS.md'
+              - 'docs/architecture/**'
+              - 'scripts/context-drift-check.py'
+              - 'scripts/check-docs-fences.mjs'
+              - 'scripts/check-invariants.py'
+              - '.claude/skills/**'
+              - '.codex/skills/**'
+              - 'scripts/sync-agent-skills.mjs'
+
+      # A file reaches E2E when it matches the first pattern and no exclusion, so a
+      # Markdown, docs, or shift-cli-only change skips the E2E matrix. The app bundles
+      # shift-cli only when packaging, which E2E does not exercise.
+      - uses: dorny/paths-filter@v4
+        id: e2e-filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            e2e:
+              - '{apps/**,packages/**,crates/**,Cargo.toml,Cargo.lock,rust-toolchain.toml,pnpm-lock.yaml,scripts/run-e2e.mjs,scripts/run-with-virtual-desktop.mjs,tsconfig*.json,turbo.json}'
+              - '!**/*.md'
+              - '!**/docs/**'
+              - '!crates/shift-cli/**'
+
+      # Pull requests run macOS visual and the full platform suite on Linux. The merge
+      # queue and manual runs add Windows (the e2e-windows job), limited to @os tests
+      # whose behaviour differs by OS, and the hardware GPU project.
+      #
+      # The merge queue skips visual: the pull request already compared these
+      # screenshots, and the account runs only five macOS jobs at once, which several
+      # queue entries building together would otherwise share. Its macOS shard runs the
+      # @os platform tests the visual shards run after their screenshots.
+      - name: Plan E2E
+        id: e2e-plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          full=false
+          queue=false
+          if [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" || "$EVENT" == "push" ]]; then
+            full=true
+          fi
+          if [[ "$EVENT" == "merge_group" ]]; then
+            queue=true
+          fi
+          jq -nc '
+            [{name: "macOS", runner: "macos-latest"}, {name: "Linux", runner: "ubuntu-latest"}]
+            | {include: .}' > builds.json
+          jq -nc --argjson full "$full" --argjson queue "$queue" '
+            def shards($n; $job): [range(1; $n + 1) | $job + {shard: ., "shard-total": $n}];
+            (if $queue then
+                shards(1; {target: "platform-macos", name: "Platform macOS", project: "platform", runner: "macos-latest", grep: "@os"})
+              else
+                shards(3; {target: "visual", name: "Visual", project: "visual", runner: "macos-latest", workers: 2})
+              end)
+            + shards(2; {target: "platform-linux", name: "Platform Linux", project: "platform", runner: "ubuntu-latest"})
+            + (if $full then shards(1; {target: "gpu", name: "GPU", project: "gpu", runner: "macos-latest"}) else [] end)
+            | {include: .}' > runs.json
+          {
+            echo "builds=$(cat builds.json)"
+            echo "runs=$(cat runs.json)"
+            echo "windows=$full"
+          } >> "$GITHUB_OUTPUT"
+          cat builds.json runs.json
+
+  agent-skills:
+    name: Agent Skills
+    needs: detect-changes
+    if: needs.detect-changes.outputs.skills == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Check synchronized skills
+        run: node scripts/sync-agent-skills.mjs --check
+
+  # ---------------------------------------------------------------------------
+  # Documentation drift: DOCS.md structure/link/symbol/command integrity,
+  # ts-fence compilation, and architecture invariants. Errors gate; freshness
+  # warnings are advisory (--ci).
+  # ---------------------------------------------------------------------------
+  docs-drift:
+    name: Docs Drift
+    needs: detect-changes
+    if: needs.detect-changes.outputs.docs == 'true' || needs.detect-changes.outputs.typescript == 'true' || needs.detect-changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Context drift check
+        run: python3 scripts/context-drift-check.py --ci
+
+      - name: Docs fence typecheck
+        run: node scripts/check-docs-fences.mjs
+
+      - name: Architecture invariants
+        run: python3 scripts/check-invariants.py
+
+  # ---------------------------------------------------------------------------
+  # TypeScript jobs (no submodules needed)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    needs: detect-changes
+    if: needs.detect-changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Lint (oxlint)
+        run: pnpm test:lint
+      - name: Test Shift lint rules
+        run: pnpm test:lint-rules
+      - name: Test Shift scanners
+        run: pnpm test:scan
+      - name: Tailwind design-system lint
+        run: pnpm lint:tailwind
+      - name: Format check (oxfmt)
+        run: pnpm format:check
+      - name: Task graph (typecheck skips release builds)
+        run: pnpm check:task-graph
+
+  typecheck:
+    name: Typecheck
+    needs: detect-changes
+    if: needs.detect-changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: ./.github/actions/wasm-toolchain
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Restore Typecheck Turbo results
+        id: typecheck-turbo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .turbo/cache
+          key: typecheck-turbo-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            typecheck-turbo-v1-${{ runner.os }}-
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-typecheck
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Save Typecheck Turbo results
+        if: github.ref == 'refs/heads/main' && steps.typecheck-turbo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: typecheck-turbo-v1-${{ runner.os }}-${{ github.sha }}
+
+      - name: Check browser editor bundle
+        run: pnpm check:browser
+
+      - name: Check SDK build and public API report
+        run: |
+          if ! pnpm --filter @shift-editor/sdk build; then
+            echo "::error title=SDK build or API report::If API Extractor reported a changed API signature, run \`pnpm --filter @shift-editor/sdk api:update\` and commit packages/sdk/api/."
+            exit 1
+          fi
+
+  unit-test:
+    name: Unit Tests
+    needs: detect-changes
+    if: needs.detect-changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: ./.github/actions/wasm-toolchain
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Restore native Turbo build
+        id: native-turbo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .turbo/cache
+            crates/shift-bridge/*.node
+          key: native-turbo-v1-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/*/Cargo.toml', 'crates/*/build.rs', 'crates/*/src/**', 'crates/shift-bridge/package.json', 'crates/shift-bridge/*.d.ts', 'pnpm-lock.yaml', 'turbo.json') }}
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.native-turbo-cache.outputs.cache-hit != 'true'
+        with:
+          shared-key: shift-rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Run unit tests
+        run: pnpm test:unit -- --reporter=default --reporter=json --outputFile.json=vitest-report.json
+
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-unit-test
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Save native Turbo build
+        if: github.ref == 'refs/heads/main' && steps.native-turbo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .turbo/cache
+            crates/shift-bridge/*.node
+          key: native-turbo-v1-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/*/Cargo.toml', 'crates/*/build.rs', 'crates/*/src/**', 'crates/shift-bridge/package.json', 'crates/shift-bridge/*.d.ts', 'pnpm-lock.yaml', 'turbo.json') }}
+
+  deadcode:
+    name: Dead Code
+    needs: detect-changes
+    if: needs.detect-changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Dead code check (knip)
+        run: pnpm deadcode:strict
+
+  release-config:
+    name: Release Configuration
+    needs: detect-changes
+    if: needs.detect-changes.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install release dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
+
+      - name: Test release scripts
+        run: pnpm test:release
+
+      - name: Check product version
+        run: pnpm version:check
+
+      - name: Validate Release Please configuration
+        run: |
+          jq empty release-please-config.json .release-please-manifest.json
+          test "$(jq -r '.["."]' .release-please-manifest.json)" = "$(node scripts/product-version.mjs check)"
+
+  # ---------------------------------------------------------------------------
+  # Rust jobs (toolchain pinned via rust-toolchain.toml)
+  # ---------------------------------------------------------------------------
+  rust-fmt:
+    name: Rust Format
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  rust-deps:
+    name: Rust Dependencies
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install toolchain
+        run: rustup show
+
+      # The same versions as the Nix dev shell.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-machete@0.9.2
+
+      - name: Check licenses, advisories and sources
+        run: cargo deny check
+
+      - name: Check for unused dependencies
+        run: cargo machete
+
+  rust-check:
+    name: Rust Clippy & Tests
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Install toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+          shared-key: shift-rust
+
+      # Clippy with `-D warnings`, plus the ratcheted lints, whose hits per
+      # crate may not rise above clippy-ratchet.json. One clippy run does both.
+      # The script fails on any warning outside the ratchet itself; the job's
+      # `-D warnings` would turn the ratcheted warnings into errors too.
+      - name: Run clippy and the lint ratchet
+        env:
+          RUSTFLAGS: ""
+        run: node scripts/clippy-ratchet.mjs
+
+      - name: Check WebAssembly font core
+        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown -p fontsrc -p rumil -p rumil-build -p shift-backends -p shift-engine -p shift-font -p shift-layout -p shift-slug -p shift-wasm
+
+      # The workspace clippy run leaves features off, so the editing engine's
+      # exports are linted here, for the target they build for. The ratchet holds
+      # `unwrap_used` at 0 in library code natively; this holds it for wasm32.
+      - name: Lint the engine module
+        run: RUSTFLAGS='-D warnings --cfg getrandom_backend="wasm_js"' cargo clippy -p shift-wasm --features engine --target wasm32-unknown-unknown -- -D warnings -D clippy::unwrap_used
+
+      - name: Check Shift-independent crate boundaries
+        run: |
+          for crate in fontsrc rumil rumil-build; do
+            if cargo tree -p "$crate" --edges normal --prefix none | grep -q '^shift-'; then
+              echo "$crate must not depend on shift-* crates"
+              exit 1
+            fi
+          done
+
+      # Each shift-scan kind's count per crate is held to
+      # crates/shift-scan/baseline.json: a rise lists the new hits, a fall
+      # asks for `pnpm scan:rust --update`. About 3 s once built.
+      - name: Hold shift-scan counts to the baseline
+        run: cargo run -q -p shift-scan -- --check
+
+      - name: Run tests
+        run: cargo test --workspace --exclude shift-bridge
+
+      # The workspace run leaves features off, so the engine module's own
+      # tests (text and page layout over the session's shaper) run here.
+      - name: Run the engine module's tests
+        run: cargo test -p shift-wasm --features engine --lib
+
+      # Time budgets hold for optimised code, so they are only asserted here.
+      - name: Check performance budgets
+        run: cargo test --release -p shift-font --lib -- perf_mark
+
+  integration:
+    name: Integration Tests
+    needs: detect-changes
+    if: needs.detect-changes.outputs.integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - uses: ./.github/actions/wasm-toolchain
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+          shared-key: shift-rust
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Build native module
+        run: pnpm build:native
+
+      - name: Run shift-bridge tests
+        run: pnpm test:native -- --reporter=default --reporter=json --outputFile.json=vitest-report.json
+
+      - name: Upload CI telemetry
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-telemetry-integration
+          path: |
+            .turbo/runs/
+            **/vitest-report.json
+            !**/node_modules/**
+          # .turbo/runs is a hidden path, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Required end-to-end correctness
+  # ---------------------------------------------------------------------------
+  e2e-build:
+    name: E2E Build ${{ matrix.name }}
+    needs: detect-changes
+    if: >-
+      ((github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+        needs.detect-changes.outputs.e2e == 'true') ||
+      (github.event_name == 'push' && needs.detect-changes.outputs.rust == 'true') ||
+      github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.e2e-builds) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - uses: ./.github/actions/e2e-app
+
+      - name: Check E2E project membership
+        if: github.event_name != 'push' && runner.os == 'Linux'
+        run: node scripts/check-e2e-projects.mjs
+
+      # GitHub's artifact service occasionally fails to resolve (ENOTFOUND);
+      # retry once before failing the build the E2E jobs depend on.
+      - name: Upload E2E app
+        id: upload-e2e-app
+        if: github.event_name != 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-${{ github.run_id }}-${{ runner.os }}
+          # The fixtures open documents through @shift/bridge, whose generated
+          # clients are not committed.
+          path: |
+            apps/desktop/.vite/
+            crates/shift-bridge/*.node
+            packages/types/src/bridge/protocol.ts
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Retry E2E app upload
+        if: github.event_name != 'push' && steps.upload-e2e-app.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-${{ github.run_id }}-${{ runner.os }}
+          # The fixtures open documents through @shift/bridge, whose generated
+          # clients are not committed.
+          path: |
+            apps/desktop/.vite/
+            crates/shift-bridge/*.node
+            packages/types/src/bridge/protocol.ts
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+  e2e:
+    name: E2E ${{ matrix.name }} ${{ matrix.shard }}/${{ matrix.shard-total }}
+    needs: [detect-changes, e2e-build]
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.e2e-runs) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # apt mirrors stalled this step for up to 30 minutes. The packages are cached per
+      # runner image, so most runs install them from the cache without touching a mirror.
+      - name: Read runner image
+        if: runner.os == 'Linux'
+        id: runner-image
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Linux display packages
+        if: runner.os == 'Linux'
+        id: display-packages
+        uses: actions/cache@v6
+        with:
+          path: ~/display-packages
+          key: display-packages-v1-${{ steps.runner-image.outputs.image }}
+
+      - name: Install Linux display environment
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          CACHE_HIT: ${{ steps.display-packages.outputs.cache-hit }}
+        run: |
+          packages="$HOME/display-packages"
+          if [[ "$CACHE_HIT" != "true" ]]; then
+            mkdir -p "$packages/partial"
+            sudo apt-get update
+            sudo apt-get install --yes --download-only -o Dir::Cache::archives="$packages" fluxbox xvfb
+            sudo chown -R "$USER" "$packages"
+          fi
+          shopt -s nullglob
+          debs=("$packages"/*.deb)
+          if (( ${#debs[@]} > 0 )); then sudo dpkg -i "${debs[@]}"; fi
+          command -v fluxbox Xvfb
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Download E2E app
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-${{ github.run_id }}-${{ runner.os }}
+          path: .
+
+      # Parallel workers start several apps at once. On a fresh runner the first concurrent
+      # launches can map a partly loaded Electron framework and abort in dyld, so load it once
+      # before the tests start.
+      - name: Load Electron
+        env:
+          ELECTRON_RUN_AS_NODE: "1"
+        run: pnpm --dir apps/desktop exec electron -e "0"
+
+      - name: Run E2E tests
+        if: runner.os != 'Linux'
+        env:
+          E2E_WORKERS: ${{ matrix.workers || 1 }}
+          PLAYWRIGHT_BLOB_OUTPUT_DIR: ${{ github.workspace }}/apps/desktop/blob-report
+          PLAYWRIGHT_BLOB_OUTPUT_NAME: report-${{ matrix.target }}-${{ matrix.shard }}.zip
+        run: >-
+          pnpm --dir apps/desktop exec playwright test
+          --project=${{ matrix.project }}
+          --fully-parallel
+          --shard=${{ matrix.shard }}/${{ matrix.shard-total }}
+          ${{ matrix.grep && format('--grep={0}', matrix.grep) || '' }}
+
+      # macOS has no platform job, so its shards also run the @os platform tests. They need
+      # the OS focus and clipboard to themselves, so they run one at a time after the
+      # parallel visual tests. A Playwright run empties its blob and output directories
+      # first, so this second run writes elsewhere and its blob joins the visual one after.
+      - name: Run macOS platform tests
+        if: (success() || failure()) && matrix.target == 'visual'
+        env:
+          PLAYWRIGHT_BLOB_OUTPUT_DIR: ${{ github.workspace }}/apps/desktop/blob-report-platform
+          PLAYWRIGHT_BLOB_OUTPUT_NAME: report-${{ matrix.target }}-platform-${{ matrix.shard }}.zip
+        run: >-
+          pnpm --dir apps/desktop exec playwright test
+          --project=platform
+          --grep=@os
+          --output=e2e/test-results/platform
+          --fully-parallel
+          --shard=${{ matrix.shard }}/${{ matrix.shard-total }}
+
+      - name: Run E2E tests with virtual desktop
+        if: runner.os == 'Linux'
+        env:
+          PLAYWRIGHT_BLOB_OUTPUT_DIR: ${{ github.workspace }}/apps/desktop/blob-report
+          PLAYWRIGHT_BLOB_OUTPUT_NAME: report-${{ matrix.target }}-${{ matrix.shard }}.zip
+        run: >-
+          node scripts/run-with-virtual-desktop.mjs --
+          pnpm --dir apps/desktop exec playwright test
+          --project=${{ matrix.project }}
+          --fully-parallel
+          --shard=${{ matrix.shard }}/${{ matrix.shard-total }}
+          ${{ matrix.grep && format('--grep={0}', matrix.grep) || '' }}
+
+      - name: Collect macOS platform blob report
+        if: always() && matrix.target == 'visual'
+        shell: bash
+        run: |
+          mkdir -p apps/desktop/blob-report
+          cp apps/desktop/blob-report-platform/*.zip apps/desktop/blob-report/ 2>/dev/null || true
+
+      # Reports describe the run; they are not its result. An upload that fails
+      # (GitHub's artifact service occasionally fails to resolve) is retried
+      # once and never fails a job whose tests passed.
+      - name: Upload blob report
+        id: upload-blob-report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: blob-report-${{ matrix.target }}-${{ matrix.shard }}
+          path: apps/desktop/blob-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Retry blob report upload
+        if: always() && steps.upload-blob-report.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: blob-report-${{ matrix.target }}-${{ matrix.shard }}
+          path: apps/desktop/blob-report/
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+      - name: Upload platform evidence
+        if: always() && matrix.project == 'platform'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-${{ matrix.target }}-${{ matrix.shard }}-of-${{ matrix.shard-total }}-results
+          path: apps/desktop/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright failures
+        if: failure() && matrix.project != 'platform'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-${{ matrix.target }}-${{ matrix.shard }}-of-${{ matrix.shard-total }}-results
+          path: apps/desktop/e2e/test-results/
+          retention-days: 7
+
+  # Windows builds and tests in one job. Its native build is the slowest of the
+  # three, and as a leg of e2e-build it held every Linux and macOS shard until it
+  # finished. Pushes to main only build, to save the Rust cache for the queue.
+  e2e-windows:
+    name: E2E Platform Windows
+    needs: detect-changes
+    if: >-
+      needs.detect-changes.outputs.e2e-windows == 'true' && (
+        (github.event_name == 'merge_group' && needs.detect-changes.outputs.e2e == 'true') ||
+        (github.event_name == 'push' && needs.detect-changes.outputs.rust == 'true') ||
+        github.event_name == 'workflow_dispatch')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - uses: ./.github/actions/e2e-app
+
+      - name: Load Electron
+        if: github.event_name != 'push'
+        env:
+          ELECTRON_RUN_AS_NODE: "1"
+        run: pnpm --dir apps/desktop exec electron -e "0"
+
+      - name: Run E2E tests
+        if: github.event_name != 'push'
+        env:
+          E2E_WORKERS: 1
+          PLAYWRIGHT_BLOB_OUTPUT_DIR: ${{ github.workspace }}/apps/desktop/blob-report
+          PLAYWRIGHT_BLOB_OUTPUT_NAME: report-platform-windows-1.zip
+        run: >-
+          pnpm --dir apps/desktop exec playwright test
+          --project=platform
+          --fully-parallel
+          --grep=@os
+
+      - name: Upload blob report
+        if: always() && github.event_name != 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: blob-report-platform-windows-1
+          path: apps/desktop/blob-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload platform evidence
+        if: always() && github.event_name != 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-platform-windows-1-of-1-results
+          path: apps/desktop/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Merges shard blob reports into one HTML report and summarizes failed, flaky
+  # (passed only on retry), and slow tests. Informational: not part of ci-passed.
+  e2e-report:
+    name: E2E Report
+    needs: [e2e, e2e-windows]
+    if: always() && needs.e2e.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore node_modules
+        id: modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save node_modules
+        if: github.ref == 'refs/heads/main' && steps.modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            crates/*/node_modules
+          key: node-modules-v3-node24-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Download blob reports
+        uses: actions/download-artifact@v8
+        with:
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Merge reports
+        env:
+          PLAYWRIGHT_HTML_OPEN: never
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ github.workspace }}/playwright-report
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/playwright-report/results.json
+        run: >-
+          pnpm --dir apps/desktop exec playwright merge-reports
+          --config playwright.merge.config.ts
+          --reporter html,json
+          ${{ github.workspace }}/all-blob-reports
+
+      - name: Summarize flaky and slow tests
+        run: node scripts/summarize-e2e-report.mjs playwright-report/results.json
+
+      - name: Upload merged report
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: playwright-report/
+          # results.json is the E2E history the CI dashboard reads; keep a quarter of it.
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Gate: all required checks must pass
+  # ---------------------------------------------------------------------------
+  # Pushes to main save the Rust caches; delete the ones they replaced, so
+  # main's caches stay under GitHub's 10 GB and the Nightly's, read once a
+  # day, are not evicted first.
+  prune-caches:
+    name: Prune superseded Rust caches
+    needs:
+      - unit-test
+      - rust-check
+      - integration
+      - e2e-build
+      - e2e-windows
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Delete superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/prune-superseded-caches.sh
+
+  ci-passed:
+    name: CI Passed
+    if: always()
+    needs:
+      - detect-changes
+      - agent-skills
+      - lint
+      - typecheck
+      - unit-test
+      - deadcode
+      - release-config
+      - rust-fmt
+      - rust-deps
+      - rust-check
+      - integration
+      - e2e-build
+      - e2e
+      - e2e-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - name: Check required jobs
+        run: |
+          echo "Results: ${{ toJSON(needs.*.result) }}"
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more required jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All required checks passed."
