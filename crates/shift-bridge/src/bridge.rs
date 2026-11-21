@@ -486,6 +486,7 @@ impl RetainedSource {
           alignment: Default::default(),
           location_axes: Vec::new(),
           inheritance: Default::default(),
+          condition: Default::default(),
         })
       })
       .collect::<BridgeResult<Vec<_>>>()?;

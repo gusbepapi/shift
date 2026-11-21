@@ -23,16 +23,14 @@ use authoring::{
     set_glyphs, set_instance, set_kerning, set_layer, set_mark_color, set_palettes,
     unassign_kerning_group,
 };
-use authoring::{
-    add_alternate, move_alternate, remove_alternate, set_alternate, set_component_condition,
-};
+use authoring::{add_swap, move_swap, remove_swap, set_component_condition, set_swap};
 use clap::Parser;
 use cli::{
     AxisCommand, Cli, ColorCommand, ColorGlyphCommand, Command, CompileArgs, ExportArgs,
     FontCommand, GlyphAxisCommand, GlyphCommand, InstanceCommand, KerningCommand,
     KerningGroupCommand, LayerCommand, PageCommand, PaletteCommand, SkillCommand, SourceCommand,
 };
-use cli::{ComponentCommand, ComponentConditionCommand, GlyphAlternateCommand};
+use cli::{ComponentCommand, ComponentConditionCommand, GlyphSwapCommand};
 use glyph_inspect::GlyphInspection;
 use inspect::{InspectReport, RenderMode};
 use kerning::{get_kerning, kerning_groups, list_kerning};
@@ -233,22 +231,22 @@ fn glyph_command(command: GlyphCommand) -> miette::Result<()> {
                 write_authoring_result(remove_glyph_axis(&args), json)
             }
         },
-        GlyphCommand::Alternate { command } => match command {
-            GlyphAlternateCommand::Add(args) => {
+        GlyphCommand::Swap { command } => match command {
+            GlyphSwapCommand::Add(args) => {
                 let json = args.mutation.json;
-                write_authoring_result(add_alternate(&args), json)
+                write_authoring_result(add_swap(&args), json)
             }
-            GlyphAlternateCommand::Remove(args) => {
+            GlyphSwapCommand::Remove(args) => {
                 let json = args.mutation.json;
-                write_authoring_result(remove_alternate(&args), json)
+                write_authoring_result(remove_swap(&args), json)
             }
-            GlyphAlternateCommand::Reorder(args) => {
+            GlyphSwapCommand::Reorder(args) => {
                 let json = args.mutation.json;
-                write_authoring_result(move_alternate(&args), json)
+                write_authoring_result(move_swap(&args), json)
             }
-            GlyphAlternateCommand::Set(args) => {
+            GlyphSwapCommand::Set(args) => {
                 let json = args.mutation.json;
-                write_authoring_result(set_alternate(&args), json)
+                write_authoring_result(set_swap(&args), json)
             }
         },
     }

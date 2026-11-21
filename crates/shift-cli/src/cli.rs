@@ -11,11 +11,10 @@ use crate::glyph_inspect::GlyphInspectView;
 use crate::inspect::InspectView;
 use crate::proof::ProofArgs;
 
-mod alternate;
-pub(crate) use alternate::{
-    AddAlternateArgs, AlternateSelectorArgs, ComponentCommand, ComponentConditionCommand,
-    ConditionArgs, GlyphAlternateCommand, MoveAlternateArgs, RemoveAlternateArgs, SetAlternateArgs,
-    SetComponentConditionArgs,
+mod swap;
+pub(crate) use swap::{
+    AddSwapArgs, ComponentCommand, ComponentConditionCommand, ConditionArgs, GlyphSwapCommand,
+    MoveSwapArgs, RemoveSwapArgs, SetComponentConditionArgs, SetSwapArgs, SwapSelectorArgs,
 };
 mod color;
 pub(crate) use color::{
@@ -225,9 +224,9 @@ pub(crate) enum GlyphCommand {
 
     /// Author the glyphs text draws in a glyph's place at some locations,
     /// such as dollar.bled where Bleed is at least 70.
-    Alternate {
+    Swap {
         #[command(subcommand)]
-        command: GlyphAlternateCommand,
+        command: GlyphSwapCommand,
     },
 }
 

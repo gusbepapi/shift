@@ -344,21 +344,21 @@ fn a_round_contour_starting_elsewhere_is_not_reported_when_it_keeps_its_shape() 
 }
 
 #[test]
-fn reports_an_alternate_an_earlier_one_covers() {
-    use crate::{AlternateId, EditGlyphAlternate, GlyphAlternateEdit};
+fn reports_a_swap_an_earlier_one_covers() {
+    use crate::{EditGlyphSwap, GlyphSwapEdit, SwapId};
 
     let mut font = crate::test_support::conditions_font();
     // `heavy` (Weight ≥ 700) first covers `compact-heavy` (also Weight ≥ 700).
-    let reorder = EditGlyphAlternate {
-        alternate_id: AlternateId::from_raw("heavy"),
-        edit: GlyphAlternateEdit::Move(0),
+    let reorder = EditGlyphSwap {
+        swap_id: SwapId::from_raw("heavy"),
+        edit: GlyphSwapEdit::Move(0),
     };
     let dollar = font.glyph_by_name("dollar").unwrap().id();
     let unused = |font: &Font| -> Vec<_> {
         font.check_glyph(dollar)
             .unwrap()
             .into_iter()
-            .filter(|finding| finding.check == Check::NeverUsedAlternate)
+            .filter(|finding| finding.check == Check::NeverUsedSwap)
             .collect()
     };
     assert!(unused(&font).is_empty());
@@ -367,11 +367,11 @@ fn reports_an_alternate_an_earlier_one_covers() {
     let findings = unused(&font);
 
     assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].check, Check::NeverUsedAlternate);
+    assert_eq!(findings[0].check, Check::NeverUsedSwap);
     assert_eq!(
         findings[0].message,
-        "dollar: dollar.compact-heavy (alternate 2) is never used, because \
-         dollar.heavy (alternate 1) already applies wherever its condition holds"
+        "dollar: dollar.compact-heavy (swap 2) is never used, because \
+         dollar.heavy (swap 1) already applies wherever its condition holds"
     );
 }
 
@@ -405,4 +405,38 @@ fn warns_that_a_component_condition_cant_be_exported() {
             .count(),
         3
     );
+}
+
+#[test]
+fn warns_when_feature_code_writes_its_own_rvrn_beside_swaps() {
+    let mut font = crate::test_support::conditions_font();
+    let rvrn_findings = |font: &Font| {
+        font.check()
+            .unwrap()
+            .into_iter()
+            .filter(|finding| finding.check == Check::SwapsBesideFeatureRvrn)
+            .count()
+    };
+    let set_fea = |font: &mut Font, source: &str| {
+        font.features_mut().set_fea_source(Some(source.to_string()));
+    };
+
+    set_fea(
+        &mut font,
+        "conditionset narrow { wdth 50 70; } narrow;\nvariation rvrn narrow {\n  sub cent by cent.alt;\n} rvrn;\n",
+    );
+    assert_eq!(rvrn_findings(&font), 1);
+
+    // Commented out, or another feature, it doesn't compete with the swaps.
+    set_fea(&mut font, "# variation rvrn narrow { sub a by b; } rvrn;\n");
+    assert_eq!(rvrn_findings(&font), 0);
+    set_fea(&mut font, "variation rclt narrow { sub a by b; } rclt;\n");
+    assert_eq!(rvrn_findings(&font), 0);
+
+    // Without swaps there is nothing to compete with.
+    let dollar = font.glyph_by_name("dollar").unwrap().id();
+    font.set_glyph_swaps(dollar, Vec::new()).unwrap();
+    set_fea(&mut font, "variation rvrn narrow { sub a by b; } rvrn;\n");
+    assert_eq!(rvrn_findings(&font), 0);
+    assert_eq!(Check::SwapsBesideFeatureRvrn.code(), "A003");
 }

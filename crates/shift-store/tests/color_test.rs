@@ -79,7 +79,7 @@ mod suite {
     }
 
     #[test]
-    fn version_eight_documents_gain_empty_colour_tables_on_open() {
+    fn version_nine_documents_gain_empty_colour_tables_on_open() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("Old.shift");
         let original = sample_font();
@@ -87,7 +87,7 @@ mod suite {
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(
-                "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 8;",
+                "DROP TABLE color_palettes; DROP TABLE color_glyphs; PRAGMA user_version = 9;",
             )
             .unwrap();
         }
